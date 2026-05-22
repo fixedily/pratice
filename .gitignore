@@ -1,5 +1,5 @@
-﻿# ========================
-# 1. Python & virtual environments
+# ========================
+# 1. Python & 虚拟环境
 # ========================
 __pycache__/
 *.py[cod]
@@ -8,49 +8,39 @@ __pycache__/
 .Python
 env/
 venv/
-.venv/
 .env
 .env.*
 !.env.example
 !frontend/.env.example
+.venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
 # ========================
-# 2. Local databases
+# 2. 数据库文件 (极其重要)
 # ========================
+# 忽略所有本地 SQLite 数据库，避免污染代码库
 *.db
 *.sqlite
 *.sqlite3
-*.db-journal
+# 如果后续用 alembic 做迁移，可以忽略本地生成的某些临时文件
 alembic.ini.bak
 
 # ========================
-# 3. Data, manuals, logs
+# 3. 数据集与日志 (极其重要)
 # ========================
+# 绝对不能把 HAI Security Dataset 提交到 Git，太大了！
 *.csv
 *.tsv
 *.dat
 data/
 backend/data/
 dataset/
-datasets/**
-!datasets/README.md
-!datasets/img/
-!datasets/img/README.md
-!datasets/validation/
-!datasets/validation/README.md
-!datasets/validation/motorcycle_engine_retrieval_eval.csv
-!datasets/validation/motorcycle_engine_multimodal_eval.csv
-!datasets/pdf/
-!datasets/pdf/README.md
-datasets/pdf/*.pdf
-datasets/pdf/download_manifest.jsonl
 logs/
 *.log
 
 # ========================
-# 4. IDE, OS, local agent/tool state
+# 4. IDE & 操作系统缓存
 # ========================
 .vscode/
 .idea/
@@ -63,45 +53,48 @@ logs/
 Thumbs.db
 
 # ========================
-# 5. Node / Next.js outputs
+# 4.1 Node / Next.js 产物
 # ========================
 node_modules/
 .next/
 frontend/node_modules/
 frontend/.next/
 frontend/.env.local
-frontend/artifacts/
 *.tsbuildinfo
 frontend/tsconfig.tsbuildinfo
 
 # ========================
-# 6. Tests, coverage, generated outputs
+# 5. 测试与覆盖率
 # ========================
 .pytest_cache/
 .coverage
 htmlcov/
 frontend/test-results/
-evaluation/*_results.json
-backend/evaluation/results/
-backend/evaluation/*.db
-backend/evaluation/*.db-journal
-backend/evaluation/*_results.json
-backend/evaluation/*_cases.json
-backend/evaluation/*_seed.json
+frontend/artifacts/
+.tmp/
+.tmp_pytest/
+.worktrees/
+
+# 软件杯评测脚本本地产出（可重新生成）
+evaluation/softbei_eval_results.json
+backend/evaluation/softbei_eval_results.json
+*.db-journal
+backend/evaluation/results/*.json
+backend/=0.3.0
+
+# 维修手册 PDF 原件与下载记录体积较大且需单独确认版权；保留 README 说明即可
+datasets/pdf/*.pdf
+datasets/pdf/download_manifest.jsonl
+
+# Superpowers 生成的长计划/规格文档属于本地执行过程材料
+docs/superpowers/
+
+# 软件杯源码打包脚本产出（见 scripts/package_softbei_submission.*）
 dist/
 
 # ========================
-# 7. Private handoff / archive materials
+# 6. 本地归档 / 发布材料
 # ========================
 deploy/backups/
 submission/
 docs/release/
-docs/daily_report/
-docs/superpowers/
-CLAUDE.md
-AGENTS.md
-DESIGN.md
-findings.md
-progress.md
-task_plan.md
-tech_enhancement_plan.md

@@ -1,1 +1,1 @@
-﻿"""Assistant application layer."""
+"""Assistant application layer."""

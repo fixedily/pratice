@@ -1,13 +1,16 @@
-﻿"""Maintenance-domain ORM model exports."""
+"""Maintenance-domain ORM model exports."""
 from app.models.maintenance_domain import (
     Annotation,
     ApprovalTask,
+    AuthLog,
     AuditLog,
     AuthUser,
     Device,
     Escalation,
     FlowTemplate,
     KnowledgeArticle,
+    PasswordResetRequest,
+    PasswordResetToken,
     Attachment,
     RetrievalSnapshot,
     Role,
@@ -23,6 +26,9 @@ from app.models.maintenance_domain import (
 
 __all__ = [
     "AuthUser",
+    "PasswordResetRequest",
+    "PasswordResetToken",
+    "AuthLog",
     "Role",
     "UserRole",
     "Device",

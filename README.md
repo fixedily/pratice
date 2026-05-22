@@ -1,109 +1,212 @@
-﻿# 设备检修知识与作业助手
+# 工业故障检测系统 / 软件杯适配中
 
-这是一个面向设备检修场景的 Web 原型系统，结合故障诊断、知识检索、任务生成、工单流转和案例沉淀能力，提供从问题输入到处理建议输出的完整流程。
+基于 FastAPI、LangGraph 和工业传感器数据的故障诊断后端项目，支持同步诊断、SSE 流式诊断和简单的浏览器调试页联调。
 
-当前仓库采用前后端分离结构：
+当前定位是比赛/MVP 级交付：重点保证主链路可演示、可部署、可复现、可验证，而不是追求商用生产级复杂能力。
 
-- `backend/`：FastAPI 后端、数据库迁移、测试与辅助脚本
-- `frontend/`：Next.js 前端工作台
-- `docs/`：公开部署、联调与架构说明
+当前仓库已进入**软件杯赛题适配阶段**。面向第十五届中国软件杯赛题《基于多模态大模型技术的设备检修知识检索与作业系统》，当前作品定义已冻结为“设备检修知识与作业助手”，现有工业故障诊断链路保留为**智能分析子模块**，不再作为主产品入口。
 
-公开仓库默认不包含本地数据库、未授权手册、真实业务数据、评测产物或敏感演示素材。请只使用你有权使用的数据和手册进行本地演示。
+当前后端已完成一轮**中等架构重组**：在不改变 FastAPI、PostgreSQL、Alembic 的前提下，引入了 `bootstrap / shared / modules / integrations / persistence` 五层结构，并为 `React + Next.js` 正式前端预留稳定 API 边界。
 
-## 主要能力
+当前仓库已启动**正式前端工程化阶段**：`frontend/` 目录下已新增 `Next.js + React + TypeScript` 正式工作台骨架，并新增面向正式前端的工作台概览与 Agent 协作统一接口。Python 后端与测试、迁移、脚本集中在 `backend/`，与前端目录物理分离。
 
-- 文本、图片和 PDF 知识导入
-- 混合知识检索与可追溯引用
-- 实体级语义知识图谱查询与审核
-- 诊断任务创建、执行过程展示和历史记录
-- 检修工单、步骤推进、升级会诊、案例沉淀
-- 登录验证码、失败锁定、角色权限与系统配置页
-- Next.js 工作台、知识图谱、任务详情、监控告警和设置页面
+## 当前能力
 
-## 公开数据说明
+- `POST /api/v1/diagnose`：返回完整诊断报告
+- `GET /api/v1/diagnose/stream`：通过 SSE 返回节点进度和最终报告
+- `GET /api/v1/workbench/overview`：返回正式工作台首页所需的统计卡片、固定检索词、Agent 能力摘要和业务项概览
+- `POST /api/v1/agents/assist`：统一触发知识召回、作业规划、风险校验与案例沉淀建议
+- `GET /api/v1/agents/runs/{id}`：回放指定 Agent 协作结果
+- `POST /api/v1/knowledge/documents`：导入检修知识文本并自动拆分为可检索分段
+- `POST /api/v1/knowledge/imports/preview`：在正式导入前预览 PDF 或图片 OCR 的页数/分段数、预览摘录和处理提示
+- `GET /api/v1/knowledge/imports`：查看知识导入任务列表与状态
+- `POST /api/v1/knowledge/imports`：上传 PDF 手册或故障图片并创建正式知识导入任务，自动提取文本、切分分段并写入知识库
+- `GET /api/v1/knowledge/imports/{id}`：查看单个知识导入任务的状态、页数、分段数和失败原因
+- `GET /api/v1/knowledge/documents`：查看正式知识中心的文档列表与分段数
+- `GET /api/v1/knowledge/documents/{id}`：查看指定知识文档的详细元数据，用于来源回溯和命中调试
+- `GET /api/v1/knowledge/documents/{id}/chunks`：预览指定知识文档的前若干个分段内容
+- `POST /api/v1/knowledge/search`：按文本、设备型号、单张故障图片联合检索知识条目，返回出处、有效检索词、图片识别线索和处理提示
+- `POST /api/v1/tasks`：根据知识引用生成标准化检修任务和作业步骤
+- `PATCH /api/v1/tasks/{id}/steps/{step_id}`：更新检修步骤执行状态与备注
+- `POST /api/v1/cases`：上传待审核检修案例，沉淀任务执行结果和知识引用
+- `POST /api/v1/cases/{id}/corrections`：对检索结果、模型输出和总结进行人工修正
+- `POST /api/v1/cases/{id}/review`：审核案例并在通过后自动入库为知识文档
+- `GET /api/v1/cases`：查看案例列表与审核状态
+- `GET /api/auth/captcha` / `GET /api/v1/maintenance/auth/captcha`：生成登录验证码（Redis 可用时使用 Redis，失败时内存降级）
+- `POST /api/v1/maintenance/auth/login`：检修域登录，支持验证码、失败次数限制与锁定策略
+- `GET /api/v1/knowledge/semantic-graph`：查询实体级语义知识图谱
+- `GET /api/v1/knowledge/semantic-graph/entities`：检索语义实体，支持类型和状态过滤
+- `POST /api/v1/knowledge/semantic-graph/extraction-jobs`：创建实体/关系抽取任务，候选结果需审核后进入图谱
+- `GET /api/v1/history`：查看检修任务历史记录
+- `GET /api/v1/export/{id}`：导出检修任务摘要、步骤和知识引用
+- `GET /health`：检查服务和数据库连通性
+- `frontend/`：正式前端（Next.js），提供落地页、登录/注册/找回密码、工作台、知识检索与图谱、PDF/图片导入、任务创建/历史/详情、案例、工单、监控告警、系统设置与 Agent 协作页面；流式能力见各页内 `EventSource` 与后端 SSE 接口
+- Alembic 管理数据库 schema，不再依赖隐式建表
+- 当前验证以 `backend/tests/` 与 `frontend/tests/e2e/` 为准；GitHub 上见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)（`push` / `pull_request` / `workflow_dispatch` 触发）。依赖真实 LLM、Redis、PostgreSQL 或浏览器的抽检请在配置 `.env` 后自行运行。
 
-仓库只保留可公开的模板和说明文件：
+## 软件杯赛题适配（当前冻结版）
 
-- `datasets/validation/motorcycle_engine_retrieval_eval.csv`
-- `datasets/validation/motorcycle_engine_multimodal_eval.csv`
-- `datasets/img/README.md`
-- `datasets/pdf/README.md`
+- 赛题：`A基于多模态大模型技术的设备检修知识检索与作业系统`
+- 当前作品定义：`设备检修知识与作业助手`
+- 当前演示对象：`摩托车发动机检修`
+- 当前主线：`输入检修问题 -> 检索知识 -> 生成作业指引 -> 沉淀案例 -> 审核入库`
+- 当前保留子模块：`工业故障诊断 / SSE 流式分析`
 
-PDF 原件、下载清单、本地数据库、截图产物和本地归档已通过 `.gitignore` 排除。
+设计与交付口径以仓库内 **`docs/MVP 产品需求文档.md`**、**`docs/系统架构文档.md`** 为准。公开源码仓库默认不包含答辩材料、本地数据库与样例数据集；如需演示素材，请在你自己的环境中另行准备。
 
-## 快速启动
+## 快速开始
 
-Windows 本地开发推荐直接运行：
-
-```powershell
-.\scripts\start-dev.ps1
-```
-
-脚本会自动：
-
-- 执行数据库初始化
-- 启动后端与前端
-- 更新 `frontend/.env.local` 中的 `NEXT_PUBLIC_API_BASE_URL`
-
-默认访问地址：
-
-- 前端：`http://127.0.0.1:3000`
-- 后端：`http://127.0.0.1:18000`
-- 后端文档：`http://127.0.0.1:18000/docs`
-
-## 手工运行
-
-### 1. 安装后端依赖
+### 1. 安装依赖
 
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
+建议使用项目内 `venv` 或你自己的独立虚拟环境，避免系统 Python 缺失 `aiosqlite`。
+
 ### 2. 配置环境变量
 
-```bash
-cp .env.example .env
-```
+仓库提供了 [`.env.example`](.env.example) 作为模板。
 
-至少确认：
+至少需要确认：
 
 ```env
 DATABASE_URL=sqlite+aiosqlite:///./sensor_data.db
 DEFAULT_LLM_PROVIDER=zhipu
+DEEPSEEK_API_KEY=sk-xxxxx
+DEEPSEEK_API_BASE=https://api.deepseek.com
+OPENAI_API_KEY=sk-xxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxx
 ZHIPU_API_KEY=your-zhipu-api-key
+ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
+ZHIPU_TEXT_MODEL=glm-4.5
+ZHIPU_VISION_MODEL=glm-4.5v
+ZHIPU_OCR_MODEL=glm-ocr
 DASHSCOPE_API_KEY=your-dashscope-api-key
+DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 VECTOR_STORE_BACKEND=pgvector
-REDIS_ENABLED=false
+REDIS_ENABLED=true
+REDIS_HOST=localhost
+REDIS_PORT=6379
 DEBUG=false
 ```
 
-真实密钥只保存在本地 `.env`，不要提交到仓库。
+本地真实密钥只保存在 `.env`，不要提交到仓库。
+Redis 用于验证码、登录锁定和检索缓存；不可用时后端会降级到进程内内存存储，但多人联调或部署建议启动 Redis。生产验收请以 `/ready` 返回 200 为准。
 
 ### 3. 初始化数据库
+
+在 `backend/` 下执行：
 
 ```bash
 cd backend
 python scripts/init_db.py --init-only
 ```
 
+该命令会执行 `alembic upgrade head`，确保数据库结构与迁移脚本一致。
+
+如需将 PDF 维修手册直接导入知识库：
+
+```bash
+python scripts/import_knowledge_pdf.py "摩托车发动机维修手册.pdf" --equipment-type "摩托车发动机"
+```
+
+说明：公开源码仓库默认不附带 `datasets/` 内容；如果你需要导入样例 CSV 或 PDF，请自行准备文件并将路径传给脚本。
+
+如需批量搜索公开维修手册 PDF，可先阅读 [datasets/pdf/README.md](datasets/pdf/README.md)，但 PDF 原件与下载清单默认不上传 GitHub。
+
 ### 4. 启动后端
 
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 18000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 5. 启动前端
+启动后可访问：
+
+- `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/health`
+
+### 5. 打开前端入口
+
+根目录**静态演示 HTML 已移除**，请仅通过 **Next.js** 访问 UI：在 `frontend/` 下执行 `npm install` / `npm run dev`，并将 `frontend/.env.example` 复制为 `frontend/.env.local` 后按需修改 `NEXT_PUBLIC_API_BASE_URL`（默认 `http://127.0.0.1:8000`）。
+
+**智能分析（时间窗诊断）**：可调用 `POST /api/v1/diagnose`、`GET /api/v1/diagnose/stream`（SSE），或在 Swagger `http://127.0.0.1:8000/docs` 中试调。
+
+## 演示流程
+
+推荐按以下顺序演示：
+
+1. 启动后端服务
+2. 访问 `/health`
+3. 启动 `frontend`（`npm run dev`），从工作台进入知识检索、任务、案例等页面
+4. 先展示知识检索命中结果和引用来源
+5. 再展示标准化检修任务与案例沉淀流程
+6. 如需展示智能分析 / Agent 流式过程，使用前端对应页面或 `/docs` 中 SSE 接口试调
+7. 接口文档：`/docs`
+
+联调以 **`/health`**、**`/docs`** 与前端工作台页面为准。
+
+## 部署
+
+比赛/MVP 阶段建议先保证“新机器按文档就能跑起来”。
+
+- 后端容器镜像：见 [Dockerfile](Dockerfile)
+- PostgreSQL / Redis 容器：见 [docker-compose.yml](docker-compose.yml)
+- 最小部署说明：见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+- Linux systemd 样例：见 [deploy/systemd/fault-detection.service.example](deploy/systemd/fault-detection.service.example)
+
+## 自动化验证
+
+仓库新增了 GitHub Actions workflow：
+
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+
+默认在 `push` 和 `pull_request` 时执行（工作目录为 `backend/`）：
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend
+pytest -q
 ```
 
-## 文档
+软件杯阶段的固定评测可通过以下命令复现：
 
-- [docs/全流程跑通指南.md](docs/%E5%85%A8%E6%B5%81%E7%A8%8B%E8%B7%91%E9%80%9A%E6%8C%87%E5%8D%97.md)
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- [docs/系统架构文档.md](docs/%E7%B3%BB%E7%BB%9F%E6%9E%B6%E6%9E%84%E6%96%87%E6%A1%A3.md)
+```bash
+cd backend
+..\venv\Scripts\python.exe scripts\run_softbei_eval.py
+```
+
+当前评测结果会写入 `backend/evaluation/softbei_eval_results.json`（本地生成，已列入 `.gitignore`，克隆后需先运行上述命令才会出现）。
+
+## 项目结构
+
+```text
+backend/
+  app/                  FastAPI 应用、路由、服务、智能体
+  app/bootstrap/        应用工厂、lifespan、中间件、路由装配
+  app/shared/           配置、数据库、日志等共享基础设施
+  app/modules/          按业务域组织的知识、任务、案例、诊断模块
+  app/integrations/     图片分析、PDF 导入、智能体/LLM 适配
+  app/persistence/      面向业务域整理的模型导出层
+  alembic/              Alembic 迁移环境与版本脚本
+  scripts/              初始化数据库和导入数据脚本
+  tests/                异步接口、流式链路和回归测试
+  evaluation/           软件杯评测用例与种子数据
+docs/                   核心文档（部署说明、MVP 需求、系统架构）；详见 docs/README.md
+deploy/systemd/         Linux 部署示例
+frontend/               Next.js 正式前端工程骨架（工作台 / 知识 / OCR 导入 / 任务 / 案例 / 历史 / Agent）
+Dockerfile              构建镜像时仅复制 backend/ 作为运行上下文
+```
+
+## 当前还没做的事
+
+以下内容在比赛/MVP 阶段通常应继续推进：
+
+- 真实浏览器联调验收
+- 云服务器部署验证
+- CI 实际接入 GitHub 仓库并跑通
+- 更系统的日志、监控和告警
+- 如有需要，再补 Nginx、HTTPS、鉴权、权限控制
+
+若继续参加软件杯或对外答辩，建议将 PPT、视频、截图和数据集保存在本地或单独的私有归档位置，不要放进公开源码仓库。

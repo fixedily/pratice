@@ -1,4 +1,4 @@
-﻿from app.services.diagnosis_formatting import build_structured_diagnosis
+from app.services.diagnosis_formatting import build_structured_diagnosis
 
 
 def test_build_structured_diagnosis_returns_procedure_mode_for_step_queries():

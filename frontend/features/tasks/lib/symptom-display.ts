@@ -1,4 +1,4 @@
-﻿/** 从故障现象文案中移除创建时写入的元数据标签，仅用于界面展示。 */
+/** 从故障现象文案中移除创建时写入的元数据标签，仅用于界面展示。 */
 export function formatSymptomForDisplay(symptom: string | null | undefined): string {
   if (!symptom) return "";
   return symptom

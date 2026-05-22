@@ -1,4 +1,4 @@
-﻿"""Database access layer public surface."""
+"""Database access layer public surface."""
 from app.db.base import Base
 from app.db.session import (
     AsyncEngine,

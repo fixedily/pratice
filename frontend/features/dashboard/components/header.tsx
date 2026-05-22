@@ -1,18 +1,14 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { Search, HelpCircle, ChevronDown, Menu, LogIn, LogOut, ShieldCheck, Server, Wrench } from "lucide-react"
-import { pingBackendReadiness, fetchHealth, fetchMaintenanceHealth, getApiBase } from "@/features/dashboard/api"
+import { pingBackendReadiness, fetchHealth, fetchMaintenanceHealth, getApiBase, maintenanceLogout } from "@/features/dashboard/api"
 import { AppLogoLink } from "@/shared/components/brand/app-logo-link"
 import { NotificationMenu } from "@/shared/components/brand/notification-menu"
 import { ROUTES } from "@/shared/lib/routes"
-import {
-  clearMaintenanceToken,
-  getMaintenanceToken,
-  MAINTENANCE_AUTH_EXPIRED_EVENT,
-} from "@/features/auth/lib/token-store"
+import { getMaintenanceToken, MAINTENANCE_AUTH_EXPIRED_EVENT } from "@/features/auth/lib/token-store"
 import { Button } from "@/shared/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/shared/components/ui/avatar"
 import { Input } from "@/shared/components/ui/input"
@@ -81,8 +77,8 @@ export function Header() {
     }
   }, [])
 
-  const handleLogout = () => {
-    clearMaintenanceToken()
+  const handleLogout = async () => {
+    await maintenanceLogout()
     setIsLoggedIn(false)
     toast.success("已退出登录")
     router.push(ROUTES.login)
@@ -459,3 +455,4 @@ function NavItem({ children, active = false, href }: { children: React.ReactNode
     </Link>
   )
 }
+

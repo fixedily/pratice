@@ -1,4 +1,4 @@
-﻿"""Standardized maintenance service facade."""
+"""Standardized maintenance service facade."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -119,6 +119,8 @@ class MaintenanceService:
         captcha_id: str | None = None,
         captcha_code: str | None = None,
         client_ip: str | None = None,
+        user_agent: str | None = None,
+        remember_me: bool = False,
     ) -> dict[str, Any]:
         return await self.auth_service.login(
             username,
@@ -126,13 +128,24 @@ class MaintenanceService:
             captcha_id=captcha_id,
             captcha_code=captcha_code,
             client_ip=client_ip,
+            user_agent=user_agent,
+            remember_me=remember_me,
         )
 
-    async def register(self, body: dict[str, Any]) -> dict[str, Any]:
-        return await self.auth_service.register(body)
+    async def register(self, body: dict[str, Any], *, client_ip: str | None = None) -> dict[str, Any]:
+        return await self.auth_service.register(body, client_ip=client_ip)
 
     async def forgot_password(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self.auth_service.forgot_password(body)
+
+    async def request_password_reset(self, body: dict[str, Any], *, client_ip: str | None = None) -> dict[str, Any]:
+        return await self.auth_service.request_password_reset(body, client_ip=client_ip)
+
+    async def confirm_password_reset(self, body: dict[str, Any], *, client_ip: str | None = None) -> dict[str, Any]:
+        return await self.auth_service.confirm_password_reset(body, client_ip=client_ip)
+
+    async def refresh(self, refresh_token: str) -> dict[str, Any]:
+        return await self.auth_service.refresh(refresh_token)
 
     async def get_me(self, ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.auth_service.get_me(ctx)

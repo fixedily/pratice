@@ -1,5 +1,11 @@
-﻿"""Knowledge search schema compatibility exports."""
+"""Knowledge search schema compatibility exports."""
 from app.schemas.knowledge import (
+    KnowledgeBaseCreate,
+    KnowledgeBaseListResponse,
+    KnowledgeBaseResponse,
+    KnowledgeBaseUpdate,
+    KnowledgeCategoryListResponse,
+    KnowledgeCategoryStat,
     KnowledgeDocumentCreate,
     KnowledgeDocumentResponse,
     KnowledgeGraphContext,
@@ -14,6 +20,12 @@ from app.schemas.knowledge import (
 )
 
 __all__ = [
+    "KnowledgeBaseCreate",
+    "KnowledgeBaseListResponse",
+    "KnowledgeBaseResponse",
+    "KnowledgeBaseUpdate",
+    "KnowledgeCategoryListResponse",
+    "KnowledgeCategoryStat",
     "KnowledgeDocumentCreate",
     "KnowledgeDocumentResponse",
     "KnowledgeGraphContext",

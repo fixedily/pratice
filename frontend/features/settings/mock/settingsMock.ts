@@ -1,4 +1,4 @@
-﻿export type Tone = "success" | "warning" | "danger" | "neutral";
+export type Tone = "success" | "warning" | "danger" | "neutral";
 
 export type StatusCardData = {
   title: string;
@@ -158,6 +158,6 @@ export const deploymentChecks: MetricItem[] = [
   { label: "向量库", value: "已配置", hint: "FAISS / pgvector", tone: "success" },
   { label: "文件存储", value: "可写", hint: "上传目录权限", tone: "success" },
   { label: "模型服务", value: "配置检查", hint: "LLM / Embedding / Rerank", tone: "warning" },
-  { label: "目标 CPU 架构 适配", value: "部署验收项", hint: "目标环境检查", tone: "warning" },
-  { label: "Linux", value: "部署验收项", hint: "V11 / V10", tone: "warning" },
+  { label: "LoongArch 适配", value: "部署验收项", hint: "目标环境检查", tone: "warning" },
+  { label: "银河麒麟", value: "部署验收项", hint: "V11 / V10", tone: "warning" },
 ];

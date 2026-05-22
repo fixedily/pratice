@@ -1,4 +1,4 @@
-﻿"""Alembic 异步迁移环境配置.
+"""Alembic 异步迁移环境配置.
 
 支持 SQLite (aiosqlite) 和 PostgreSQL (asyncpg) 的无缝切换.
 SQLAlchemy 2.0 AsyncEngine + AsyncSession 架构.

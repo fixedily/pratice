@@ -1,4 +1,4 @@
-﻿"""add knowledge graph semantic tables
+"""add knowledge graph semantic tables
 
 Revision ID: j3c4d5e6f7g8
 Revises: i2b3c4d5e6f7

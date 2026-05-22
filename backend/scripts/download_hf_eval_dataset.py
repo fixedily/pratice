@@ -1,4 +1,4 @@
-﻿"""从 Hugging Face 下载数据并转换为本项目评测格式。
+"""从 Hugging Face 下载数据并转换为本项目评测格式。
 
 默认来源：Jaya1995/Maintenance
 输出：

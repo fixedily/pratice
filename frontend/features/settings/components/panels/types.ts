@@ -1,4 +1,4 @@
-﻿import type { SettingsOverviewResponse, MaintenanceUser } from "@/shared/lib/http";
+import type { SettingsOverviewResponse, MaintenanceUser } from "@/shared/lib/http";
 import type { CheckState } from "@/features/settings/screens/settings-page";
 
 export type SettingsPanelProps = {

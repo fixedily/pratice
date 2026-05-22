@@ -1,4 +1,4 @@
-﻿"""Diagnosis API router."""
+"""Diagnosis API router."""
 import json
 import logging
 from typing import AsyncGenerator

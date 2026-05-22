@@ -1,4 +1,4 @@
-﻿"""add_task_execution_timeline
+"""add_task_execution_timeline
 
 Revision ID: b1c2d3e4f5a6
 Revises: a7c3d5e9f0b1
@@ -28,3 +28,4 @@ def downgrade() -> None:
     """Downgrade schema."""
     with op.batch_alter_table("maintenance_tasks") as batch_op:
         batch_op.drop_column("execution_timeline")
+

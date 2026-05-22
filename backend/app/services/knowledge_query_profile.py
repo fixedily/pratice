@@ -1,4 +1,4 @@
-﻿"""Query profiling helpers for multimodal maintenance retrieval."""
+"""Query profiling helpers for multimodal maintenance retrieval."""
 from __future__ import annotations
 
 from dataclasses import dataclass

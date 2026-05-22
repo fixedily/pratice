@@ -1,4 +1,4 @@
-﻿"""Image-assisted retrieval helpers for TODO-SB-3."""
+"""Image-assisted retrieval helpers for TODO-SB-3."""
 from __future__ import annotations
 
 import base64
@@ -93,8 +93,12 @@ class FaultImageAnalysisService:
     def _resolve_provider(self, requested_provider: str | None) -> str:
         settings = get_settings()
         provider = (requested_provider or "").strip().lower()
-        if provider in {"", "openai"}:
-            configured = (settings.image_analysis_provider or settings.default_llm_provider or "openai").strip().lower()
+        if not provider:
+            configured = (
+                settings.image_analysis_provider
+                or settings.default_llm_provider
+                or "openai"
+            ).strip().lower()
             if configured:
                 return configured
         return provider or "openai"

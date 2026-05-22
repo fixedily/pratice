@@ -1,4 +1,4 @@
-﻿"""Notification center service for maintenance console."""
+"""Notification center service for maintenance console."""
 from __future__ import annotations
 
 from datetime import timedelta

@@ -1,4 +1,4 @@
-﻿"""initial_sensor_data_schema
+"""initial_sensor_data_schema
 
 Revision ID: 388d25b1856f
 Revises: 

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { AlertTriangle, CheckCircle2, Flag, GitBranch, RefreshCw, Route } from "lucide-react";
 import { formatDateTimeLocal } from "@/shared/lib/utils";

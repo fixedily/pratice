@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { MonitorSmartphone, AppWindow, ScanSearch, Cpu } from "lucide-react";
 import { ui } from "@/shared/theme/ui-tokens";
@@ -7,7 +7,7 @@ const items = [
   { icon: <MonitorSmartphone className="h-5 w-5" />, value: "B/S", label: "浏览器 + 服务器交付" },
   { icon: <ScanSearch className="h-5 w-5" />, value: "多模态", label: "文字 / 图片 / 型号输入" },
   { icon: <AppWindow className="h-5 w-5" />, value: "闭环", label: "检索到审核入库" },
-  { icon: <Cpu className="h-5 w-5" />, value: "目标 CPU 架构", label: "适配跨平台部署要求" },
+  { icon: <Cpu className="h-5 w-5" />, value: "LoongArch", label: "适配龙架构部署要求" },
 ];
 
 export function TrustStrip() {
@@ -34,3 +34,4 @@ export function TrustStrip() {
     </section>
   );
 }
+

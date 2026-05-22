@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   createContext,
@@ -15,7 +15,12 @@ import {
   MAINTENANCE_AUTH_EXPIRED_EVENT,
   getMaintenanceToken,
 } from "@/features/auth/lib/token-store";
-import { fetchMaintenanceMe, type MaintenanceRole, type MaintenanceUser } from "@/shared/lib/http";
+import {
+  fetchMaintenanceMe,
+  refreshMaintenanceAccessToken,
+  type MaintenanceRole,
+  type MaintenanceUser,
+} from "@/shared/lib/http";
 
 type MaintenanceAuthContextValue = {
   user: MaintenanceUser | null;
@@ -35,7 +40,10 @@ export function MaintenanceAuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   const refreshUser = async () => {
-    const token = getMaintenanceToken();
+    let token = getMaintenanceToken();
+    if (!token) {
+      token = await refreshMaintenanceAccessToken();
+    }
     if (!token) {
       setUser(null);
       setIsLoading(false);

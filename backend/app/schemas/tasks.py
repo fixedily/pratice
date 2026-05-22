@@ -1,4 +1,4 @@
-﻿"""Schemas for maintenance task workflow."""
+"""Schemas for maintenance task workflow."""
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator

@@ -1,4 +1,4 @@
-﻿"""Knowledge ingestion and retrieval service."""
+"""Knowledge ingestion and retrieval service."""
 from __future__ import annotations
 
 import base64
@@ -24,6 +24,7 @@ from app.services.knowledge_chunking import split_text_into_chunks
 from app.services.knowledge_device_models import ensure_device_model
 from app.services.knowledge_document_ingest import prepare_chunk_payloads
 from app.services.knowledge_index_sync import refresh_document_indices
+from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.knowledge_query_profile import (
     build_query_bundle,
     infer_query_profile,
@@ -113,9 +114,16 @@ class KnowledgeService:
         chunk_payloads: list[dict[str, str | None]] | None = None,
     ) -> tuple[KnowledgeDocument, int]:
         """Persist a source document and its searchable chunks."""
+        knowledge_base_id = data.knowledge_base_id
+        if knowledge_base_id is None:
+            knowledge_base_id = await KnowledgeBaseService(self.session).resolve_knowledge_base_id(None)
         document = KnowledgeDocument(
+            knowledge_base_id=knowledge_base_id,
             title=data.title,
             source_name=data.source_name,
+            document_type=(data.document_type or "pdf").strip() or "pdf",
+            source_modality=data.source_modality,
+            object_key=data.object_key or data.source_name,
             source_type=data.source_type,
             equipment_type=data.equipment_type,
             equipment_model=data.equipment_model,
@@ -136,6 +144,7 @@ class KnowledgeService:
             [
                 KnowledgeChunk(
                     document_id=document.id,
+                    knowledge_base_id=document.knowledge_base_id,
                     chunk_index=index,
                     heading=chunk_payload["heading"],
                     content=chunk_payload["content"] or "",
@@ -160,7 +169,7 @@ class KnowledgeService:
         try:
             from app.services import cache_service
 
-            cache_service.clear()
+            await cache_service.clear_async()
         except Exception:
             logger.warning("search_cache_clear_failed after create_document", exc_info=True)
         await self.session.refresh(document)
@@ -206,7 +215,7 @@ class KnowledgeService:
                 limit=hydrated_request.limit or 10,
                 graph_relation_types=hydrated_request.graph_relation_types,
             )
-            cached = _cache.get(_cache_key)
+            cached = await _cache.get_async(_cache_key)
             if cached is not None:
                 return cached
 
@@ -411,7 +420,7 @@ class KnowledgeService:
         }
         # ── 写入缓存（仅无图片请求）──────────────────────────────────────────
         if _cache_key is not None:
-            _cache.set(_cache_key, payload)
+            await _cache.set_async(_cache_key, payload)
         return payload
 
     async def _hydrate_attachment_image_request(

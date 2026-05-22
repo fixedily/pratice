@@ -1,4 +1,4 @@
-﻿"""Runtime graph state for agent orchestration."""
+"""Runtime graph state for agent orchestration."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

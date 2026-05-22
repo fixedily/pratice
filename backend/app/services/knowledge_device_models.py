@@ -1,4 +1,4 @@
-﻿"""Helpers for maintaining knowledge-related device model records."""
+"""Helpers for maintaining knowledge-related device model records."""
 from __future__ import annotations
 
 from sqlalchemy import select

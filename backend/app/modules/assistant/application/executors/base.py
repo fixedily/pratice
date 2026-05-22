@@ -1,14 +1,26 @@
-﻿"""Base interfaces for graph stage executors."""
+"""Base interfaces for graph stage executors."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.modules.assistant.application.graph_state import GraphState, StageArtifact
-from app.modules.assistant.application.runtime_types import AgentStageName
+from app.modules.assistant.application.graph_state import StageArtifact
+from app.modules.assistant.application.runtime_types import AgentStageName, ResolvedAgentConfig
+from app.modules.assistant.schemas import AgentAssistRequest
 
-EmitCallback = Callable[[dict[str, Any]], Awaitable[None]]
+EmitCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(slots=True)
+class StageExecutionContext:
+    """Stable input contract for assistant stage executors."""
+
+    request: AgentAssistRequest
+    runtime_state: dict[str, Any]
+    resolved_config: ResolvedAgentConfig
+    emit: EmitCallback | None = None
 
 
 class StageExecutor(ABC):
@@ -19,9 +31,7 @@ class StageExecutor(ABC):
     @abstractmethod
     async def run(
         self,
-        state: GraphState,
-        *,
-        emit: EmitCallback | None = None,
+        context: StageExecutionContext,
     ) -> StageArtifact:
         """Execute a stage and return a normalized artifact."""
 
@@ -35,13 +45,11 @@ class NoopStageExecutor(StageExecutor):
 
     async def run(
         self,
-        state: GraphState,
-        *,
-        emit: EmitCallback | None = None,
+        context: StageExecutionContext,
     ) -> StageArtifact:
         return StageArtifact(
             stage_name=self.stage_name,
             status="completed",
             summary=self.summary,
-            payload={"request_context": dict(state.request_context)},
+            payload={"request_context": dict(context.runtime_state.get("request_context") or {})},
         )

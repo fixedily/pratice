@@ -1,4 +1,4 @@
-﻿# 备份数据库（支持 SQLite / PostgreSQL）
+# 备份数据库（支持 SQLite / PostgreSQL）
 # 用法：
 #   .\scripts\backup-db.ps1
 #   .\scripts\backup-db.ps1 -DatabaseUrl "postgresql+asyncpg://user:pass@127.0.0.1:5432/dbname"

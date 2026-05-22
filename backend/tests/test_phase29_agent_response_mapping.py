@@ -1,4 +1,4 @@
-﻿"""Phase 29: router response mapping for graph payloads."""
+"""Phase 29: router response mapping for graph payloads."""
 from datetime import datetime, timezone
 
 from app.modules.assistant.router import _build_agent_response

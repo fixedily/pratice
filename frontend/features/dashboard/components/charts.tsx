@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useId, useState } from "react";
 import { TrendingUp, TrendingDown } from "lucide-react";

@@ -1,4 +1,4 @@
-﻿# 维修手册 PDF（datasets/pdf）
+# 维修手册 PDF（datasets/pdf）
 
 本目录存放可导入知识库的**检修手册 PDF**，与 `datasets/knowledge/`（文本语料）并列使用。
 公开 GitHub 仓库默认只保留本 README：`*.pdf` 与 `download_manifest.jsonl` 体积较大且需单独确认版权，已在 `.gitignore` 中排除。
@@ -38,11 +38,25 @@ python scripts/download_repair_manual_pdfs.py --count 5 --query "工业机器人
 
 国内访问 DuckDuckGo 或部分 PDF 源可能不稳定，可设置系统代理后再运行：
 
+**Clash 端口 10808 是 SOCKS5**，不要写成 `http://127.0.0.1:10808`：
+
+```powershell
+# PowerShell（推荐直接传参）
+python scripts/download_repair_manual_pdfs.py --proxy 10808 --dry-run --query "维修手册"
+
+# 或设置环境变量
+$env:DDGS_PROXY="socks5://127.0.0.1:10808"
+python scripts/download_repair_manual_pdfs.py --count 2 --query "摩托车发动机 维修手册"
+```
+
+HTTP 代理（如 7890）示例：
+
 ```bash
-set HTTP_PROXY=http://127.0.0.1:7890
-set HTTPS_PROXY=http://127.0.0.1:7890
+set DDGS_PROXY=http://127.0.0.1:7890
 python scripts/download_repair_manual_pdfs.py --count 2 --query "设备 维修手册"
 ```
+
+若出现 `search.yahoo.com ... operation timed out`，请加 `--search-backend duckduckgo,bing,brave` 并增大 `--search-timeout 30`。
 
 ### 切换 Google Custom Search
 
@@ -66,4 +80,4 @@ python scripts/import_knowledge_pdf.py "../datasets/pdf/机器人维修手册.pd
 
 ## 版权与使用范围
 
-脚本仅抓取公开可访问的 PDF 直链，**不绕过**登录墙、验证码或付费墙。各文件版权归属原发布方；用于演示演示、离线评测前请自行确认是否符合许可要求。
+脚本仅抓取公开可访问的 PDF 直链，**不绕过**登录墙、验证码或付费墙。各文件版权归属原发布方；用于竞赛演示、离线评测前请自行确认是否符合许可要求。

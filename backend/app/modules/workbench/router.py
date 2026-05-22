@@ -1,4 +1,4 @@
-﻿"""Workbench overview APIs for the formal Next.js front-end."""
+"""Workbench overview APIs for the formal Next.js front-end."""
 import logging
 
 from fastapi import APIRouter, Depends, status

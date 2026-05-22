@@ -1,10 +1,9 @@
-﻿"use client";
+"use client";
 
 import type { ReactNode, RefObject } from "react";
 import {
   Activity,
   Bot,
-  ClipboardCheck,
   Eye,
   FileText,
   FileUp,
@@ -98,8 +97,6 @@ export type DiagnosisTaskWorkbenchProps = {
   runningTitle: string;
   runningDescription: string;
   onSubmit: () => void;
-  hasResult: boolean;
-  onViewDetail?: () => void;
 };
 
 export function DiagnosisTaskWorkbench({
@@ -135,11 +132,8 @@ export function DiagnosisTaskWorkbench({
   runningTitle,
   runningDescription,
   onSubmit,
-  hasResult,
-  onViewDetail,
 }: DiagnosisTaskWorkbenchProps) {
   const activeStep = workflowStepIndex(diagPhase);
-  const resultReady = hasResult || diagPhase === "result";
 
   return (
     <div id="diagnosis-create" className="space-y-6">
@@ -337,35 +331,14 @@ export function DiagnosisTaskWorkbench({
 
       <section className="app-card p-5 lg:p-6">
         <div className="mb-4">
-          <h2 className="text-base font-semibold text-foreground">诊断结果预览</h2>
+          <h2 className="text-base font-semibold text-foreground">提交后查看诊断进展</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {resultReady
-              ? "诊断任务已创建，可进入详情页查看完整依据与步骤。"
-              : "提交故障信息后，系统将在此展示故障原因、知识依据、处置建议和工单草稿。"}
+            系统会创建诊断任务，并进入任务详情页展示智能体执行、知识依据、诊断结论和工单生成入口。
           </p>
         </div>
         <div className="rounded-xl border border-dashed border-border/80 bg-muted/15 px-6 py-10 text-center">
           <Network className="mx-auto h-10 w-10 text-muted-foreground/50" />
-          <p className="mt-3 text-sm text-muted-foreground">
-            {resultReady ? "本次诊断结果已在任务详情中生成，可继续推进工单与案例沉淀。" : "等待提交诊断任务…"}
-          </p>
-          {resultReady && onViewDetail ? (
-            <Button type="button" variant="outline" size="sm" className="mt-4" onClick={onViewDetail}>
-              查看任务详情
-            </Button>
-          ) : null}
-        </div>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <Button type="button" variant="outline" disabled={!resultReady}>
-            <ClipboardCheck className="h-4 w-4" />
-            生成检修工单
-          </Button>
-          <Button type="button" variant="outline" disabled={!resultReady}>
-            保存诊断记录
-          </Button>
-          <Button type="button" variant="outline" disabled={!resultReady}>
-            导出诊断报告
-          </Button>
+          <p className="mt-3 text-sm text-muted-foreground">提交后将自动进入任务详情页查看进展。</p>
         </div>
       </section>
     </div>
@@ -410,3 +383,4 @@ function FileChip({ name, onRemove }: { name: string; onRemove: () => void }) {
     </span>
   );
 }
+

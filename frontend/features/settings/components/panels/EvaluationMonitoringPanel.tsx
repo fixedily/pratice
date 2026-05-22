@@ -1,4 +1,4 @@
-﻿import { Activity } from "lucide-react";
+import { Activity } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, MetricCard, mutedPanelClass, pageText } from "@/features/settings/components/settings-ui";

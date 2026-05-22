@@ -1,9 +1,10 @@
-﻿# File: app/core/config.py
+# File: app/core/config.py
 """Application configuration management.
 
 统一由 Pydantic Settings 管理环境变量，避免手动读取环境变量与
 BaseSettings 混用造成的解析不一致。
 """
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -75,8 +76,8 @@ class Settings(BaseSettings):
     )
     hf_endpoint: str | None = Field(default=None, alias="HF_ENDPOINT")
 
-    # CORS 配置
-    cors_origins: list[str] = ["*"]
+    # CORS 配置。需要携带 HttpOnly refresh cookie 时，生产环境应配置明确来源而不是 "*"。
+    cors_origins: list[str] = Field(default=["*"], alias="CORS_ORIGINS")
 
     # 检修域：JWT 与附件存储（生产环境务必设置强随机 JWT_SECRET_KEY）
     jwt_secret_key: str = Field(
@@ -84,7 +85,9 @@ class Settings(BaseSettings):
         alias="JWT_SECRET_KEY",
     )
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
-    access_token_expire_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    refresh_token_expire_days: int = Field(default=7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    refresh_token_remember_days: int = Field(default=7, alias="REFRESH_TOKEN_REMEMBER_DAYS")
     maintenance_upload_dir: str = Field(
         default="./data/maintenance_uploads",
         alias="MAINTENANCE_UPLOAD_DIR",
@@ -102,10 +105,21 @@ class Settings(BaseSettings):
     redis_db: int = Field(default=0, alias="REDIS_DB")
     redis_prefix: str = Field(default="dachuang", alias="REDIS_PREFIX")
     redis_socket_timeout: int = Field(default=3, alias="REDIS_SOCKET_TIMEOUT")
-    captcha_ttl_seconds: int = Field(default=60, alias="CAPTCHA_TTL_SECONDS")
+    captcha_ttl_seconds: int = Field(default=180, alias="CAPTCHA_TTL_SECONDS")
     login_fail_max: int = Field(default=5, alias="LOGIN_FAIL_MAX")
-    login_lock_seconds: int = Field(default=60, alias="LOGIN_LOCK_SECONDS")
+    login_lock_seconds: int = Field(default=600, alias="LOGIN_LOCK_SECONDS")
     login_fail_window_seconds: int = Field(default=300, alias="LOGIN_FAIL_WINDOW_SECONDS")
+
+    # 邮箱验证码 Provider；smtp=真实发信，mock=本地/CI 调试
+    email_provider: str = Field(default="smtp", alias="EMAIL_PROVIDER")
+
+    # SMTP 邮箱验证码（SMTP_PASSWORD 使用邮箱服务商授权码，不写入代码）
+    smtp_host: str | None = Field(default=None, alias="SMTP_HOST")
+    smtp_port: int = Field(default=465, alias="SMTP_PORT")
+    smtp_user: str | None = Field(default=None, alias="SMTP_USER")
+    smtp_password: str | None = Field(default=None, alias="SMTP_PASSWORD")
+    smtp_from_name: str = Field(default="FaultDiag 运维管理后台", alias="SMTP_FROM_NAME")
+    smtp_use_ssl: bool = Field(default=True, alias="SMTP_USE_SSL")
 
     # Embedding / 向量检索
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
@@ -154,6 +168,24 @@ class Settings(BaseSettings):
                 return False
 
         return False
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _normalize_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return ["*"]
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    return [raw]
+                if isinstance(parsed, list):
+                    return parsed
+                return [raw]
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
 
     @field_validator("database_url")
     @classmethod

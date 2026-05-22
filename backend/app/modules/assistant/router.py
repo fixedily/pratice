@@ -1,4 +1,4 @@
-﻿"""Agent orchestration APIs for the formal workbench."""
+"""Agent orchestration APIs for the formal workbench."""
 from datetime import datetime, timezone
 import json
 import logging
@@ -77,6 +77,9 @@ def _build_agent_response(payload: dict) -> AgentAssistResponse:
         task_plan_preview=[AgentTaskPreviewStep(**item) for item in payload.get("task_plan_preview", [])],
         risk_findings=payload.get("risk_findings", []),
         case_suggestions=payload.get("case_suggestions", []),
+        perception_payload=payload.get("perception_payload"),
+        review_payload=payload.get("review_payload"),
+        case_draft=payload.get("case_draft"),
         agents=[AgentRunStep(**item) for item in payload.get("agents", [])],
         tool_calls=[AgentToolCall(**item) for item in payload.get("tool_calls", [])],
         resolved_run_plan=[AgentResolvedRunStep(**item) for item in payload.get("resolved_run_plan", [])],
@@ -89,6 +92,7 @@ def _build_agent_response(payload: dict) -> AgentAssistResponse:
         revision_rounds=int(payload.get("revision_rounds") or 0),
         termination_reason=payload.get("termination_reason"),
         final_resolution=payload.get("final_resolution") or {},
+        payload_version=payload.get("payload_version"),
         created_at=payload["created_at"],
     )
 
@@ -102,6 +106,7 @@ def _build_agent_response(payload: dict) -> AgentAssistResponse:
 )
 async def assist_with_agents(
     request: AgentAssistRequest,
+    session: AsyncSession = Depends(get_session),
 ) -> AgentAssistResponse:
     logger.info(
         "agent_assist_request equipment_type=%s equipment_model=%s fault_type=%s query_present=%s image_present=%s",
@@ -112,9 +117,8 @@ async def assist_with_agents(
         bool(request.image_base64),
     )
     try:
-        async with get_session_context() as session:
-            payload = await AgentOrchestrationService(session).assist(request)
-            return _build_agent_response(payload)
+        payload = await AgentOrchestrationService(session).assist(request)
+        return _build_agent_response(payload)
     except ValueError as exc:
         raise AppError(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -1,4 +1,4 @@
-﻿"""Semantic knowledge graph query service."""
+"""Semantic knowledge graph query service."""
 from __future__ import annotations
 
 from collections import defaultdict

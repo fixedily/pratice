@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -202,8 +202,9 @@ export default function SettingsPage() {
   const runHealthCheck = useCallback(async () => {
     try {
       const data = await fetchHealth();
-      const label = `${data.status} / DB ${data.database}`;
-      setHealthState(updateCheckState(label, normalizeHealthTone(label), "系统健康与数据库连接"));
+      const redisLabel = data.redis ? ` / Redis ${data.redis.status}` : "";
+      const label = `${data.status} / DB ${data.database}${redisLabel}`;
+      setHealthState(updateCheckState(label, normalizeHealthTone(label), "系统、数据库与 Redis 连接"));
     } catch (error) {
       const message = error instanceof Error ? error.message : "检查失败";
       setHealthState(updateCheckState(`失败：${message}`, "danger", "系统健康检查"));
@@ -341,7 +342,7 @@ export default function SettingsPage() {
                 <div className={cn("text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-300")}>FaultDiag Settings</div>
                 <h1 className={cn("mt-2 text-2xl font-semibold", pageText.title)}>平台治理与运维中心</h1>
                 <p className={cn("mt-2 max-w-3xl text-sm leading-6", pageText.tertiary)}>
-                  面向公开演示多模态检修能力，面向企业落地管理模型、知识、检索、智能体、流程、权限、接口、监控和审计。
+                  面向比赛展示多模态检修能力，面向企业落地管理模型、知识、检索、智能体、流程、权限、接口、监控和审计。
                 </p>
               </div>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-300">

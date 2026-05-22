@@ -1,3 +1,3 @@
-﻿import KnowledgeDetailPage from "@/features/knowledge/screens/knowledge-detail-page";
+import KnowledgeDetailPage from "@/features/knowledge/screens/knowledge-detail-page";
 
 export default KnowledgeDetailPage;

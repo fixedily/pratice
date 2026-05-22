@@ -1,4 +1,4 @@
-﻿"""Structured contracts shared by stage executors."""
+"""Structured contracts shared by stage executors."""
 from __future__ import annotations
 
 from typing import Any

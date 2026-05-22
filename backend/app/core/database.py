@@ -1,4 +1,4 @@
-﻿# File: app/core/database.py
+# File: app/core/database.py
 """Asynchronous SQLAlchemy 2.0 database engine and session factory.
 
 Design decisions:

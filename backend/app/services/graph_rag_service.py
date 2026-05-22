@@ -1,4 +1,4 @@
-﻿"""Graph RAG — relation-graph expansion for knowledge retrieval.
+"""Graph RAG — relation-graph expansion for knowledge retrieval.
 
 Given a set of seed chunk IDs (from the primary vector/BM25 search), this
 service walks the ``knowledge_relations`` table to find related documents /

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Header } from "@/shared/components/brand/app-header";
 import { DiagnosisHistoryPanel } from "@/features/tasks/components/diagnosis-history-panel";

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 为 TC-KB-003 / 演示在「同一数据库」中插入一条可检索的 knowledge_chunks 语料，
 使设备类型 pump_test + 型号 M1 的检索能命中（与检修域设备 AST-TC-1 对齐）。
@@ -55,7 +55,7 @@ def main() -> int:
             fault_type=None,
             section_reference=None,
             page_reference=None,
-            content="本段用于演示演示：泄漏处理、密封更换与压力恢复检查要点。",
+            content="本段用于答辩演示：泄漏处理、密封更换与压力恢复检查要点。",
             status="published",
             created_at=now,
             updated_at=now,

@@ -1,9 +1,9 @@
-﻿import type { MaintenanceRole, MaintenanceUser } from "@/shared/lib/http";
+import type { MaintenanceRole, MaintenanceUser } from "@/shared/lib/http";
 
 const WORK_ORDER_ROLES: MaintenanceRole[] = ["worker", "expert", "admin"];
 const ACCEPTANCE_ROLES: MaintenanceRole[] = ["expert", "admin"];
 const ADMIN_ROLES: MaintenanceRole[] = ["admin"];
-const KNOWLEDGE_REVIEW_ROLES: MaintenanceRole[] = ["expert"];
+const KNOWLEDGE_REVIEW_ROLES: MaintenanceRole[] = ["expert", "admin"];
 const ASSIGNMENT_ROLES: MaintenanceRole[] = ["admin", "expert"];
 
 export function hasRole(user: MaintenanceUser | null | undefined, role: MaintenanceRole) {

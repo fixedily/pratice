@@ -1,4 +1,4 @@
-﻿"""add_knowledge_chunk_anchor_fields
+"""add_knowledge_chunk_anchor_fields
 
 Revision ID: d2f6e4c1b8a9
 Revises: c9e4f7a1b2d3

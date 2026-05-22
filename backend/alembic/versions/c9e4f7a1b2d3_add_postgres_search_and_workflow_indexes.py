@@ -1,4 +1,4 @@
-﻿"""add_postgres_search_and_workflow_indexes
+"""add_postgres_search_and_workflow_indexes
 
 Revision ID: c9e4f7a1b2d3
 Revises: b4d8e1f2a3c4

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import type { ReasoningEvidenceBadge } from "@/features/tasks/components/reasoning-subgraph-view-model";
 

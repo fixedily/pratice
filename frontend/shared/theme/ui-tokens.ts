@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Landing 页面统一布局与排版 token
  */
 export const ui = {

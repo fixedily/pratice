@@ -1,4 +1,4 @@
-﻿"""Phase 24: 层级化知识锚点与可定位检索测试."""
+"""Phase 24: 层级化知识锚点与可定位检索测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,10 +8,35 @@ from sqlalchemy import select
 
 from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument
 from app.schemas.knowledge import KnowledgeSearchRequest
-from app.services.knowledge_chunking import build_anchored_chunk_payloads
+from app.services.knowledge_chunking import (
+    CHUNK_FIELD_LIMITS,
+    build_anchored_chunk_payloads,
+    clamp_chunk_payload,
+)
 from app.services.knowledge_query_profile import infer_query_profile
 from app.services.knowledge_rerank import rerank_results
 from app.services.knowledge_service import KnowledgeService
+
+
+def test_clamp_chunk_payload_truncates_long_index_like_section_reference():
+    """目录/索引行误识别为章节时，锚点字段应在入库前被截断。"""
+    long_index_line = (
+        "139 转速表, 17 转向锁, 34 转向信号灯 操作, 36 操作元件, 15 装备, "
+        "4 自动巡航控制系统 操作, 49 自适应弯道照明灯, 87 技术细节"
+    )
+    clamped = clamp_chunk_payload(
+        {
+            "heading": long_index_line,
+            "content": "正文内容",
+            "section_reference": long_index_line,
+            "section_path": long_index_line,
+            "step_anchor": long_index_line,
+            "page_reference": "P174",
+        }
+    )
+    assert len(clamped["section_reference"] or "") <= CHUNK_FIELD_LIMITS["section_reference"]
+    assert len(clamped["section_path"] or "") <= CHUNK_FIELD_LIMITS["section_path"]
+    assert len(clamped["heading"] or "") <= CHUNK_FIELD_LIMITS["heading"]
 
 
 def test_build_anchored_chunk_payloads_extracts_section_path_and_step_anchor():

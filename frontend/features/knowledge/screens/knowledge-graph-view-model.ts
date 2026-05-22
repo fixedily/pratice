@@ -1,4 +1,4 @@
-﻿type GraphStatsLike =
+type GraphStatsLike =
   | {
       total_nodes: number
       total_edges: number

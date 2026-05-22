@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
@@ -16,8 +16,8 @@ import { toast } from "sonner"
 
 import { useMaintenanceAuth } from "@/features/auth/maintenance-auth"
 import { canAccessKnowledgeReview } from "@/features/auth/permissions"
-import { clearMaintenanceToken, MAINTENANCE_AUTH_EXPIRED_EVENT } from "@/features/auth/lib/token-store"
-import { fetchHealth, fetchMaintenanceHealth, getApiBase } from "@/features/dashboard/api"
+import { MAINTENANCE_AUTH_EXPIRED_EVENT } from "@/features/auth/lib/token-store"
+import { fetchHealth, fetchMaintenanceHealth, getApiBase, maintenanceLogout } from "@/features/dashboard/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@/shared/components/ui/avatar"
 import { Button } from "@/shared/components/ui/button"
 import {
@@ -102,15 +102,15 @@ export function Header() {
   }, [sidebarCollapsed])
 
   useEffect(() => {
-    const handleExpired = () => {}
+    const handleExpired = () => { }
     window.addEventListener(MAINTENANCE_AUTH_EXPIRED_EVENT, handleExpired as EventListener)
     return () => {
       window.removeEventListener(MAINTENANCE_AUTH_EXPIRED_EVENT, handleExpired as EventListener)
     }
   }, [])
 
-  const handleLogout = () => {
-    clearMaintenanceToken()
+  const handleLogout = async () => {
+    await maintenanceLogout()
     toast.success("已退出登录")
     router.push(ROUTES.login)
     router.refresh()
@@ -134,7 +134,7 @@ export function Header() {
           sidebarCollapsed ? "w-[4.5rem]" : "w-[15rem]",
         )}
       >
-        <SidebarBrand collapsed={sidebarCollapsed} />
+        <SidebarHeader collapsed={sidebarCollapsed} />
         <nav className="fd-sidebar-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-3">
           {navigation.map((item) => (
             <SidebarNavItem
@@ -149,23 +149,10 @@ export function Header() {
             />
           ))}
         </nav>
-        <div className="shrink-0 border-t border-border/80 p-3">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                className={cn("w-full justify-start gap-2", sidebarCollapsed && "justify-center px-0")}
-                onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-                aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
-              >
-                {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-                <span className={cn("text-sm", sidebarCollapsed && "sr-only")}>{sidebarCollapsed ? "展开" : "折叠"}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">{sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}</TooltipContent>
-          </Tooltip>
-        </div>
+        <SidebarFooter
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
+        />
       </aside>
 
       <header className="fixed left-0 right-0 top-0 z-30 border-b border-border/70 bg-background/92 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85 md:left-[var(--fd-sidebar-offset)]">
@@ -230,13 +217,88 @@ export function Header() {
   )
 }
 
-function SidebarBrand({ collapsed, mobile = false }: { collapsed: boolean; mobile?: boolean }) {
+function SidebarCollapseButton({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean
+  onToggleCollapsed: () => void
+}) {
+  const label = collapsed ? "展开侧边栏" : "折叠侧边栏"
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 rounded-md bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={onToggleCollapsed}
+          aria-label={label}
+          title={label}
+        >
+          {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function SidebarHeader({ collapsed }: { collapsed: boolean }) {
+  return (
+    <div className="shrink-0 border-b border-border/80">
+      <div
+        className={cn(
+          "flex min-h-16 items-center",
+          collapsed ? "justify-center px-2 py-3" : "px-3 py-3",
+        )}
+      >
+        <SidebarBrand collapsed={collapsed} className={cn("min-w-0", collapsed ? "flex-none" : "flex-1")} />
+      </div>
+    </div>
+  )
+}
+
+function SidebarFooter({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean
+  onToggleCollapsed: () => void
+}) {
+  return (
+    <div className="shrink-0 border-t border-border/80">
+      <div
+        className={cn(
+          "flex items-center px-3 py-3",
+          collapsed ? "justify-center" : "justify-end",
+        )}
+      >
+        <SidebarCollapseButton collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} />
+      </div>
+    </div>
+  )
+}
+
+function SidebarBrand({
+  collapsed,
+  mobile = false,
+  className,
+}: {
+  collapsed: boolean
+  mobile?: boolean
+  className?: string
+}) {
   return (
     <Link
       href={ROUTES.marketingHome}
       className={cn(
-        "flex h-16 items-center gap-3 border-b border-border/80 px-4 transition-colors hover:bg-accent/40",
+        "flex items-center gap-3 rounded-lg transition-colors hover:bg-accent/40",
+        mobile ? "h-16 border-b border-border/80 px-4" : "min-h-0 px-1 py-1",
         collapsed && !mobile && "justify-center px-0",
+        className,
       )}
       title="返回产品官网"
     >

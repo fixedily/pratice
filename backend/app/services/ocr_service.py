@@ -1,4 +1,4 @@
-﻿"""OCR helpers for scanned manuals and image-based knowledge uploads."""
+"""OCR helpers for scanned manuals and image-based knowledge uploads."""
 from __future__ import annotations
 
 import base64

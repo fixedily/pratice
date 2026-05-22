@@ -1,3 +1,3 @@
-﻿import CaseDetailPage from "@/features/cases/screens/case-detail-page";
+import CaseDetailPage from "@/features/cases/screens/case-detail-page";
 
 export default CaseDetailPage;

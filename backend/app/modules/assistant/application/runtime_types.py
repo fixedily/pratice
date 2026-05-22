@@ -1,4 +1,4 @@
-﻿"""Typed runtime configuration models for the assistant pipeline."""
+"""Typed runtime configuration models for the assistant pipeline."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

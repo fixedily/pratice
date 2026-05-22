@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -41,7 +41,7 @@ const navItems: NavItem[] = [
       {
         label: "业务价值",
         href: "#value",
-        description: "围绕场景主线构建三项核心能力",
+        description: "围绕赛题主线构建三项核心能力",
       },
     ],
   },
@@ -352,3 +352,4 @@ export function Navbar() {
     document.body,
   );
 }
+

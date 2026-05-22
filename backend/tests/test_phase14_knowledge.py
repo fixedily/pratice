@@ -1,4 +1,4 @@
-﻿"""Phase 14: 知识库与知识检索主体测试."""
+"""Phase 14: 知识库与知识检索主体测试."""
 import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -586,7 +586,16 @@ async def test_graph_expand_supports_knowledge_document_relations():
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as session:
+            from app.models.knowledge import KnowledgeBase
+
+            knowledge_base = KnowledgeBase(
+                name="测试知识库",
+                slug="test-knowledge-base-phase14",
+            )
+            session.add(knowledge_base)
+            await session.flush()
             primary_document = KnowledgeDocument(
+                knowledge_base_id=knowledge_base.id,
                 title="启动困难诊断",
                 source_name="primary.pdf",
                 source_type="manual",
@@ -597,6 +606,7 @@ async def test_graph_expand_supports_knowledge_document_relations():
                 status="published",
             )
             related_document = KnowledgeDocument(
+                knowledge_base_id=knowledge_base.id,
                 title="相关故障案例",
                 source_name="related.pdf",
                 source_type="case",
@@ -611,6 +621,7 @@ async def test_graph_expand_supports_knowledge_document_relations():
 
             seed_chunk = KnowledgeChunk(
                 document_id=primary_document.id,
+                knowledge_base_id=knowledge_base.id,
                 chunk_index=1,
                 content="发动机启动困难时先检查火花塞。",
                 equipment_type=primary_document.equipment_type,
@@ -619,6 +630,7 @@ async def test_graph_expand_supports_knowledge_document_relations():
             )
             related_chunk = KnowledgeChunk(
                 document_id=related_document.id,
+                knowledge_base_id=knowledge_base.id,
                 chunk_index=1,
                 content="同型号设备还应排查怠速阀与供油系统。",
                 equipment_type=related_document.equipment_type,
@@ -766,9 +778,10 @@ async def test_create_document_clears_search_cache():
     ), patch(
         "app.modules.knowledge.application.search_service.KnowledgeService._create_semantic_extraction_candidates",
         new=AsyncMock(),
-    ), patch("app.services.cache_service.clear") as mocked_cache_clear:
+    ), patch("app.services.cache_service.clear_async") as mocked_cache_clear:
         document, chunk_count = await service.create_document(
             data=KnowledgeDocumentCreate(
+                knowledge_base_id=1,
                 title="维修手册",
                 source_name="manual.pdf",
                 source_type="manual",

@@ -1,4 +1,4 @@
-﻿"""update motorcycle template with approval step
+"""update motorcycle template with approval step
 
 Revision ID: bb23cc45dd67
 Revises: aa12bb34cc56

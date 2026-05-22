@@ -1,4 +1,4 @@
-﻿"""Attachment storage and download authorization for maintenance."""
+"""Attachment storage and download authorization for maintenance."""
 from __future__ import annotations
 
 import hashlib

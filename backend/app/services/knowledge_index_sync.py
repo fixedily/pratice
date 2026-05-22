@@ -1,4 +1,4 @@
-﻿"""Shared helpers for keeping vector and BM25 indices in sync with knowledge docs."""
+"""Shared helpers for keeping vector and BM25 indices in sync with knowledge docs."""
 from __future__ import annotations
 
 import logging

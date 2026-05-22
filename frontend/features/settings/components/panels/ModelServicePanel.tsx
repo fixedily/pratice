@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrainCircuit, FlaskConical, RefreshCw, RotateCcw, Save } from "lucide-react";

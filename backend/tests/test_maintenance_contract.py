@@ -1,4 +1,4 @@
-﻿"""检修域 `/api/v1/maintenance` 契约与验收文档 P0 扩展矩阵（TC-*）。"""
+"""检修域 `/api/v1/maintenance` 契约与验收文档 P0 扩展矩阵（TC-*）。"""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +18,7 @@ from sqlalchemy import text
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.main import app
+from app.modules.maintenance.auth_cookies import REFRESH_COOKIE_NAME
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "/api/v1/maintenance"
@@ -213,6 +214,18 @@ async def _fetch_captcha(client: AsyncClient) -> tuple[str, str]:
     return captcha_id, code
 
 
+async def _fetch_auth_alias_captcha(client: AsyncClient) -> tuple[str, str]:
+    r = await client.get("/api/auth/captcha")
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    from app.modules.maintenance.application.captcha_service import peek_code_for_tests
+
+    captcha_id = data["captchaId"]
+    code = await peek_code_for_tests(captcha_id)
+    assert code, "测试环境应能读取验证码明文"
+    return captcha_id, code
+
+
 async def _login(client: AsyncClient, username: str, *, password: str = "testpass") -> str:
     captcha_id, captcha_code = await _fetch_captcha(client)
     r = await client.post(
@@ -226,6 +239,26 @@ async def _login(client: AsyncClient, username: str, *, password: str = "testpas
     )
     assert r.status_code == 200, r.text
     return r.json()["data"]["access_token"]
+
+
+async def _login_response(
+    client: AsyncClient,
+    username: str,
+    *,
+    remember_me: bool = False,
+    prefix: str = PREFIX,
+):
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    return await client.post(
+        f"{prefix}/auth/login",
+        json={
+            "username": username,
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+            "remember_me": remember_me,
+        },
+    )
 
 
 def _mock_search_payload(results: list | None = None):
@@ -320,7 +353,11 @@ async def test_tc_auth_001b_register_ok(client: AsyncClient):
         f"{PREFIX}/auth/register",
         json={
             "username": username,
-            "password": "testpass",
+            "real_name": "注册用户",
+            "department": "检修部",
+            "requested_role": "maintainer",
+            "password": "testpass1",
+            "confirm_password": "testpass1",
             "display_name": "注册用户",
             "captchaId": captcha_id,
             "captchaCode": captcha_code,
@@ -329,34 +366,33 @@ async def test_tc_auth_001b_register_ok(client: AsyncClient):
     assert register_resp.status_code == 200
     register_body = register_resp.json()
     assert register_body["success"] is True
-    assert register_body["message"] == "注册成功"
+    assert register_body["message"] == "注册申请已提交，请等待管理员审核。"
     assert register_body["data"]["username"] == username
-    assert register_body["data"]["roles"] == ["worker"]
+    assert register_body["data"]["status"] == "pending"
+    assert register_body["data"]["roles"] == ["maintainer"]
 
     captcha_id, captcha_code = await _fetch_captcha(client)
     login_resp = await client.post(
         f"{PREFIX}/auth/login",
         json={
             "username": username,
-            "password": "testpass",
+            "password": "testpass1",
             "captchaId": captcha_id,
             "captchaCode": captcha_code,
         },
     )
-    assert login_resp.status_code == 200
-    assert login_resp.json()["data"]["access_token"]
+    assert login_resp.status_code == 403
+    assert login_resp.json()["business_code"] == "ACCOUNT_PENDING"
 
 
 @pytest.mark.asyncio
-async def test_tc_auth_001c_forgot_password_ok(client: AsyncClient):
+async def test_tc_auth_001c_password_reset_request_ok(client: AsyncClient):
     username = "tc_worker"
     captcha_id, captcha_code = await _fetch_captcha(client)
     reset_resp = await client.post(
-        f"{PREFIX}/auth/forgot-password",
+        f"{PREFIX}/auth/password-reset/request",
         json={
-            "username": username,
-            "new_password": "newpass123",
-            "confirm_password": "newpass123",
+            "account": username,
             "captchaId": captcha_id,
             "captchaCode": captcha_code,
         },
@@ -364,33 +400,8 @@ async def test_tc_auth_001c_forgot_password_ok(client: AsyncClient):
     assert reset_resp.status_code == 200
     reset_body = reset_resp.json()
     assert reset_body["success"] is True
-    assert reset_body["message"] == "密码已重置"
-    assert reset_body["data"]["username"] == username
-
-    old_captcha_id, old_captcha_code = await _fetch_captcha(client)
-    old_login_resp = await client.post(
-        f"{PREFIX}/auth/login",
-        json={
-            "username": username,
-            "password": "testpass",
-            "captchaId": old_captcha_id,
-            "captchaCode": old_captcha_code,
-        },
-    )
-    assert old_login_resp.status_code == 401
-
-    new_captcha_id, new_captcha_code = await _fetch_captcha(client)
-    new_login_resp = await client.post(
-        f"{PREFIX}/auth/login",
-        json={
-            "username": username,
-            "password": "newpass123",
-            "captchaId": new_captcha_id,
-            "captchaCode": new_captcha_code,
-        },
-    )
-    assert new_login_resp.status_code == 200
-    assert new_login_resp.json()["data"]["access_token"]
+    assert reset_body["message"] == "该账号未绑定邮箱，请联系系统管理员重置密码。"
+    assert reset_body["data"]["need_admin_reset"] is True
 
 
 @pytest.mark.asyncio
@@ -1142,6 +1153,88 @@ async def test_p1_retrieval_stream_and_asr_placeholder(client: AsyncClient):
 async def test_tc_auth_logout_204(client: AsyncClient):
     r = await client.post(f"{PREFIX}/auth/logout")
     assert r.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_auth_login_sets_session_refresh_cookie_without_exposing_token(client: AsyncClient):
+    r = await _login_response(client, "tc_worker", remember_me=False)
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "refresh_token" not in data
+    assert REFRESH_COOKIE_NAME in r.cookies
+    assert REFRESH_COOKIE_NAME in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Max-Age" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_auth_login_remember_me_sets_seven_day_refresh_cookie(client: AsyncClient):
+    r = await _login_response(client, "tc_worker", remember_me=True)
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "refresh_token" not in data
+    assert data["refresh_expires_in"] == 7 * 24 * 60 * 60
+    assert f"{REFRESH_COOKIE_NAME}=" in set_cookie
+    assert "Max-Age=604800" in set_cookie
+    assert "HttpOnly" in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_auth_refresh_uses_cookie_and_rotates_without_json_refresh_token(client: AsyncClient):
+    login = await _login_response(client, "tc_worker", remember_me=True)
+    assert login.status_code == 200, login.text
+
+    refreshed = await client.post(f"{PREFIX}/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    data = refreshed.json()["data"]
+    assert data["access_token"]
+    assert "refresh_token" not in data
+    assert "Max-Age=604800" in refreshed.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+async def test_auth_alias_login_and_refresh_use_http_only_cookie(client: AsyncClient):
+    captcha_id, captcha_code = await _fetch_auth_alias_captcha(client)
+    login = await client.post(
+        "/api/auth/login",
+        json={
+            "account": "tc_worker",
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+            "remember_me": True,
+        },
+    )
+    assert login.status_code == 200, login.text
+    assert "refresh_token" not in login.json()["data"]
+    assert REFRESH_COOKIE_NAME in login.cookies
+
+    refreshed = await client.post("/api/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["data"]["access_token"]
+    assert "refresh_token" not in refreshed.json()["data"]
+
+
+@pytest.mark.asyncio
+async def test_auth_refresh_without_cookie_or_body_is_rejected(client: AsyncClient):
+    client.cookies.clear()
+    r = await client.post(f"{PREFIX}/auth/refresh")
+    assert r.status_code == 401
+    assert r.json()["business_code"] == "INVALID_REFRESH_TOKEN"
+
+
+@pytest.mark.asyncio
+async def test_auth_logout_clears_refresh_cookie(client: AsyncClient):
+    login = await _login_response(client, "tc_worker", remember_me=True)
+    assert login.status_code == 200, login.text
+
+    r = await client.post(f"{PREFIX}/auth/logout")
+    assert r.status_code == 204
+    set_cookie = r.headers.get("set-cookie", "")
+    assert f"{REFRESH_COOKIE_NAME}=" in set_cookie
+    assert "Max-Age=0" in set_cookie
 
 
 @pytest.mark.asyncio

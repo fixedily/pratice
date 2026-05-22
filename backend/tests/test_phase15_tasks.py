@@ -1,4 +1,4 @@
-﻿"""Phase 15: 标准化检修任务与作业闭环测试."""
+"""Phase 15: 标准化检修任务与作业闭环测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch

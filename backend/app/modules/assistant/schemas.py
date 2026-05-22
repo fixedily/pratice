@@ -1,4 +1,4 @@
-﻿"""Assistant schema compatibility exports."""
+"""Assistant schema compatibility exports."""
 from app.schemas.agents import (
     AgentAssistRequest,
     AgentAssistResponse,

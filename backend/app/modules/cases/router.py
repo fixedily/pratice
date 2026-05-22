@@ -1,4 +1,4 @@
-﻿"""Maintenance case upload, review and correction APIs for TODO-SB-5."""
+"""Maintenance case upload, review and correction APIs for TODO-SB-5."""
 import logging
 from typing import Annotated
 

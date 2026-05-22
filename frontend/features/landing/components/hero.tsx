@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Play } from "lucide-react";
@@ -574,3 +574,4 @@ export function Hero() {
     </section>
   );
 }
+

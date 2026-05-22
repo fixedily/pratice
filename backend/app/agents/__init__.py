@@ -1,4 +1,4 @@
-﻿# File: app/agents/__init__.py
+# File: app/agents/__init__.py
 """AI Agent 模块（LangChain 智能体集成）"""
 from __future__ import annotations
 

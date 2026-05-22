@@ -1,4 +1,4 @@
-﻿"""Schemas for agent orchestration APIs."""
+"""Schemas for agent orchestration APIs."""
 from datetime import datetime
 from typing import Any
 
@@ -219,6 +219,7 @@ class AgentResolvedRunStep(BaseModel):
     reason: str
     forced: bool = False
     skip_reason: str | None = None
+    fallback_agent: str | None = None
 
 
 class AgentDegradationTraceItem(BaseModel):
@@ -238,6 +239,10 @@ class AgentRuntimeStatusItem(BaseModel):
     summary: str
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    attempt_count: int | None = None
+    timeout_ms: int | None = None
+    fallback_agent: str | None = None
+    last_error: str | None = None
 
 
 class AgentGraphTraceEvent(BaseModel):
@@ -306,6 +311,9 @@ class AgentAssistResponse(BaseModel):
     task_plan_preview: list[AgentTaskPreviewStep] = Field(default_factory=list)
     risk_findings: list[str] = Field(default_factory=list)
     case_suggestions: list[str] = Field(default_factory=list)
+    perception_payload: dict[str, Any] | None = None
+    review_payload: dict[str, Any] | None = None
+    case_draft: dict[str, Any] | None = None
     agents: list[AgentRunStep] = Field(default_factory=list)
     tool_calls: list[AgentToolCall] = Field(default_factory=list)
     resolved_run_plan: list[AgentResolvedRunStep] = Field(default_factory=list)
@@ -318,4 +326,5 @@ class AgentAssistResponse(BaseModel):
     revision_rounds: int = 0
     termination_reason: str | None = None
     final_resolution: dict[str, Any] = Field(default_factory=dict)
+    payload_version: int | None = None
     created_at: datetime

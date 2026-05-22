@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { AlertCircle, Wrench, CheckCircle, Settings, Activity } from "lucide-react"
 import { cn } from "@/shared/lib/utils"
@@ -142,3 +142,4 @@ export function Timeline({ events, loading = false, emptyState = false }: Timeli
     </div>
   )
 }
+

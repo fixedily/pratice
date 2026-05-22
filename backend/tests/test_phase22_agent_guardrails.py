@@ -1,4 +1,4 @@
-﻿"""Phase 22: Agent tool registry and safety guardrails."""
+"""Phase 22: Agent tool registry and safety guardrails."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

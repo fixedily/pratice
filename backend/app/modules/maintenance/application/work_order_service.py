@@ -1,4 +1,4 @@
-﻿"""Work-order core operations for maintenance."""
+"""Work-order core operations for maintenance."""
 from __future__ import annotations
 
 import asyncio

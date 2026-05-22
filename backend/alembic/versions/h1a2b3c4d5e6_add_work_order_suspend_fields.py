@@ -1,4 +1,4 @@
-﻿"""add work order suspend fields
+"""add work order suspend fields
 
 Revision ID: h1a2b3c4d5e6
 Revises: gd1e2f3a4b5c

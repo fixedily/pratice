@@ -1,3 +1,3 @@
-﻿import LandingPage from "@/features/landing/screens/landing-page";
+import LandingPage from "@/features/landing/screens/landing-page";
 
 export default LandingPage;

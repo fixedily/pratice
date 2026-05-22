@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 
@@ -11,6 +11,9 @@ const roleLabelMap: Record<MaintenanceRole, string> = {
   expert: "专家",
   safety: "审批员",
   admin: "管理员",
+  inspector: "巡检员",
+  maintainer: "检修员",
+  engineer: "设备工程师",
 };
 
 export function PermissionPlaceholderPage({

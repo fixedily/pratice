@@ -1,4 +1,4 @@
-﻿export function generateMockAssetCode(prefix = "MOCK"): string {
+export function generateMockAssetCode(prefix = "MOCK"): string {
   const now = new Date();
   const datePart = [
     now.getFullYear(),

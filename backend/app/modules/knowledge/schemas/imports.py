@@ -1,4 +1,4 @@
-﻿"""Knowledge import schema compatibility exports."""
+"""Knowledge import schema compatibility exports."""
 from app.schemas.knowledge_imports import (
     KnowledgeChunkPreview,
     KnowledgeChunkPreviewResponse,

@@ -1,4 +1,4 @@
-﻿# File: app/agents/diagnosis_agent.py
+# File: app/agents/diagnosis_agent.py
 """诊断专家智能体模块
 
 本模块实现了一个基于 LangGraph 的工业设备故障诊断专家智能体。

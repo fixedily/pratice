@@ -1,11 +1,17 @@
-﻿"""Knowledge base request and response schemas."""
+"""Knowledge base request and response schemas."""
+from datetime import datetime
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class KnowledgeDocumentCreate(BaseModel):
     """Create a knowledge document and automatically split it into chunks."""
 
+    knowledge_base_id: int | None = Field(default=None, ge=1, description="所属知识库 ID；为空时使用默认知识库")
     title: str = Field(..., min_length=1, description="知识文档标题")
+    document_type: str = Field(default="pdf", description="文档类型：pdf/image/text/json 等")
+    source_modality: str | None = Field(default=None, description="来源模态：text/image/ocr 等")
+    object_key: str | None = Field(default=None, description="原始文件路径或对象键")
     source_name: str = Field(..., min_length=1, description="原始来源文件名或资源名")
     source_type: str = Field(default="manual", description="知识来源类型，例如 manual/case/procedure")
     equipment_type: str = Field(..., min_length=1, description="设备类型")
@@ -16,10 +22,67 @@ class KnowledgeDocumentCreate(BaseModel):
     content: str = Field(..., min_length=20, description="原始知识文本内容")
 
 
+class KnowledgeBaseCreate(BaseModel):
+    """Create a knowledge base."""
+
+    name: str = Field(..., min_length=1, max_length=255, description="知识库名称")
+    description: str | None = Field(default=None, description="知识库描述")
+    type: str = Field(default="comprehensive", description="知识库类型")
+    visibility: str = Field(default="internal", description="可见范围")
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    """Update a knowledge base."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    type: str | None = None
+    visibility: str | None = None
+
+
+class KnowledgeBaseResponse(BaseModel):
+    """Knowledge base summary."""
+
+    id: int
+    name: str
+    slug: str
+    description: str | None = None
+    type: str = "comprehensive"
+    visibility: str = "internal"
+    owner_id: int | None = None
+    document_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class KnowledgeBaseListResponse(BaseModel):
+    """Knowledge base list."""
+
+    total: int
+    bases: list[KnowledgeBaseResponse]
+
+
+class KnowledgeCategoryStat(BaseModel):
+    """Category count within one knowledge base."""
+
+    id: str
+    name: str
+    count: int
+
+
+class KnowledgeCategoryListResponse(BaseModel):
+    """Category statistics for one knowledge base."""
+
+    knowledge_base_id: int
+    total: int
+    categories: list[KnowledgeCategoryStat]
+
+
 class KnowledgeDocumentResponse(BaseModel):
     """Document import response."""
 
     id: int
+    knowledge_base_id: int
     title: str
     source_name: str
     source_type: str

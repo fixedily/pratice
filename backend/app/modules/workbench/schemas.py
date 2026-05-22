@@ -1,4 +1,4 @@
-﻿"""Workbench schema compatibility exports."""
+"""Workbench schema compatibility exports."""
 from app.schemas.workbench import (
     WorkbenchCaseSummary,
     WorkbenchMetricHighlight,

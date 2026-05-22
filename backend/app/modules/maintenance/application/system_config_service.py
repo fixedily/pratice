@@ -1,4 +1,4 @@
-﻿"""System configuration and health operations for maintenance."""
+"""System configuration and health operations for maintenance."""
 from __future__ import annotations
 
 import asyncio
@@ -96,6 +96,7 @@ DEFAULT_SYSTEM_CONFIGS: dict[str, dict[str, Any]] = {
 AGENT_STAGE_NAMES = ("perception", "diagnosis", "planning", "review", "knowledge")
 AGENT_TRIGGER_RULE_NAMES = ("procedural_query", "maintenance_task_present", "high_risk_followup")
 AGENT_TRIGGER_RULES = set(AGENT_TRIGGER_RULE_NAMES)
+AGENT_KNOWLEDGE_WRITEBACK_MODES = {"suggest_only", "case_draft"}
 
 AGENT_SYSTEM_CONFIGS: dict[str, dict[str, Any]] = {
     "agent.pipeline.mode": {
@@ -388,6 +389,12 @@ class MaintenanceSystemConfigService:
                 min_value=minimum,
                 max_value=maximum,
                 integer_only=key.endswith("timeout_ms") or key.endswith("max_retries"),
+            )
+        elif key == "agent.pipeline.knowledge_writeback" and next_value not in AGENT_KNOWLEDGE_WRITEBACK_MODES:
+            raise MaintenanceAPIError(
+                400,
+                "VALIDATION_ERROR",
+                "agent.pipeline.knowledge_writeback 仅支持 suggest_only / case_draft",
             )
         previous_value = config.value
         config.value = next_value
@@ -821,9 +828,15 @@ class MaintenanceSystemConfigService:
             db_status = "ok"
         except Exception:
             db_status = "error"
+        from app.core.redis import get_redis_service
+
+        redis = get_redis_service()
+        if redis.enabled:
+            await redis.ping()
         return {
             "app": "ok",
             "database": db_status,
+            "redis": redis.status_snapshot(),
             "vector": "skipped",
             "llm": "config_only",
         }

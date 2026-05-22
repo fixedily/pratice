@@ -1,4 +1,4 @@
-﻿import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 const taskId = 701;
 const semanticTaskId = 702;

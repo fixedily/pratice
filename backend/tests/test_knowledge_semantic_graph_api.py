@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
@@ -13,7 +13,11 @@ from app.models import knowledge as _knowledge_models  # noqa: F401
 from app.models import maintenance_domain as _maintenance_models  # noqa: F401
 from app.models.base import Base
 from app.models.knowledge import KnowledgeChunk, KnowledgeDocument
+from app.models.maintenance_domain import AuthUser, Role, UserRole
+from app.core.config import get_settings
+from app.modules.knowledge.deps import CurrentUserCtx, require_user_ctx
 from app.modules.knowledge.application.search_service import _semantic_entity_similarity_score
+from app.modules.maintenance.security import create_access_token
 
 
 @pytest.fixture
@@ -32,7 +36,16 @@ async def semantic_graph_client() -> AsyncIterator[AsyncClient]:
         async with session_factory() as session:
             yield session
 
+    async def _override_user_ctx():
+        return CurrentUserCtx(
+            user_id=1,
+            username="semantic_expert",
+            roles=["expert"],
+            display_name="语义图谱专家",
+        )
+
     app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[require_user_ctx] = _override_user_ctx
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -40,7 +53,134 @@ async def semantic_graph_client() -> AsyncIterator[AsyncClient]:
             yield client
     finally:
         app.dependency_overrides.pop(get_session, None)
+        app.dependency_overrides.pop(require_user_ctx, None)
         await engine.dispose()
+
+
+@pytest.fixture
+async def semantic_graph_auth_client() -> AsyncIterator[AsyncClient]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        roles = {
+            code: Role(code=code, name=name)
+            for code, name in [
+                ("worker", "检修员"),
+                ("expert", "技术专家"),
+                ("admin", "系统管理员"),
+            ]
+        }
+        session.add_all(roles.values())
+        await session.flush()
+
+        users: dict[str, AuthUser] = {}
+        for username, role_code in [
+            ("semantic_worker", "worker"),
+            ("semantic_expert", "expert"),
+            ("semantic_admin", "admin"),
+        ]:
+            user = AuthUser(
+                username=username,
+                password_hash="not-used",
+                display_name=username,
+                is_active=True,
+                status="active",
+            )
+            session.add(user)
+            await session.flush()
+            session.add(UserRole(user_id=user.id, role_id=roles[role_code].id))
+            users[role_code] = user
+        await session.commit()
+
+    settings = get_settings()
+    tokens = {
+        role_code: create_access_token(
+            secret=settings.jwt_secret_key,
+            algorithm=settings.jwt_algorithm,
+            user_id=user.id,
+            username=user.username,
+            roles=[role_code],
+            expires_minutes=60,
+        )
+        for role_code, user in users.items()
+    }
+
+    async def _override_get_session():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            client._tokens = tokens
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_graph_requires_login(semantic_graph_auth_client: AsyncClient):
+    resp = await semantic_graph_auth_client.get("/api/v1/knowledge/semantic-graph")
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_semantic_graph_worker_can_read_but_cannot_write(
+    semantic_graph_auth_client: AsyncClient,
+):
+    worker_headers = {
+        "Authorization": f"Bearer {semantic_graph_auth_client._tokens['worker']}"
+    }
+
+    read_resp = await semantic_graph_auth_client.get(
+        "/api/v1/knowledge/semantic-graph",
+        headers=worker_headers,
+    )
+    write_resp = await semantic_graph_auth_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "component", "canonical_name": "火花塞"},
+        headers=worker_headers,
+    )
+
+    assert read_resp.status_code == 200
+    assert write_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_semantic_graph_expert_and_admin_can_write(
+    semantic_graph_auth_client: AsyncClient,
+):
+    expert_headers = {
+        "Authorization": f"Bearer {semantic_graph_auth_client._tokens['expert']}"
+    }
+    admin_headers = {
+        "Authorization": f"Bearer {semantic_graph_auth_client._tokens['admin']}"
+    }
+
+    expert_resp = await semantic_graph_auth_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "component", "canonical_name": "火花塞"},
+        headers=expert_headers,
+    )
+    admin_resp = await semantic_graph_auth_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "fault_cause", "canonical_name": "积碳"},
+        headers=admin_headers,
+    )
+
+    assert expert_resp.status_code == 201
+    assert admin_resp.status_code == 201
 
 
 @pytest.mark.asyncio

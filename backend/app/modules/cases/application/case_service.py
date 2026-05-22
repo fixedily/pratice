@@ -1,4 +1,4 @@
-﻿"""Case upload, review and knowledge feedback service for TODO-SB-5."""
+"""Case upload, review and knowledge feedback service for TODO-SB-5."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -377,10 +377,18 @@ class MaintenanceCaseService:
             )
             document = (await self.session.execute(stmt)).scalar_one_or_none()
 
+        from app.services.knowledge_base_service import KnowledgeBaseService
+
+        default_base_id = (
+            await KnowledgeBaseService(self.session).ensure_default_knowledge_base()
+        ).id
+
         if document is None:
             document = KnowledgeDocument(
+                knowledge_base_id=default_base_id,
                 title=case.title,
                 source_name=f"case-{case.id}",
+                document_type="case",
                 source_type="case",
                 equipment_type=case.equipment_type,
                 equipment_model=case.equipment_model,
@@ -431,6 +439,7 @@ class MaintenanceCaseService:
             [
                 KnowledgeChunk(
                     document_id=document.id,
+                    knowledge_base_id=document.knowledge_base_id,
                     chunk_index=index,
                     heading=payload.get("heading") or case.title,
                     content=payload.get("content") or "",

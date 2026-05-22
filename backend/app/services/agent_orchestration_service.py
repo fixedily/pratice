@@ -1,4 +1,4 @@
-﻿"""Agent orchestration service for the formal workbench."""
+"""Agent orchestration service for the formal workbench."""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +18,14 @@ from app.db.models.knowledge import AgentRun
 from app.modules.assistant.application.agent_registry import AgentRegistry
 from app.modules.assistant.application.config_resolver import AgentConfigResolver
 from app.modules.assistant.application.critique_policy import CritiquePolicy
+from app.modules.assistant.application.executors import (
+    DiagnosisStageExecutor,
+    KnowledgeStageExecutor,
+    PerceptionStageExecutor,
+    PlanningStageExecutor,
+    ReviewStageExecutor,
+    StageExecutionContext,
+)
 from app.modules.assistant.application.graph_state import (
     GraphState,
     ReplanDecision,
@@ -27,8 +35,8 @@ from app.modules.assistant.application.graph_state import (
 )
 from app.modules.assistant.application.pipeline_planner import PipelinePlanner
 from app.modules.assistant.application.replan_policy import ReplanPolicy
+from app.modules.assistant.application.stage_run_controller import StageRunController
 from app.modules.knowledge.application.search_service import KnowledgeService
-from app.modules.knowledge.schemas.search import KnowledgeSearchRequest
 from app.modules.tasks.application.task_service import MaintenanceTaskService
 from app.modules.assistant.schemas import AgentAssistRequest
 from app.modules.assistant.application.tooling_service import AgentToolingService
@@ -39,12 +47,7 @@ from app.modules.diagnosis.application.report_formatter import (
 )
 from app.modules.cases.application.case_service import MaintenanceCaseService
 from app.services.maintenance_safety_service import MaintenanceSafetyService
-from app.services.answer_guard_service import (
-    cleanup_answer,
-    expand_query_for_corrective,
-    score_retrieval_quality,
-    should_trigger_corrective_retrieval,
-)
+from app.services.answer_guard_service import cleanup_answer
 
 logger = logging.getLogger(__name__)
 
@@ -143,20 +146,39 @@ class AgentOrchestrationService:
             "tool_calls": [],
             "risk_findings": [],
             "execution_brief": None,
+            "perception_payload": None,
+            "review_payload": None,
             "diagnosis_report": None,
             "diagnosis_structured": None,
             "case_suggestions": [],
+            "case_draft": None,
         }
         registry = AgentRegistry(
             {
-                "perception": self._run_perception_stage,
-                "diagnosis": self._run_diagnosis_stage,
-                "planning": self._run_planning_stage,
-                "review": self._run_review_stage,
-                "knowledge": self._run_knowledge_stage,
+                "perception": PerceptionStageExecutor(knowledge_service=self.knowledge_service),
+                "diagnosis": DiagnosisStageExecutor(knowledge_service=self.knowledge_service),
+                "planning": PlanningStageExecutor(
+                    task_service=self.task_service,
+                    case_service=self.case_service,
+                    build_task_preview=self._build_task_preview,
+                ),
+                "review": ReviewStageExecutor(
+                    tooling_service=self.tooling_service,
+                    build_risk_findings=self._build_risk_findings,
+                    build_execution_brief=self._build_execution_brief,
+                ),
+                "knowledge": KnowledgeStageExecutor(
+                    build_case_suggestions=self._build_case_suggestions,
+                    case_service=self.case_service,
+                ),
             }
         )
         final_plan_rows: list[dict[str, Any]] = []
+        stage_run_controller = StageRunController()
+        pending_knowledge_step = None
+
+        async def emit_stage_event(event: str, data: dict[str, Any]) -> None:
+            await self._emit_event(emit, event, data)
 
         for step in resolved_plan.steps:
             if not step.should_run:
@@ -189,48 +211,79 @@ class AgentOrchestrationService:
                 )
                 continue
 
+            if step.agent_name == "knowledge":
+                pending_knowledge_step = step
+                continue
+
             stage_started_at = datetime.now(timezone.utc)
             await self._emit_event(emit, "agent_start", {"agent_name": step.agent_name, "title": step.title})
-            executor = registry.get(step.agent_name)
+            stage_config = resolved_config.agents[step.agent_name]
             try:
-                stage_payload = await executor(request, runtime_state, resolved_config, emit)
-                runtime_state.update(stage_payload)
-                stage_summary = str(stage_payload.get("summary") or f"{step.title} 已完成")
+                context = StageExecutionContext(
+                    request=request,
+                    runtime_state=runtime_state,
+                    resolved_config=resolved_config,
+                    emit=emit_stage_event,
+                )
+                run_result = await stage_run_controller.run(
+                    stage_name=step.agent_name,
+                    context=context,
+                    registry=registry,
+                )
+                artifact = run_result.artifact
+                runtime_state.update(artifact.payload)
+                stage_summary = artifact.summary or f"{step.title} 已完成"
                 completed_row = {
                     "agent_name": step.agent_name,
                     "title": step.title,
-                    "status": "completed",
+                    "status": run_result.status,
                     "reason": step.reason,
                     "forced": step.forced,
                 }
+                if run_result.fallback_agent:
+                    completed_row["fallback_agent"] = run_result.fallback_agent
                 final_plan_rows.append(completed_row)
                 graph_state.current_plan.append(
                     {
                         "stage_name": step.agent_name,
                         "iteration": 1,
                         "reason": step.reason,
-                        "status": "completed",
-                        "metadata": {"title": step.title, "forced": step.forced},
+                        "status": run_result.status,
+                        "metadata": {
+                            "title": step.title,
+                            "forced": step.forced,
+                            "attempt_count": run_result.attempt_count,
+                            "timeout_ms": run_result.timeout_ms,
+                            "fallback_agent": run_result.fallback_agent,
+                        },
                     }
                 )
                 graph_state.record_stage(
                     StageArtifact(
                         stage_name=step.agent_name,
-                        status="completed",
+                        status=run_result.status if run_result.status == "degraded" else artifact.status,
                         summary=stage_summary,
-                        payload=self._compact_stage_payload(stage_payload),
+                        payload=self._compact_stage_payload(artifact.payload),
                         iteration=1,
                     )
                 )
+                if run_result.degradation is not None:
+                    degradation_trace.append(run_result.degradation)
                 agent_runtime_status.append(
                     {
                         "agent_name": step.agent_name,
-                        "status": "completed",
+                        "status": run_result.status,
                         "summary": stage_summary,
                         "started_at": stage_started_at,
                         "finished_at": datetime.now(timezone.utc),
+                        "attempt_count": run_result.attempt_count,
+                        "timeout_ms": run_result.timeout_ms,
+                        "fallback_agent": run_result.fallback_agent,
+                        "last_error": run_result.last_error,
                     }
                 )
+                if run_result.degradation is not None:
+                    await self._emit_event(emit, "degradation_applied", run_result.degradation)
                 await self._emit_event(
                     emit,
                     "agent_finish",
@@ -249,6 +302,9 @@ class AgentOrchestrationService:
                     "strategy": "continue_with_fallback",
                     "reason": str(exc),
                     "fallback": "skip",
+                    "attempt_count": max(1, int(stage_config.max_retries) + 1),
+                    "timeout_ms": int(stage_config.timeout_ms),
+                    "last_error": str(exc),
                 }
                 degradation_trace.append(degradation)
                 degraded_row = {
@@ -276,6 +332,10 @@ class AgentOrchestrationService:
                         "summary": str(exc),
                         "started_at": stage_started_at,
                         "finished_at": datetime.now(timezone.utc),
+                        "attempt_count": max(1, int(stage_config.max_retries) + 1),
+                        "timeout_ms": int(stage_config.timeout_ms),
+                        "fallback_agent": None,
+                        "last_error": str(exc),
                     }
                 )
                 await self._emit_event(emit, "degradation_applied", degradation)
@@ -341,6 +401,125 @@ class AgentOrchestrationService:
                 "structured_report": diagnosis_structured,
             },
         )
+        if pending_knowledge_step is not None:
+            step = pending_knowledge_step
+            stage_started_at = datetime.now(timezone.utc)
+            stage_config = resolved_config.agents[step.agent_name]
+            await self._emit_event(emit, "agent_start", {"agent_name": step.agent_name, "title": step.title})
+            try:
+                context = StageExecutionContext(
+                    request=request,
+                    runtime_state=runtime_state,
+                    resolved_config=resolved_config,
+                    emit=emit_stage_event,
+                )
+                run_result = await stage_run_controller.run(
+                    stage_name=step.agent_name,
+                    context=context,
+                    registry=registry,
+                )
+                artifact = run_result.artifact
+                runtime_state.update(artifact.payload)
+                stage_summary = artifact.summary or f"{step.title} 已完成"
+                completed_row = {
+                    "agent_name": step.agent_name,
+                    "title": step.title,
+                    "status": run_result.status,
+                    "reason": step.reason,
+                    "forced": step.forced,
+                }
+                if run_result.fallback_agent:
+                    completed_row["fallback_agent"] = run_result.fallback_agent
+                final_plan_rows.append(completed_row)
+                graph_state.current_plan.append(
+                    {
+                        "stage_name": step.agent_name,
+                        "iteration": 1,
+                        "reason": step.reason,
+                        "status": run_result.status,
+                        "metadata": {
+                            "title": step.title,
+                            "forced": step.forced,
+                            "attempt_count": run_result.attempt_count,
+                            "timeout_ms": run_result.timeout_ms,
+                            "fallback_agent": run_result.fallback_agent,
+                        },
+                    }
+                )
+                graph_state.record_stage(
+                    StageArtifact(
+                        stage_name=step.agent_name,
+                        status=run_result.status if run_result.status == "degraded" else artifact.status,
+                        summary=stage_summary,
+                        payload=self._compact_stage_payload(artifact.payload),
+                        iteration=1,
+                    )
+                )
+                if run_result.degradation is not None:
+                    degradation_trace.append(run_result.degradation)
+                    await self._emit_event(emit, "degradation_applied", run_result.degradation)
+                agent_runtime_status.append(
+                    {
+                        "agent_name": step.agent_name,
+                        "status": run_result.status,
+                        "summary": stage_summary,
+                        "started_at": stage_started_at,
+                        "finished_at": datetime.now(timezone.utc),
+                        "attempt_count": run_result.attempt_count,
+                        "timeout_ms": run_result.timeout_ms,
+                        "fallback_agent": run_result.fallback_agent,
+                        "last_error": run_result.last_error,
+                    }
+                )
+                await self._emit_event(
+                    emit,
+                    "agent_finish",
+                    {"agent_name": step.agent_name, "title": step.title, "summary": stage_summary},
+                )
+            except Exception as exc:
+                degradation = {
+                    "agent_name": step.agent_name,
+                    "strategy": "continue_with_fallback",
+                    "reason": str(exc),
+                    "fallback": "skip",
+                    "attempt_count": max(1, int(stage_config.max_retries) + 1),
+                    "timeout_ms": int(stage_config.timeout_ms),
+                    "last_error": str(exc),
+                }
+                degradation_trace.append(degradation)
+                final_plan_rows.append(
+                    {
+                        "agent_name": step.agent_name,
+                        "title": step.title,
+                        "status": "degraded",
+                        "reason": step.reason,
+                        "forced": step.forced,
+                        "skip_reason": str(exc),
+                    }
+                )
+                graph_state.current_plan.append(
+                    {
+                        "stage_name": step.agent_name,
+                        "iteration": 1,
+                        "reason": step.reason,
+                        "status": "degraded",
+                        "metadata": {"error": str(exc)},
+                    }
+                )
+                agent_runtime_status.append(
+                    {
+                        "agent_name": step.agent_name,
+                        "status": "degraded",
+                        "summary": str(exc),
+                        "started_at": stage_started_at,
+                        "finished_at": datetime.now(timezone.utc),
+                        "attempt_count": max(1, int(stage_config.max_retries) + 1),
+                        "timeout_ms": int(stage_config.timeout_ms),
+                        "fallback_agent": None,
+                        "last_error": str(exc),
+                    }
+                )
+                await self._emit_event(emit, "degradation_applied", degradation)
 
         run_payload = {
             "run_id": run_id,
@@ -365,6 +544,9 @@ class AgentOrchestrationService:
             "task_plan_preview": task_preview,
             "risk_findings": risk_findings,
             "case_suggestions": runtime_state["case_suggestions"],
+            "case_draft": runtime_state["case_draft"],
+            "perception_payload": runtime_state["perception_payload"],
+            "review_payload": runtime_state["review_payload"],
             "agents": self._build_agent_cards_from_runtime(agent_runtime_status, final_plan_rows),
             "tool_calls": tool_calls,
             "resolved_run_plan": final_plan_rows,
@@ -606,255 +788,6 @@ class AgentOrchestrationService:
         graph_state.record_termination(termination)
         await self._emit_event(emit, "termination_decided", termination.as_dict())
         return revised_structured, revised_report
-
-    async def _run_perception_stage(
-        self,
-        request: AgentAssistRequest,
-        runtime_state: dict[str, Any],
-        resolved_config,
-        emit: EventCallback | None = None,
-    ) -> dict[str, Any]:
-        summary = "已接收多模态输入，准备进行感知识别。"
-        if not (request.image_base64 or request.attachment_ids):
-            summary = "未接收到多模态输入，本阶段无需额外处理。"
-        return {"summary": summary}
-
-    async def _run_diagnosis_stage(
-        self,
-        request: AgentAssistRequest,
-        runtime_state: dict[str, Any],
-        resolved_config,
-        emit: EventCallback | None = None,
-    ) -> dict[str, Any]:
-        await self._emit_event(
-            emit,
-            "stage_start",
-            {
-                "stage": "retrieval",
-                "title": "知识召回与引用整理",
-                "message": "正在检索知识依据并整理有效查询词。",
-            },
-        )
-        retrieval_payload = {
-            "query": request.query,
-            "effective_query": request.query,
-            "effective_keywords": [],
-            "image_analysis": None,
-            "results": [],
-            "grounded": True,
-            "coverage_warnings": [],
-            "reasoning_chain": None,
-            "query_type": "text_related",
-        }
-        if any(
-            [
-                request.query,
-                request.equipment_type,
-                request.equipment_model,
-                request.fault_type,
-                request.image_base64,
-                request.attachment_ids,
-            ]
-        ):
-            knowledge_request = KnowledgeSearchRequest(
-                work_order_id=request.work_order_id,
-                report_source=request.report_source,
-                priority=request.priority,
-                maintenance_level=request.maintenance_level,
-                query=request.query,
-                equipment_type=request.equipment_type,
-                equipment_model=request.equipment_model,
-                fault_type=request.fault_type,
-                image_base64=request.image_base64,
-                image_mime_type=request.image_mime_type,
-                image_filename=request.image_filename,
-                attachment_ids=request.attachment_ids,
-                model_provider=request.model_provider,
-                model_name=request.model_name,
-                limit=request.limit,
-            )
-            retrieval_payload = await self.knowledge_service.search_multimodal(knowledge_request)
-        retrieval_results = retrieval_payload["results"]
-        retrieval_quality = score_retrieval_quality(request.query or "", retrieval_results)
-        if should_trigger_corrective_retrieval(retrieval_quality) and request.query:
-            corrective_queries = expand_query_for_corrective(request.query)
-            for cq in corrective_queries[1:]:
-                corrective_request = KnowledgeSearchRequest(
-                    query=cq,
-                    equipment_type=request.equipment_type,
-                    equipment_model=request.equipment_model,
-                    fault_type=request.fault_type,
-                    limit=request.limit,
-                )
-                try:
-                    corrective_payload = await self.knowledge_service.search_multimodal(corrective_request)
-                    new_results = corrective_payload.get("results", [])
-                    existing_ids = {item["chunk_id"] for item in retrieval_results}
-                    for item in new_results:
-                        if item["chunk_id"] not in existing_ids:
-                            retrieval_results.append(item)
-                            existing_ids.add(item["chunk_id"])
-                    if score_retrieval_quality(cq, retrieval_results) == "relevant":
-                        break
-                except Exception:
-                    logger.debug("Corrective retrieval pass failed for query: %s", cq)
-            retrieval_payload["results"] = retrieval_results
-            logger.info(
-                "Corrective RAG: quality=%s → %d total results after expansion",
-                retrieval_quality,
-                len(retrieval_results),
-            )
-        selected_chunk_ids = runtime_state.get("selected_chunk_ids") or [
-            item["chunk_id"] for item in retrieval_results[: min(3, len(retrieval_results))]
-        ]
-        summary = self._build_retrieval_summary(retrieval_payload.get("effective_query"), retrieval_results)
-        await self._emit_event(
-            emit,
-            "stage_finish",
-            {
-                "stage": "retrieval",
-                "title": "知识召回与引用整理",
-                "summary": summary,
-                "knowledge_count": len(retrieval_results),
-                "selected_chunk_ids": selected_chunk_ids,
-            },
-        )
-        return {
-            "summary": summary,
-            "retrieval_payload": retrieval_payload,
-            "retrieval_results": retrieval_results,
-            "selected_chunk_ids": list(selected_chunk_ids),
-        }
-
-    async def _run_planning_stage(
-        self,
-        request: AgentAssistRequest,
-        runtime_state: dict[str, Any],
-        resolved_config,
-        emit: EventCallback | None = None,
-    ) -> dict[str, Any]:
-        await self._emit_event(
-            emit,
-            "stage_start",
-            {
-                "stage": "planning",
-                "title": "作业步骤规划 / 案例查询",
-                "message": "正在依据知识片段整理检修步骤并查询相似案例。",
-            },
-        )
-        selected_chunk_ids = list(runtime_state.get("selected_chunk_ids") or [])
-        retrieval_payload = runtime_state.get("retrieval_payload") or {}
-        knowledge_refs = await self.task_service._load_knowledge_refs(selected_chunk_ids)
-        task_preview, related_cases = await asyncio.gather(
-            self._build_task_preview(request, knowledge_refs),
-            self.case_service.recommend_cases(
-                equipment_type=request.equipment_type,
-                equipment_model=request.equipment_model,
-                fault_type=request.fault_type or retrieval_payload.get("effective_query"),
-                limit=3,
-            ),
-        )
-        summary = f"已整理 {len(task_preview)} 条知识步骤线索，命中 {len(related_cases)} 条相似案例。"
-        await self._emit_event(
-            emit,
-            "stage_finish",
-            {
-                "stage": "planning",
-                "title": "作业步骤规划 / 案例查询",
-                "summary": summary,
-                "step_count": len(task_preview),
-                "case_count": len(related_cases),
-            },
-        )
-        return {
-            "summary": summary,
-            "knowledge_refs": knowledge_refs,
-            "task_preview": task_preview,
-            "related_cases": related_cases,
-        }
-
-    async def _run_review_stage(
-        self,
-        request: AgentAssistRequest,
-        runtime_state: dict[str, Any],
-        resolved_config,
-        emit: EventCallback | None = None,
-    ) -> dict[str, Any]:
-        await self._emit_event(
-            emit,
-            "stage_start",
-            {
-                "stage": "tools",
-                "title": "工具执行与合规校验",
-                "message": "正在执行遥测、案例、前置条件和人工授权工具。",
-            },
-        )
-        knowledge_refs = runtime_state.get("knowledge_refs") or []
-        task_preview = runtime_state.get("task_preview") or []
-        related_cases = runtime_state.get("related_cases") or []
-        retrieval_results = runtime_state.get("retrieval_results") or []
-        selected_chunk_ids = runtime_state.get("selected_chunk_ids") or []
-        tool_chain = await self.tooling_service.run_tool_chain(
-            request=request,
-            knowledge_refs=knowledge_refs,
-            task_preview=task_preview,
-            related_cases=related_cases,
-        )
-        tool_calls = tool_chain["tool_calls"]
-        for tool_call in tool_calls:
-            await self._emit_event(
-                emit,
-                "tool_call",
-                {
-                    "tool_name": tool_call["tool_name"],
-                    "title": tool_call["title"],
-                    "status": tool_call["status"],
-                    "summary": tool_call["summary"],
-                    "blocking": tool_call["blocking"],
-                    "requires_human_authorization": tool_call["requires_human_authorization"],
-                    "details": tool_call.get("details") or [],
-                },
-            )
-        risk_findings = self._build_risk_findings(request, task_preview, knowledge_refs, tool_calls)
-        execution_brief = self._build_execution_brief(
-            request,
-            retrieval_results,
-            selected_chunk_ids,
-            task_preview,
-            related_cases,
-            tool_calls,
-            risk_findings,
-        )
-        await self._emit_event(
-            emit,
-            "stage_finish",
-            {
-                "stage": "tools",
-                "title": "工具执行与合规校验",
-                "summary": execution_brief["decision"],
-                "authorization_required": execution_brief["authorization_required"],
-                "blocking_issues": execution_brief["blocking_issues"],
-            },
-        )
-        return {
-            "summary": execution_brief["decision"],
-            "tool_calls": tool_calls,
-            "risk_findings": risk_findings,
-            "execution_brief": execution_brief,
-        }
-
-    async def _run_knowledge_stage(
-        self,
-        request: AgentAssistRequest,
-        runtime_state: dict[str, Any],
-        resolved_config,
-        emit: EventCallback | None = None,
-    ) -> dict[str, Any]:
-        knowledge_refs = runtime_state.get("knowledge_refs") or []
-        related_cases = runtime_state.get("related_cases") or []
-        case_suggestions = self._build_case_suggestions(request, knowledge_refs, related_cases)
-        summary = f"已输出 {len(case_suggestions)} 条案例沉淀建议，并推荐 {len(related_cases)} 条相似案例。"
-        return {"summary": summary, "case_suggestions": case_suggestions}
 
     async def _build_diagnosis_report(
         self,
@@ -1401,7 +1334,7 @@ work_order_ready: boolean
         ]
         if knowledge_refs:
             suggestions.append(
-                f"建议优先保留 {knowledge_refs[0]['title']} 的引用截图与页码，便于后续演示展示。"
+                f"建议优先保留 {knowledge_refs[0]['title']} 的引用截图与页码，便于后续答辩展示。"
             )
         if related_cases:
             suggestions.append(f"可先对照案例《{related_cases[0]['title']}》检查是否存在相同处理路径。")
@@ -1498,15 +1431,6 @@ work_order_ready: boolean
             "blocking_issues": blocking_issues[:4],
             "authorization_required": authorization_required,
         }
-
-    def _build_retrieval_summary(self, effective_query: str | None, results: list[dict[str, Any]]) -> str:
-        if not results:
-            return "未命中稳定知识条目，建议补充更明确的故障描述、设备型号或图片。"
-        top = results[0]
-        return (
-            f"已围绕“{effective_query or top['title']}”召回 {len(results)} 条知识，"
-            f"首条来源为 {top['title']}（{top['page_reference'] or '页码待补充'}）。"
-        )
 
     def _can_degrade_stage(self, agent_name: str, request: AgentAssistRequest) -> bool:
         if agent_name in {"perception", "knowledge"}:

@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from app.modules.assistant.application.config_resolver import AgentConfigResolver
 from app.modules.assistant.application.pipeline_planner import PipelinePlanner

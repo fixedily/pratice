@@ -1,4 +1,4 @@
-﻿"""Device operations for maintenance."""
+"""Device operations for maintenance."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable

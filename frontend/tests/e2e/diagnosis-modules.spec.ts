@@ -1,4 +1,4 @@
-﻿import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 async function mockTaskApis(page: Page) {
   await page.route("**/api/v1/history**", async (route: Route) => {

@@ -1,4 +1,4 @@
-﻿import {
+import {
   Activity,
   BellRing,
   Bot,
@@ -40,7 +40,7 @@ export type SettingsMenuItem = {
 };
 
 export const settingsMenuItems: SettingsMenuItem[] = [
-  { id: "overview", label: "能力总览", description: "场景能力与企业运行态势", icon: Gauge },
+  { id: "overview", label: "能力总览", description: "赛题能力与企业运行态势", icon: Gauge },
   { id: "basic", label: "基础设置", description: "平台基础信息与业务默认值", icon: Settings },
   { id: "models", label: "模型服务", description: "大模型、Embedding 与重排服务", icon: BrainCircuit, adminOnly: true },
   { id: "knowledge", label: "知识库设置", description: "手册、案例、索引与图谱治理", icon: Library, adminOnly: true },
@@ -61,7 +61,7 @@ export const settingsBackendRoadmap = [
   "GET /api/v1/maintenance/admin/settings-retrieval：RAG 策略、GraphRAG 状态与检索质量指标。",
   "GET /api/v1/maintenance/admin/settings-integrations：SCADA、MES、ERP、CMMS 等数据源状态。",
   "POST /api/v1/maintenance/admin/checks/model-connectivity：模型服务测试连接。",
-  "POST /api/v1/maintenance/admin/checks/deployment：目标 CPU 架构 与Linux部署验收检查。",
+  "POST /api/v1/maintenance/admin/checks/deployment：LoongArch 与银河麒麟部署验收检查。",
   "PATCH /api/v1/maintenance/admin/system-configs/{key}：保存非敏感配置并记录审计日志。",
 ];
 

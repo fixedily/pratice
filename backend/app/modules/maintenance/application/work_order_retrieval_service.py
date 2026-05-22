@@ -1,4 +1,4 @@
-﻿"""Work-order retrieval and streaming suggestion operations for maintenance."""
+"""Work-order retrieval and streaming suggestion operations for maintenance."""
 from __future__ import annotations
 
 import re

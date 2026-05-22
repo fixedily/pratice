@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
@@ -9,6 +9,8 @@ import { fetchKnowledgeDocumentChunks, fetchKnowledgeDocumentDetail, type Knowle
 import { formatDateTimeLocal } from "@/shared/lib/utils"
 
 const RANDOM_PREVIEW_COUNT = 8
+/** 随机预览从接口拉取的分段池上限，需不超过后端 chunks 接口 limit（500） */
+const CHUNK_PREVIEW_FETCH_LIMIT = 64
 
 function labelForSourceType(type: string) {
   switch (type) {
@@ -107,7 +109,8 @@ export default function KnowledgeDocumentDetailPage() {
         const detailPayload = await fetchKnowledgeDocumentDetail(documentId)
         const chunksPayload = await fetchKnowledgeDocumentChunks(
           documentId,
-          Math.max(detailPayload.chunk_count || RANDOM_PREVIEW_COUNT, RANDOM_PREVIEW_COUNT),
+          CHUNK_PREVIEW_FETCH_LIMIT,
+          Number.isFinite(focusChunkId) ? focusChunkId : undefined,
         )
         setDetail(detailPayload)
         setChunks(chunksPayload.chunks)
@@ -117,7 +120,7 @@ export default function KnowledgeDocumentDetailPage() {
         setIsLoading(false)
       }
     })()
-  }, [documentId])
+  }, [documentId, focusChunkId])
 
   const metadata = useMemo(() => {
     if (!detail) return []
@@ -322,3 +325,4 @@ export default function KnowledgeDocumentDetailPage() {
     </div>
   )
 }
+

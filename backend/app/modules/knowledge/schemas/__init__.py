@@ -1,4 +1,4 @@
-﻿"""Schema exports for the knowledge module."""
+"""Schema exports for the knowledge module."""
 
 from app.modules.knowledge.schemas.semantic_graph import (
     SemanticEntitySearchItem,

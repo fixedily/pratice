@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 后端 API 客户端：统一读取 NEXT_PUBLIC_API_BASE_URL，供页面按钮与数据加载使用。
  */
 
@@ -6,6 +6,7 @@ import {
   clearMaintenanceToken,
   getMaintenanceToken,
   notifyMaintenanceAuthExpired,
+  setMaintenanceToken,
 } from "@/features/auth/lib/token-store";
 
 export function getApiBase(): string {
@@ -51,7 +52,7 @@ async function rawFetch(path: string, init?: RequestInit): Promise<Response> {
   if (init?.body && !(init.body instanceof FormData) && !h["Content-Type"]) {
     h["Content-Type"] = "application/json";
   }
-  return fetch(url, { ...init, headers: h });
+  return fetch(url, { ...init, credentials: init?.credentials ?? "include", headers: h });
 }
 
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -63,14 +64,122 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (text ? JSON.parse(text) : {}) as T;
 }
 
-/** 检修域标准响应包：{ success, data, message } */
-export async function maintenanceJson<T>(path: string, init?: RequestInit, token?: string | null): Promise<T> {
-  const t = token ?? getMaintenanceToken();
+function extractApiErrorMessage(
+  json: Record<string, unknown>,
+  fallbackText: string,
+  status: number,
+): string {
+  const detail = json.detail;
+  const nestedDetailMessage =
+    detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string"
+      ? detail.message
+      : null;
+  return (
+    (typeof json.message === "string" ? json.message : null) ||
+    nestedDetailMessage ||
+    (typeof detail === "string" ? detail : null) ||
+    fallbackText.slice(0, 200) ||
+    String(status)
+  );
+}
+
+let refreshTokenPromise: Promise<string | null> | null = null;
+
+export async function refreshMaintenanceAccessToken(): Promise<string | null> {
+  if (refreshTokenPromise) return refreshTokenPromise;
+  refreshTokenPromise = (async () => {
+    let res: Response;
+    try {
+      res = await rawFetch("/api/auth/refresh", { method: "POST" });
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+    const text = await res.text();
+    let json: Record<string, unknown> = {};
+    try {
+      json = (text ? JSON.parse(text) : {}) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const data = (json?.data ?? json) as Record<string, unknown>;
+    const accessToken = typeof data.access_token === "string" ? data.access_token : null;
+    if (!accessToken) return null;
+    setMaintenanceToken(accessToken);
+    return accessToken;
+  })().finally(() => {
+    refreshTokenPromise = null;
+  });
+  return refreshTokenPromise;
+}
+
+export async function maintenanceLogout(): Promise<void> {
+  try {
+    await rawFetch("/api/auth/logout", { method: "POST" });
+  } finally {
+    clearMaintenanceToken();
+  }
+}
+
+function buildMaintenanceHeaders(init: RequestInit | undefined, token: string | null): Record<string, string> {
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string>) };
-  if (t) headers.Authorization = `Bearer ${t}`;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+async function maintenanceRawFetch(
+  path: string,
+  init?: RequestInit,
+  token?: string | null,
+): Promise<Response> {
+  const firstToken = token ?? getMaintenanceToken();
+  let res = await rawFetch(path, {
+    ...init,
+    headers: buildMaintenanceHeaders(init, firstToken),
+  });
+  if (res.status !== 401) return res;
+
+  const refreshedToken = await refreshMaintenanceAccessToken();
+  if (!refreshedToken) return res;
+
+  res = await rawFetch(path, {
+    ...init,
+    headers: buildMaintenanceHeaders(init, refreshedToken),
+  });
+  return res;
+}
+
+/** 知识库管理 API：携带检修域 JWT，供可见范围 ACL 使用 */
+export async function knowledgeJson<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await rawFetch(path, { ...init, headers });
+    res = await maintenanceRawFetch(path, init);
+  } catch (error) {
+    throw normalizeMaintenanceNetworkError(error);
+  }
+  const text = await res.text();
+  let json: Record<string, unknown> = {};
+  try {
+    json = (text ? JSON.parse(text) : {}) as Record<string, unknown>;
+  } catch {
+    json = {};
+  }
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearMaintenanceToken();
+      notifyMaintenanceAuthExpired();
+      throw new Error(MAINTENANCE_AUTH_EXPIRED_MESSAGE);
+    }
+    throw new Error(extractApiErrorMessage(json, text, res.status));
+  }
+  return (text ? JSON.parse(text) : {}) as T;
+}
+
+/** 检修域标准响应包：{ success, data, message } */
+export async function maintenanceJson<T>(path: string, init?: RequestInit, token?: string | null): Promise<T> {
+  let res: Response;
+  try {
+    res = await maintenanceRawFetch(path, init, token);
   } catch (error) {
     throw normalizeMaintenanceNetworkError(error);
   }
@@ -112,7 +221,11 @@ export function isMaintenanceAuthExpiredError(error: unknown): boolean {
 // —— 通用只读 ——
 
 export async function fetchHealth() {
-  return apiJson<{ status: string; database: string }>("/health");
+  return apiJson<{
+    status: string;
+    database: string;
+    redis?: { status: string; backend: string; enabled: boolean; available: boolean };
+  }>("/health");
 }
 
 export async function fetchSystemMetrics() {
@@ -399,36 +512,144 @@ export async function postAgentAssist(body: Record<string, unknown>) {
   });
 }
 
-export async function fetchKnowledgeDocuments(limit = 20) {
-  return apiJson<KnowledgeDocumentListResponse>(`/api/v1/knowledge/documents?limit=${limit}`);
+export async function fetchKnowledgeBases(limit = 50) {
+  return knowledgeJson<KnowledgeBaseListResponse>(`/api/v1/knowledge/bases?limit=${limit}`);
+}
+
+export async function fetchKnowledgeBaseDetail(baseId: number) {
+  return knowledgeJson<KnowledgeBaseSummary>(`/api/v1/knowledge/bases/${baseId}`);
+}
+
+export async function createKnowledgeBase(payload: KnowledgeBaseCreatePayload) {
+  return knowledgeJson<KnowledgeBaseSummary>("/api/v1/knowledge/bases", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateKnowledgeBase(
+  baseId: number,
+  payload: KnowledgeBaseUpdatePayload,
+) {
+  return knowledgeJson<KnowledgeBaseSummary>(`/api/v1/knowledge/bases/${baseId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchKnowledgeCategories(knowledgeBaseId: number) {
+  return knowledgeJson<KnowledgeCategoryListResponse>(
+    `/api/v1/knowledge/categories?knowledge_base_id=${knowledgeBaseId}`,
+  );
+}
+
+export async function fetchKnowledgeImports(
+  limit = 8,
+  knowledgeBaseId?: number,
+) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (knowledgeBaseId != null && Number.isFinite(knowledgeBaseId)) {
+    query.set("knowledge_base_id", String(knowledgeBaseId));
+  }
+  return knowledgeJson<KnowledgeImportListResponse>(
+    `/api/v1/knowledge/imports?${query.toString()}`,
+  );
+}
+
+export async function fetchKnowledgeDocuments(limit = 20, knowledgeBaseId?: number) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (knowledgeBaseId != null && Number.isFinite(knowledgeBaseId)) {
+    query.set("knowledge_base_id", String(knowledgeBaseId));
+  }
+  return knowledgeJson<KnowledgeDocumentListResponse>(
+    `/api/v1/knowledge/documents?${query.toString()}`,
+  );
 }
 
 export async function fetchKnowledgeDocumentDetail(documentId: number) {
-  return apiJson<KnowledgeDocumentDetail>(`/api/v1/knowledge/documents/${documentId}`);
+  return knowledgeJson<KnowledgeDocumentDetail>(`/api/v1/knowledge/documents/${documentId}`);
 }
 
-export async function fetchKnowledgeDocumentChunks(documentId: number, limit = 8) {
-  return apiJson<KnowledgeChunkPreviewResponse>(`/api/v1/knowledge/documents/${documentId}/chunks?limit=${limit}`);
+export async function fetchKnowledgeDocumentChunks(
+  documentId: number,
+  limit = 8,
+  focusChunkId?: number,
+) {
+  const safeLimit = Math.min(Math.max(limit, 1), 500);
+  const query = new URLSearchParams({ limit: String(safeLimit) });
+  if (focusChunkId != null && Number.isFinite(focusChunkId)) {
+    query.set("focus_chunk_id", String(focusChunkId));
+  }
+  return knowledgeJson<KnowledgeChunkPreviewResponse>(
+    `/api/v1/knowledge/documents/${documentId}/chunks?${query.toString()}`,
+  );
 }
 
 export async function deleteKnowledgeDocument(documentId: number) {
-  return apiJson<{ success: boolean; message: string }>(`/api/v1/knowledge/documents/${documentId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function fetchKnowledgeImports(limit = 8) {
-  return apiJson<KnowledgeImportListResponse>(`/api/v1/knowledge/imports?limit=${limit}`);
+  return knowledgeJson<{ success: boolean; message: string }>(
+    `/api/v1/knowledge/documents/${documentId}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function deleteKnowledgeImportJob(jobId: number) {
-  return apiJson<{ success: boolean; message: string }>(`/api/v1/knowledge/imports/${jobId}`, {
-    method: "DELETE",
-  });
+  return knowledgeJson<{ success: boolean; message: string }>(
+    `/api/v1/knowledge/imports/${jobId}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export interface KnowledgeBaseSummary {
+  id: number;
+  name: string;
+  slug: string;
+  description?: string | null;
+  type?: string;
+  visibility?: string;
+  owner_id?: number | null;
+  document_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface KnowledgeBaseListResponse {
+  total: number;
+  bases: KnowledgeBaseSummary[];
+}
+
+export interface KnowledgeBaseCreatePayload {
+  name: string;
+  description?: string;
+  type?: string;
+  visibility?: string;
+}
+
+export interface KnowledgeBaseUpdatePayload {
+  name?: string;
+  description?: string;
+  type?: string;
+  visibility?: string;
+}
+
+export interface KnowledgeCategoryStat {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface KnowledgeCategoryListResponse {
+  knowledge_base_id: number;
+  total: number;
+  categories: KnowledgeCategoryStat[];
 }
 
 export interface KnowledgeImportUploadPayload {
   file: File;
+  knowledge_base_id: number;
   equipment_type: string;
   title?: string;
   equipment_model?: string;
@@ -436,11 +657,13 @@ export interface KnowledgeImportUploadPayload {
   section_reference?: string;
   source_type?: string;
   replace_existing?: boolean;
+  batch_id?: string;
 }
 
 export async function importKnowledgeDocument(payload: KnowledgeImportUploadPayload) {
   const form = new FormData();
   form.append("file", payload.file);
+  form.append("knowledge_base_id", String(payload.knowledge_base_id));
   form.append("equipment_type", payload.equipment_type);
   if (payload.title) form.append("title", payload.title);
   if (payload.equipment_model) form.append("equipment_model", payload.equipment_model);
@@ -448,15 +671,33 @@ export async function importKnowledgeDocument(payload: KnowledgeImportUploadPayl
   if (payload.section_reference) form.append("section_reference", payload.section_reference);
   form.append("source_type", payload.source_type ?? "manual");
   form.append("replace_existing", String(Boolean(payload.replace_existing)));
-  return apiJson<{ id: number; status: string; original_filename?: string }>("/api/v1/knowledge/imports", {
+  if (payload.batch_id) form.append("batch_id", payload.batch_id);
+  return knowledgeJson<KnowledgeImportJob>("/api/v1/knowledge/imports", {
     method: "POST",
     body: form,
+  });
+}
+
+export async function fetchKnowledgeImportJob(jobId: number) {
+  return knowledgeJson<KnowledgeImportJob>(`/api/v1/knowledge/imports/${jobId}`);
+}
+
+export async function fetchKnowledgeImportJobsByBatch(batchId: string, limit = 50) {
+  return knowledgeJson<KnowledgeImportListResponse>(
+    `/api/v1/knowledge/imports?batch_id=${encodeURIComponent(batchId)}&limit=${limit}`,
+  );
+}
+
+export async function retryKnowledgeImportJob(jobId: number) {
+  return knowledgeJson<KnowledgeImportJob>(`/api/v1/knowledge/imports/${jobId}/retry`, {
+    method: "POST",
   });
 }
 
 export type MaintenanceCaptcha = {
   captchaId: string;
   image: string;
+  expiresIn?: number;
 };
 
 /** 获取图形验证码 */
@@ -488,17 +729,19 @@ export class MaintenanceAuthError extends Error {
 
 /** 登录：返回 data 中的 access_token */
 export async function maintenanceLogin(
-  username: string,
+  account: string,
   password: string,
   captcha: { captchaId: string; captchaCode: string },
+  rememberMe = false,
 ) {
-  const res = await rawFetch("/api/v1/maintenance/auth/login", {
+  const res = await rawFetch("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({
-      username,
+      account,
       password,
-      captchaId: captcha.captchaId,
-      captchaCode: captcha.captchaCode,
+      captcha_id: captcha.captchaId,
+      captcha_code: captcha.captchaCode,
+      remember_me: rememberMe,
     }),
   });
   const text = await res.text();
@@ -518,22 +761,36 @@ export async function maintenanceLogin(
   return data as {
     access_token: string;
     token_type: string;
+    expires_in?: number;
+    refresh_expires_in?: number;
     user: MaintenanceUser;
   };
 }
 
+export type MaintenanceRequestedRole = "inspector" | "maintainer" | "engineer";
+
+export interface MaintenanceRegisterPayload {
+  username: string;
+  real_name: string;
+  phone?: string;
+  email?: string;
+  department: string;
+  requested_role: MaintenanceRequestedRole;
+  password: string;
+  confirm_password: string;
+  email_code?: string;
+}
+
 export async function maintenanceRegister(
-  username: string,
-  password: string,
+  payload: MaintenanceRegisterPayload,
   captcha: { captchaId: string; captchaCode: string },
 ) {
-  const res = await rawFetch("/api/v1/maintenance/auth/register", {
+  const res = await rawFetch("/api/auth/register", {
     method: "POST",
     body: JSON.stringify({
-      username,
-      password,
-      captchaId: captcha.captchaId,
-      captchaCode: captcha.captchaCode,
+      ...payload,
+      captcha_id: captcha.captchaId,
+      captcha_code: captcha.captchaCode,
     }),
   });
   const text = await res.text();
@@ -545,24 +802,25 @@ export async function maintenanceRegister(
     id: number;
     username: string;
     display_name: string;
+    status: "pending" | "active" | "disabled" | "locked";
     roles: MaintenanceRole[];
   };
 }
 
-export async function maintenanceForgotPassword(
-  username: string,
-  newPassword: string,
-  confirmPassword: string,
+export interface MaintenancePasswordResetRequestPayload {
+  account: string;
+}
+
+export async function maintenanceRequestPasswordReset(
+  payload: MaintenancePasswordResetRequestPayload,
   captcha: { captchaId: string; captchaCode: string },
 ) {
-  const res = await rawFetch("/api/v1/maintenance/auth/forgot-password", {
+  const res = await rawFetch("/api/auth/password-reset/request", {
     method: "POST",
     body: JSON.stringify({
-      username,
-      new_password: newPassword,
-      confirm_password: confirmPassword,
-      captchaId: captcha.captchaId,
-      captchaCode: captcha.captchaCode,
+      ...payload,
+      captcha_id: captcha.captchaId,
+      captcha_code: captcha.captchaCode,
     }),
   });
   const text = await res.text();
@@ -571,17 +829,100 @@ export async function maintenanceForgotPassword(
     throw new Error(json?.message || text.slice(0, 200) || String(res.status));
   }
   return (json?.data ?? json) as {
-    username: string;
-    updated: boolean;
+    message: string;
+    masked_email?: string;
+    need_admin_reset?: boolean;
+    expires_in?: number;
   };
 }
 
-export type MaintenanceRole = "worker" | "expert" | "safety" | "admin";
+export const maintenanceForgotPassword = maintenanceRequestPasswordReset;
+
+export async function maintenanceConfirmPasswordReset(body: {
+  account: string;
+  email_code: string;
+  new_password: string;
+  confirm_password: string;
+}) {
+  const res = await rawFetch("/api/auth/password-reset/confirm", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(json?.message || text.slice(0, 200) || String(res.status));
+  }
+  return (json?.data ?? json) as { message: string };
+}
+
+export async function maintenanceSendEmailCode(body: {
+  email: string;
+  scene: "register" | "reset_password" | "bind_email";
+  captchaId?: string;
+  captchaCode?: string;
+}) {
+  const res = await rawFetch("/api/auth/email-code/send", {
+    method: "POST",
+    body: JSON.stringify({
+      email: body.email,
+      scene: body.scene,
+      captcha_id: body.captchaId,
+      captcha_code: body.captchaCode,
+    }),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    const retryRaw = json?.data?.retry_after_seconds;
+    const error = new MaintenanceAuthError(
+      json?.message || text.slice(0, 200) || String(res.status),
+      json?.business_code,
+      typeof retryRaw === "number" ? retryRaw : undefined,
+    );
+    throw error;
+  }
+  return (json?.data ?? json) as { expires_in: number };
+}
+
+export async function maintenanceSendSmsCode(body: {
+  phone: string;
+  scene: "register" | "reset_password" | "bind_phone";
+  captchaId?: string;
+  captchaCode?: string;
+}) {
+  const res = await rawFetch("/api/auth/sms-code/send", {
+    method: "POST",
+    body: JSON.stringify({
+      phone: body.phone,
+      scene: body.scene,
+      captcha_id: body.captchaId,
+      captcha_code: body.captchaCode,
+    }),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(json?.message || text.slice(0, 200) || String(res.status));
+  }
+  return (json?.data ?? json) as { expires_in: number };
+}
+
+export type MaintenanceRole =
+  | "worker"
+  | "expert"
+  | "safety"
+  | "admin"
+  | "inspector"
+  | "maintainer"
+  | "engineer";
 
 export interface MaintenanceUser {
   id: number;
   username: string;
   display_name: string;
+  real_name?: string | null;
+  status?: "pending" | "active" | "disabled" | "locked";
   roles: MaintenanceRole[];
 }
 
@@ -945,15 +1286,13 @@ export async function runWorkOrderRetrieval(
 }
 
 export async function deleteWorkOrder(token: string | null, workOrderId: number): Promise<void> {
-  const t = token ?? getMaintenanceToken();
-  const headers: Record<string, string> = {};
-  if (t) headers.Authorization = `Bearer ${t}`;
   let res: Response;
   try {
-    res = await rawFetch(`/api/v1/maintenance/work-orders/${workOrderId}`, {
-      method: "DELETE",
-      headers,
-    });
+    res = await maintenanceRawFetch(
+      `/api/v1/maintenance/work-orders/${workOrderId}`,
+      { method: "DELETE" },
+      token,
+    );
   } catch (error) {
     throw normalizeMaintenanceNetworkError(error);
   }
@@ -1159,7 +1498,11 @@ export async function fetchMaintenanceSettingsOverview(token: string | null) {
 
 /** 顶栏图标等：轻量确认后端可达 */
 export async function pingBackendReadiness() {
-  await fetchSystemMetrics();
+  await apiJson<{
+    status: string;
+    database: string;
+    redis?: { status: string; backend: string; enabled: boolean; available: boolean };
+  }>("/ready");
 }
 
 // —— 类型（仅前端消费字段） ——
@@ -1531,6 +1874,15 @@ export interface SemanticGraphStatsResponse {
   relations_by_status: Record<string, number>;
 }
 
+export interface SemanticGraphQualityStatsResponse {
+  duplicate_entity_groups: number;
+  pending_entity_candidates: number;
+  pending_relation_candidates: number;
+  relations_without_evidence: number;
+  relations_without_evidence_or_review: number;
+  low_confidence_relations: number;
+}
+
 export interface SemanticEntitySearchItem {
   entity: SemanticGraphEntity;
   relation_count: number;
@@ -1539,6 +1891,38 @@ export interface SemanticEntitySearchItem {
 export interface SemanticEntitySearchResponse {
   total: number;
   items: SemanticEntitySearchItem[];
+}
+
+export interface SemanticDuplicateEntityCandidate {
+  entity: SemanticGraphEntity;
+  duplicate_entity: SemanticGraphEntity;
+  score: number;
+  matched_on: string;
+}
+
+export interface SemanticDuplicateEntityRecommendationResponse {
+  total: number;
+  items: SemanticDuplicateEntityCandidate[];
+}
+
+export interface SemanticExtractionCandidate {
+  id: number;
+  job_id: number;
+  candidate_type: "entity" | "relation" | string;
+  payload: Record<string, unknown>;
+  normalized_payload: Record<string, unknown>;
+  confidence?: number | null;
+  status: string;
+  review_note?: string | null;
+  chunk_id?: number | null;
+  document_id?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SemanticExtractionCandidateListResponse {
+  total: number;
+  items: SemanticExtractionCandidate[];
 }
 
 export async function fetchKnowledgeGraph(params?: { relation_type?: string; kind?: string; limit?: number }) {
@@ -1566,7 +1950,7 @@ export async function fetchSemanticKnowledgeGraph(params?: {
   if (params?.status) sp.set("status", params.status);
   if (params?.limit) sp.set("limit", String(params.limit));
   const q = sp.toString();
-  return apiJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph${q ? `?${q}` : ""}`);
+  return knowledgeJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph${q ? `?${q}` : ""}`);
 }
 
 export async function searchSemanticKnowledgeEntities(params?: {
@@ -1581,7 +1965,7 @@ export async function searchSemanticKnowledgeEntities(params?: {
   if (params?.status) sp.set("status", params.status);
   if (params?.limit) sp.set("limit", String(params.limit));
   const q = sp.toString();
-  return apiJson<SemanticEntitySearchResponse>(`/api/v1/knowledge/semantic-graph/entities${q ? `?${q}` : ""}`);
+  return knowledgeJson<SemanticEntitySearchResponse>(`/api/v1/knowledge/semantic-graph/entities${q ? `?${q}` : ""}`);
 }
 
 export async function fetchSemanticKnowledgeNeighbors(params: {
@@ -1595,15 +1979,64 @@ export async function fetchSemanticKnowledgeNeighbors(params: {
   if (params.depth) sp.set("depth", String(params.depth));
   if (params.relation_type) sp.set("relation_type", params.relation_type);
   if (params.status) sp.set("status", params.status);
-  return apiJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph/neighbors?${sp.toString()}`);
+  return knowledgeJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph/neighbors?${sp.toString()}`);
 }
 
 export async function fetchSemanticKnowledgeRelationDetail(relationId: number) {
-  return apiJson<SemanticGraphRelationDetail>(`/api/v1/knowledge/semantic-graph/relations/${relationId}`);
+  return knowledgeJson<SemanticGraphRelationDetail>(`/api/v1/knowledge/semantic-graph/relations/${relationId}`);
 }
 
 export async function fetchSemanticKnowledgeGraphStats() {
-  return apiJson<SemanticGraphStatsResponse>("/api/v1/knowledge/semantic-graph/stats");
+  return knowledgeJson<SemanticGraphStatsResponse>("/api/v1/knowledge/semantic-graph/stats");
+}
+
+export async function fetchSemanticKnowledgeQualityStats() {
+  return knowledgeJson<SemanticGraphQualityStatsResponse>("/api/v1/knowledge/semantic-graph/quality-stats");
+}
+
+export async function fetchSemanticExtractionCandidates(params?: {
+  candidate_type?: string;
+  status?: string;
+  job_id?: number;
+  limit?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.candidate_type) sp.set("candidate_type", params.candidate_type);
+  if (params?.status) sp.set("status", params.status);
+  if (params?.job_id) sp.set("job_id", String(params.job_id));
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const q = sp.toString();
+  return knowledgeJson<SemanticExtractionCandidateListResponse>(
+    `/api/v1/knowledge/semantic-graph/extraction-candidates${q ? `?${q}` : ""}`,
+  );
+}
+
+export async function reviewSemanticExtractionCandidate(
+  candidateId: number,
+  body: { action: "approve" | "reject"; review_note?: string },
+) {
+  return knowledgeJson<SemanticExtractionCandidate>(
+    `/api/v1/knowledge/semantic-graph/extraction-candidates/${candidateId}/reviews`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function fetchSemanticDuplicateRecommendations(params?: {
+  entity_type?: string;
+  min_score?: number;
+  limit?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.min_score != null) sp.set("min_score", String(params.min_score));
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const q = sp.toString();
+  return knowledgeJson<SemanticDuplicateEntityRecommendationResponse>(
+    `/api/v1/knowledge/semantic-graph/entities/duplicate-recommendations${q ? `?${q}` : ""}`,
+  );
 }
 
 export interface KnowledgeDocumentListResponse {
@@ -1614,6 +2047,8 @@ export interface KnowledgeDocumentListResponse {
 
 export interface KnowledgeDocumentListItem {
   id: number;
+  knowledge_base_id: number;
+  document_type?: string;
   title: string;
   source_name: string;
   source_type: string;
@@ -1650,26 +2085,49 @@ export interface KnowledgeChunkPreviewResponse {
   chunks: KnowledgeChunkPreview[];
 }
 
+export type KnowledgeImportStage =
+  | "pending"
+  | "uploading"
+  | "parsing"
+  | "ocr"
+  | "chunking"
+  | "embedding"
+  | "indexing"
+  | "reviewing"
+  | "completed"
+  | "failed";
+
 export interface KnowledgeImportJob {
   id: number;
+  knowledge_base_id: number;
+  batch_id?: string | null;
   import_type: string;
   processing_note?: string | null;
   title?: string | null;
+  file_name: string;
   source_name: string;
+  file_type?: string | null;
+  file_size?: number | null;
+  file_hash?: string | null;
   source_type: string;
   equipment_type: string;
   equipment_model?: string | null;
   fault_type?: string | null;
   section_reference?: string | null;
   replace_existing: boolean;
-  status: string;
+  status: KnowledgeImportStage | string;
+  current_stage?: KnowledgeImportStage | string | null;
+  progress?: number;
   page_count?: number | null;
   chunk_count?: number | null;
   document_id?: number | null;
   preview_excerpt?: string | null;
   error_message?: string | null;
+  error_stage?: KnowledgeImportStage | string | null;
+  retry_count?: number;
   created_at: string;
   updated_at: string;
+  completed_at?: string | null;
 }
 
 export interface KnowledgeImportListResponse {

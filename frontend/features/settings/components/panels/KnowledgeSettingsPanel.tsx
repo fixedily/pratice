@@ -1,4 +1,4 @@
-﻿import { Library, RefreshCw } from "lucide-react";
+import { Library, RefreshCw } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, MetricCard, ToggleRow } from "@/features/settings/components/settings-ui";

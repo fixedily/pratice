@@ -1,4 +1,4 @@
-﻿"""Knowledge-domain ORM model exports."""
+"""Knowledge-domain ORM model exports."""
 from app.models.knowledge import (
     AgentRun,
     DeviceModel,

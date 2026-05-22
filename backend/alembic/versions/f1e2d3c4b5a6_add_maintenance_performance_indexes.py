@@ -1,4 +1,4 @@
-﻿"""add_maintenance_performance_indexes
+"""add_maintenance_performance_indexes
 
 Revision ID: f1e2d3c4b5a6
 Revises: fa3b7c9d1e2f

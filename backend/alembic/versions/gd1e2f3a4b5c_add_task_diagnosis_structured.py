@@ -1,4 +1,4 @@
-﻿"""add diagnosis_structured to maintenance_tasks
+"""add diagnosis_structured to maintenance_tasks
 
 Revision ID: gd1e2f3a4b5c
 Revises: fc9d7e1b2a34

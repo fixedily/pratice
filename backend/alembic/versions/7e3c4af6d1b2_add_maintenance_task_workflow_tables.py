@@ -1,4 +1,4 @@
-﻿"""add_maintenance_task_workflow_tables
+"""add_maintenance_task_workflow_tables
 
 Revision ID: 7e3c4af6d1b2
 Revises: 0c7d2d6f4e8a

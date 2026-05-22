@@ -1,4 +1,4 @@
-﻿"""LangGraph 多智能体诊断工作流
+"""LangGraph 多智能体诊断工作流
 
 基于 LangGraph StateGraph 的多智能体协作架构:
 

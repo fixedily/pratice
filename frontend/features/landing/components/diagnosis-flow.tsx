@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { Database, AlertTriangle, Search, FileText, ClipboardCheck } from "lucide-react";
@@ -187,3 +187,4 @@ export function DiagnosisFlow() {
     </section>
   );
 }
+

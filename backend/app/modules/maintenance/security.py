@@ -1,4 +1,4 @@
-﻿"""检修域：密码哈希与 JWT。"""
+"""检修域：密码哈希与 JWT。"""
 from __future__ import annotations
 
 import uuid
@@ -34,6 +34,30 @@ def create_access_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
         "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(payload, secret, algorithm=algorithm)
+
+
+def create_refresh_token(
+    *,
+    secret: str,
+    algorithm: str,
+    user_id: int,
+    username: str,
+    roles: list[str],
+    expires_days: int,
+    remember_me: bool = False,
+) -> str:
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": str(user_id),
+        "username": username,
+        "roles": roles,
+        "typ": "refresh",
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=expires_days)).timestamp()),
+        "jti": uuid.uuid4().hex,
+        "remember_me": remember_me,
     }
     return jwt.encode(payload, secret, algorithm=algorithm)
 

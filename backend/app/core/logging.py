@@ -1,4 +1,4 @@
-﻿"""Logging configuration for maintenance deployment and debugging."""
+"""Logging configuration for maintenance deployment and debugging."""
 from __future__ import annotations
 
 import logging

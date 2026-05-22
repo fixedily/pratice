@@ -1,4 +1,4 @@
-﻿"""Policies for routing critique results into replanning actions."""
+"""Policies for routing critique results into replanning actions."""
 from __future__ import annotations
 
 from app.modules.assistant.application.graph_state import GraphState

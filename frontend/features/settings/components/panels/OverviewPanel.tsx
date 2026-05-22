@@ -1,4 +1,4 @@
-﻿import { Gauge, RefreshCw, ShieldCheck } from "lucide-react";
+import { Gauge, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, MetricCard, mutedPanelClass, pageText } from "@/features/settings/components/settings-ui";
@@ -13,7 +13,7 @@ export function OverviewPanel({ overview, overviewLoading, overviewError, roleLa
 
   return (
     <SettingsSectionShell
-      title="场景能力与企业运行总览"
+      title="赛题能力与企业运行总览"
       description="集中呈现多模态检索、知识沉淀、标准化作业和企业运维治理的当前完成度。"
       icon={Gauge}
       actions={

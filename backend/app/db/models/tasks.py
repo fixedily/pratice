@@ -1,4 +1,4 @@
-﻿"""Task-domain ORM model exports."""
+"""Task-domain ORM model exports."""
 from app.models.tasks import (
     MaintenanceTask,
     MaintenanceTaskStep,

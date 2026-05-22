@@ -1,4 +1,4 @@
-﻿"""Audit-log queries for maintenance."""
+"""Audit-log queries for maintenance."""
 from __future__ import annotations
 
 from typing import Any

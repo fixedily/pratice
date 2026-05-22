@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { AlertTriangle, Database, Server, Activity, FileX, Inbox } from "lucide-react"
 import { Button } from "@/shared/components/ui/button"
@@ -111,3 +111,4 @@ export function ErrorState({
     />
   )
 }
+

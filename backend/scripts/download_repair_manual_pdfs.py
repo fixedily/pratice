@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """通过搜索引擎发现维修手册 PDF 直链，校验后写入 datasets/pdf/。
 
 用法（在 backend 目录下）::
@@ -14,7 +14,7 @@
 
     python scripts/download_repair_manual_pdfs.py --provider google --count 2 --query "工业机器人 维修手册"
 
-版权提示：仅用于演示/研究演示，请遵守各站点许可；本脚本不绕过登录墙或付费墙。
+版权提示：仅用于竞赛/研究演示，请遵守各站点许可；本脚本不绕过登录墙或付费墙。
 """
 from __future__ import annotations
 
@@ -139,7 +139,7 @@ def build_search_query(user_query: str, *, china_bias: bool) -> str:
     if "中文" not in q and "chinese" not in lower:
         extras.append("中文")
     if china_bias and "site:" not in lower:
-        extras.append("site:.cn OR site:.com.cn")
+        extras.append("site:.cn")
     if "pdf" not in lower and not q.lower().endswith(".pdf"):
         extras.append("PDF")
     if extras:
@@ -227,26 +227,134 @@ def _import_ddgs():
             raise SystemExit(1) from e
 
 
-def search_duckduckgo(query: str, max_results: int, *, china_bias: bool, region: str) -> list[SearchHit]:
-    DDGS = _import_ddgs()
+def _normalize_proxy_url(value: str) -> str:
+    """将用户输入规范为 ddgs/primp 可用的代理 URL。
 
-    search_q = build_search_query(query, china_bias=china_bias)
+    Clash 等本地代理常见端口 10808 为 SOCKS5，不能写成 http://127.0.0.1:10808。
+    """
+    v = value.strip()
+    if not v:
+        return v
+    if re.fullmatch(r"\d+", v):
+        return f"socks5://127.0.0.1:{v}"
+    if re.fullmatch(r"[\d.]+:\d+", v):
+        return f"socks5://{v}"
+    if "://" not in v:
+        return f"socks5://{v}"
+    return v
+
+
+def _resolve_proxy(cli_proxy: str | None) -> str | None:
+    raw = (
+        cli_proxy
+        or os.environ.get("DDGS_PROXY")
+        or os.environ.get("ALL_PROXY")
+        or os.environ.get("all_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    if not raw:
+        return None
+    return _normalize_proxy_url(raw)
+
+
+def _mask_proxy(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.hostname or "?"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{host}{port}"
+
+
+def _rows_to_hits(rows: Iterable[dict], query: str) -> list[SearchHit]:
     hits: list[SearchHit] = []
-    with DDGS() as ddgs:
-        kwargs: dict = {"max_results": max_results}
-        if region:
-            kwargs["region"] = region
-        try:
-            rows = ddgs.text(search_q, **kwargs)
-        except TypeError:
-            rows = ddgs.text(search_q, max_results=max_results)
-        for row in rows:
-            url = (row.get("href") or row.get("url") or "").strip()
-            if not url or not is_pdf_candidate_url(url):
-                continue
-            title = (row.get("title") or row.get("body") or "").strip()
-            hits.append(SearchHit(url=url, title=title, query=query))
-    return rank_hits(hits)
+    for row in rows:
+        url = (row.get("href") or row.get("url") or "").strip()
+        if not url or not is_pdf_candidate_url(url):
+            continue
+        title = (row.get("title") or row.get("body") or "").strip()
+        hits.append(SearchHit(url=url, title=title, query=query))
+    return hits
+
+
+def _search_query_variants(user_query: str, *, china_bias: bool) -> list[str]:
+    q = user_query.strip()
+    variants = [build_search_query(q, china_bias=china_bias)]
+    if china_bias:
+        variants.append(build_search_query(q, china_bias=False))
+    variants.append(f"{q} filetype:pdf 维修手册 中文")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in variants:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def search_duckduckgo(
+    query: str,
+    max_results: int,
+    *,
+    china_bias: bool,
+    region: str,
+    search_timeout: int,
+    search_backend: str,
+    proxy: str | None,
+) -> list[SearchHit]:
+    """DuckDuckGo 元搜索；默认依次尝试 duckduckgo / bing / brave。"""
+    DDGS = _import_ddgs()
+    backends = (
+        ["duckduckgo", "bing", "brave"]
+        if search_backend == "auto"
+        else [b.strip() for b in search_backend.split(",") if b.strip()]
+    )
+    if not backends:
+        backends = ["duckduckgo", "bing", "brave"]
+
+    regions = [region or "cn-zh", "wt-wt", "us-en"]
+    seen_regions: list[str] = []
+    for r in regions:
+        if r not in seen_regions:
+            seen_regions.append(r)
+
+    last_error: Exception | None = None
+    for search_q in _search_query_variants(query, china_bias=china_bias):
+        for backend in backends:
+            for reg in seen_regions:
+                try:
+                    with DDGS(proxy=proxy, timeout=search_timeout) as ddgs:
+                        kwargs: dict = {
+                            "max_results": max_results,
+                            "backend": backend,
+                            "region": reg,
+                        }
+                        try:
+                            rows = ddgs.text(search_q, **kwargs)
+                        except TypeError:
+                            kwargs.pop("region", None)
+                            rows = ddgs.text(search_q, **kwargs)
+                    hits = _rows_to_hits(rows, query)
+                    if hits:
+                        print(
+                            f"[搜索] {backend}/{reg} 返回 {len(hits)} 条 PDF 候选",
+                            file=sys.stderr,
+                        )
+                        return rank_hits(hits)
+                    print(
+                        f"[搜索] {backend}/{reg} 无 PDF 直链，换下一组合…",
+                        file=sys.stderr,
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    print(
+                        f"[搜索重试] {backend}/{reg} query={search_q[:40]!r}… {exc}",
+                        file=sys.stderr,
+                    )
+    if last_error:
+        raise last_error
+    return []
 
 
 def search_google_cse(query: str, max_results: int, *, china_bias: bool) -> list[SearchHit]:
@@ -298,11 +406,22 @@ def search_hits(
     *,
     china_bias: bool,
     region: str,
+    search_timeout: int,
+    search_backend: str,
+    proxy: str | None,
 ) -> list[SearchHit]:
     if provider == "google":
         return search_google_cse(query, max_results, china_bias=china_bias)
     if provider == "duckduckgo":
-        return search_duckduckgo(query, max_results, china_bias=china_bias, region=region)
+        return search_duckduckgo(
+            query,
+            max_results,
+            china_bias=china_bias,
+            region=region,
+            search_timeout=search_timeout,
+            search_backend=search_backend,
+            proxy=proxy,
+        )
     raise ValueError(f"未知搜索提供方: {provider}")
 
 
@@ -494,6 +613,9 @@ def collect_candidates(
     *,
     china_bias: bool,
     region: str,
+    search_timeout: int,
+    search_backend: str,
+    proxy: str | None,
 ) -> list[SearchHit]:
     candidates: list[SearchHit] = []
     for query in queries:
@@ -504,6 +626,9 @@ def collect_candidates(
                 search_results,
                 china_bias=china_bias,
                 region=region,
+                search_timeout=search_timeout,
+                search_backend=search_backend,
+                proxy=proxy,
             )
         except Exception as exc:
             print(f"[搜索失败] query={query!r}: {exc}", file=sys.stderr)
@@ -584,6 +709,22 @@ def main() -> None:
         help="DuckDuckGo 区域代码（默认 cn-zh；不支持时自动忽略）",
     )
     parser.add_argument(
+        "--search-timeout",
+        type=int,
+        default=30,
+        help="单次搜索引擎请求超时秒数（ddgs 默认仅 5 秒，易触发 Yahoo 超时）",
+    )
+    parser.add_argument(
+        "--search-backend",
+        default="duckduckgo,bing,brave",
+        help="ddgs 后端：duckduckgo,bing,brave（默认多后端轮询）；auto 等同多后端",
+    )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="代理 URL，如 socks5://127.0.0.1:10808；也可写 10808 或 127.0.0.1:10808（自动补 socks5）",
+    )
+    parser.add_argument(
         "--prefilter",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -605,6 +746,15 @@ def main() -> None:
     known_urls, known_hashes = load_manifest(manifest_path)
     seen_urls = set(known_urls)
     stats = RunStats()
+    proxy = _resolve_proxy(args.proxy)
+    if proxy:
+        print(f"[代理] 使用 {_mask_proxy(proxy)}", file=sys.stderr)
+    else:
+        print(
+            "[代理] 未检测到。Clash 端口 10808 请用: "
+            "--proxy 10808  或  set DDGS_PROXY=socks5://127.0.0.1:10808",
+            file=sys.stderr,
+        )
 
     candidates = collect_candidates(
         args.provider,
@@ -613,9 +763,19 @@ def main() -> None:
         seen_urls,
         china_bias=args.china_bias,
         region=args.region,
+        search_timeout=args.search_timeout,
+        search_backend=args.search_backend,
+        proxy=proxy,
     )
     if not candidates:
-        print("未找到任何 PDF 候选链接，请调整 --query 或检查网络/代理。", file=sys.stderr)
+        print(
+            "未找到任何 PDF 候选链接。可尝试：\n"
+            "  1) Clash 端口 10808（SOCKS5）: --proxy 10808\n"
+            "     或 set DDGS_PROXY=socks5://127.0.0.1:10808\n"
+            "  2) 多后端: --search-backend duckduckgo,bing,brave\n"
+            "  3) 更具体 --query，如「摩托车发动机 维修手册」",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     if args.dry_run:
@@ -633,8 +793,11 @@ def main() -> None:
     target = max(args.count, 0)
     headers = {"User-Agent": DEFAULT_USER_AGENT}
     timeout = httpx.Timeout(15.0, read=120.0)
+    httpx_proxy: str | None = proxy
+    if proxy and proxy.startswith("socks5"):
+        httpx_proxy = proxy.replace("socks5://", "socks5h://", 1)
 
-    with httpx.Client(headers=headers, timeout=timeout) as client:
+    with httpx.Client(headers=headers, timeout=timeout, proxy=httpx_proxy) as client:
         for hit in candidates:
             if saved >= target:
                 break

@@ -1,4 +1,4 @@
-﻿"""检修域 HTTP 路由：`/api/v1/maintenance`。"""
+"""检修域 HTTP 路由：`/api/v1/maintenance`。"""
 from __future__ import annotations
 
 import json
@@ -12,9 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.db.session import get_session
 from app.modules.maintenance.deps import CurrentUserCtx, get_current_user_ctx, require_roles
+from app.modules.maintenance.auth_cookies import REFRESH_COOKIE_NAME, clear_refresh_cookie, set_refresh_cookie
 from app.modules.maintenance.errors import MaintenanceAPIError
-from app.modules.maintenance.application.captcha_service import issue_captcha
+from app.modules.maintenance.application.captcha_service import issue_captcha, verify_and_consume
 from app.modules.maintenance.service import ATTACHMENT_UPLOAD_MAX_BYTES, MaintenanceService
+from app.services.email_service import EmailService
+from app.services.sms_service import SmsService
+from app.services.verification_code_service import (
+    ALLOWED_EMAIL_SCENES,
+    ALLOWED_SMS_SCENES,
+    EMAIL_CODE_EXPIRE_SECONDS,
+    SMS_CODE_EXPIRE_SECONDS,
+    VerificationCodeService,
+)
 
 PREFIX = "/api/v1/maintenance"
 
@@ -62,6 +72,71 @@ async def auth_captcha():
     return _ok(await issue_captcha())
 
 
+async def _verify_optional_captcha(body: dict[str, Any]) -> None:
+    captcha_id = body.get("captchaId") or body.get("captcha_id")
+    captcha_code = body.get("captchaCode") or body.get("captcha_code")
+    if captcha_id or captcha_code:
+        await verify_and_consume(captcha_id, captcha_code)
+
+
+@router.post("/auth/email-code/send")
+async def auth_email_code_send(
+    body: dict[str, Any],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        email = str(body.get("email") or "").strip().lower()
+        scene = str(body.get("scene") or "").strip()
+        if scene not in ALLOWED_EMAIL_SCENES:
+            raise MaintenanceAPIError(400, "INVALID_VERIFY_SCENE", "验证码场景不符合平台规范")
+        if "@" not in email:
+            raise MaintenanceAPIError(400, "INVALID_EMAIL", "请输入有效邮箱")
+        await _verify_optional_captcha(body)
+        verify_service = VerificationCodeService(settings)
+        await verify_service.send_code_limit_check(scene, email)
+        code = verify_service.generate_code()
+        await verify_service.save_code(scene, email, code, EMAIL_CODE_EXPIRE_SECONDS)
+        await EmailService(settings).send_verification_code(email, code, scene)
+        return _ok({"expires_in": EMAIL_CODE_EXPIRE_SECONDS})
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
+@router.post("/auth/sms-code/send")
+async def auth_sms_code_send(
+    body: dict[str, Any],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        phone = str(body.get("phone") or "").strip()
+        scene = str(body.get("scene") or "").strip()
+        if scene not in ALLOWED_SMS_SCENES:
+            raise MaintenanceAPIError(400, "INVALID_VERIFY_SCENE", "验证码场景不符合平台规范")
+        if len(phone) < 6:
+            raise MaintenanceAPIError(400, "INVALID_PHONE", "请输入有效手机号")
+        await _verify_optional_captcha(body)
+        verify_service = VerificationCodeService(settings)
+        await verify_service.send_code_limit_check(scene, phone)
+        code = verify_service.generate_code()
+        await verify_service.save_code(scene, phone, code, SMS_CODE_EXPIRE_SECONDS)
+        await SmsService(settings).send_verification_code(phone, code, scene)
+        return _ok({"expires_in": SMS_CODE_EXPIRE_SECONDS})
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
 @router.post("/auth/login")
 async def auth_login(
     body: dict[str, Any],
@@ -71,13 +146,28 @@ async def auth_login(
 ):
     try:
         data = await _svc(session, settings).login(
-            body.get("username", ""),
+            body.get("account") or body.get("username", ""),
             body.get("password", ""),
             captcha_id=body.get("captchaId") or body.get("captcha_id"),
             captcha_code=body.get("captchaCode") or body.get("captcha_code"),
             client_ip=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            remember_me=bool(body.get("remember_me") or body.get("rememberMe")),
         )
-        return _ok(data)
+        refresh_token = str(data.pop("refresh_token") or "")
+        response = JSONResponse(
+            status_code=200,
+            content=_ok(data),
+        )
+        if refresh_token:
+            set_refresh_cookie(
+                response,
+                request,
+                settings,
+                refresh_token=refresh_token,
+                remember_me=bool(body.get("remember_me") or body.get("rememberMe")),
+            )
+        return response
     except MaintenanceAPIError as e:
         return _err(
             status_code=e.status_code,
@@ -91,12 +181,53 @@ async def auth_login(
 @router.post("/auth/register")
 async def auth_register(
     body: dict[str, Any],
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
     try:
-        data = await _svc(session, settings).register(body)
-        return _ok(data, message="注册成功")
+        data = await _svc(session, settings).register(body, client_ip=_client_ip(request))
+        return _ok(data, message="注册申请已提交，请等待管理员审核。")
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
+@router.post("/auth/password-reset/request")
+async def auth_password_reset_request(
+    body: dict[str, Any],
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        data = await _svc(session, settings).request_password_reset(body, client_ip=_client_ip(request))
+        return _ok(data, message=data.get("message"))
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
+@router.post("/auth/password-reset/confirm")
+async def auth_password_reset_confirm(
+    body: dict[str, Any],
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        data = await _svc(session, settings).confirm_password_reset(body, client_ip=_client_ip(request))
+        return _ok(data, message="密码已重置，请重新登录")
     except MaintenanceAPIError as e:
         return _err(
             status_code=e.status_code,
@@ -110,12 +241,13 @@ async def auth_register(
 @router.post("/auth/forgot-password")
 async def auth_forgot_password(
     body: dict[str, Any],
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
     try:
-        data = await _svc(session, settings).forgot_password(body)
-        return _ok(data, message="密码已重置")
+        data = await _svc(session, settings).request_password_reset(body, client_ip=_client_ip(request))
+        return _ok(data, message=data.get("message"))
     except MaintenanceAPIError as e:
         return _err(
             status_code=e.status_code,
@@ -127,8 +259,42 @@ async def auth_forgot_password(
 
 
 @router.post("/auth/logout")
-async def auth_logout():
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+async def auth_logout(request: Request):
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_refresh_cookie(response, request)
+    return response
+
+
+@router.post("/auth/refresh")
+async def auth_refresh(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: dict[str, Any] | None = None,
+):
+    try:
+        body = body or {}
+        refresh_token = request.cookies.get(REFRESH_COOKIE_NAME) or str(body.get("refresh_token") or "")
+        data = await _svc(session, settings).refresh(refresh_token)
+        refresh_cookie = str(data.pop("refresh_token") or "")
+        response = JSONResponse(status_code=200, content=_ok(data))
+        if refresh_cookie:
+            set_refresh_cookie(
+                response,
+                request,
+                settings,
+                refresh_token=refresh_cookie,
+                remember_me=bool(data.get("remember_me")),
+            )
+        return response
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
 
 
 @router.get("/auth/me")
@@ -138,6 +304,18 @@ async def auth_me(
     settings: Annotated[Settings, Depends(get_settings)],
 ):
     data = await _svc(session, settings).get_me(ctx)
+    return _ok(data)
+
+
+@router.get("/admin/users")
+async def admin_users(
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    data = await _svc(session, settings).admin_list_users(page, page_size)
     return _ok(data)
 
 

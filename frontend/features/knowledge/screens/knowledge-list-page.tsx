@@ -1,14 +1,28 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  fetchKnowledgeBases,
+  fetchKnowledgeCategories,
   fetchKnowledgeDocuments,
   fetchKnowledgeImports,
   deleteKnowledgeDocument,
   deleteKnowledgeImportJob,
 } from "@/features/knowledge/api";
+import { CreateKnowledgeBaseDialog } from "@/features/knowledge/components/create-knowledge-base-dialog";
+import { KnowledgeBaseToolbar } from "@/features/knowledge/components/knowledge-base-toolbar";
+import { KnowledgeUploadDialog } from "@/features/knowledge/components/knowledge-upload-dialog";
+import {
+  readStoredKnowledgeBaseId,
+  writeStoredKnowledgeBaseId,
+} from "@/features/knowledge/lib/knowledge-base-storage";
+import { getApiBase, type KnowledgeBaseSummary } from "@/shared/lib/http";
+import {
+  importStageLabel,
+  isActiveImportStage,
+} from "@/features/knowledge/lib/import-task";
 import { toast } from "sonner";
 import {
   Search,
@@ -52,6 +66,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/shared/components/ui/alert-dialog";
+import { Button } from "@/shared/components/ui/button";
 
 function splitDateTime(value: string) {
   const parsed = Date.parse(value);
@@ -104,12 +119,14 @@ interface KnowledgeDocument {
   importStatus?: string;
   errorMessage?: string;
   sourceType?: string;
+  documentType?: string;
   equipmentType?: string;
   equipmentModel?: string;
 }
 
 const contentCategoryDefinitions = [
   { id: "manual", name: "设备手册", icon: <FileText className="w-4 h-4" /> },
+  { id: "image", name: "现场图片", icon: <Eye className="w-4 h-4" /> },
   { id: "sop", name: "SOP流程", icon: <FolderTree className="w-4 h-4" /> },
   { id: "case", name: "故障案例", icon: <BookOpen className="w-4 h-4" /> },
   { id: "expert", name: "专家经验", icon: <Star className="w-4 h-4" /> },
@@ -119,9 +136,12 @@ type KnowledgeContentCategoryId =
   (typeof contentCategoryDefinitions)[number]["id"];
 
 function resolveKnowledgeCategoryId(
-  doc: Pick<KnowledgeDocument, "sourceType" | "tags">,
+  doc: Pick<KnowledgeDocument, "sourceType" | "tags" | "documentType">,
 ): KnowledgeContentCategoryId {
-  const candidates = [doc.sourceType, ...doc.tags]
+  if (doc.documentType === "image") {
+    return "image";
+  }
+  const candidates = [doc.sourceType, doc.documentType, ...doc.tags]
     .filter((item): item is string => Boolean(item))
     .map((item) => item.toLowerCase());
 
@@ -228,17 +248,18 @@ function DocumentListItem({
   onClick: () => void;
   onOpenDetail: () => void;
 }) {
+  const importFailed = doc.importStatus === "failed";
   const statusLabel = doc.isImportJob
-    ? doc.importStatus === "failed"
-      ? "解析失败"
-      : "导入中"
+    ? importFailed
+      ? "导入失败"
+      : importStageLabel(doc.importStatus)
     : doc.status === "published"
       ? "已发布"
       : "草稿";
 
   const statusClassName = doc.isImportJob
-    ? doc.importStatus === "failed"
-      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+    ? importFailed
+      ? "bg-red-500/10 text-red-400 border border-red-500/20"
       : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
     : doc.status === "published"
       ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
@@ -358,6 +379,7 @@ export default function KnowledgePageClient() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"updated" | "title">("updated");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showMobilePreview, setShowMobilePreview] = useState(false);
   const [apiDocs, setApiDocs] = useState<KnowledgeDocument[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeDocument | null>(
@@ -365,6 +387,15 @@ export default function KnowledgePageClient() {
   );
   const [importingCount, setImportingCount] = useState(0);
   const [failedImportCount, setFailedImportCount] = useState(0);
+  const [uploadDrawerOpen, setUploadDrawerOpen] = useState(false);
+  const [createBaseOpen, setCreateBaseOpen] = useState(false);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseSummary[]>([]);
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState<number | null>(null);
+  const [knowledgeBaseName, setKnowledgeBaseName] = useState("设备检修知识库");
+  const [basesLoading, setBasesLoading] = useState(true);
+  const [categoryStats, setCategoryStats] = useState<
+    { id: string; name: string; count: number }[]
+  >([]);
 
   const openDocumentDetail = (doc: KnowledgeDocument) => {
     if (doc.isImportJob) return;
@@ -412,16 +443,85 @@ export default function KnowledgePageClient() {
     );
   };
 
+  const applyKnowledgeBase = useCallback((base: KnowledgeBaseSummary) => {
+    setKnowledgeBaseId(base.id);
+    setKnowledgeBaseName(base.name);
+    writeStoredKnowledgeBaseId(base.id);
+    setSelectedCategory("all");
+    setSelectedDoc(null);
+  }, []);
+
+  const loadKnowledgeBases = useCallback(async () => {
+    setBasesLoading(true);
+    try {
+      const payload = await fetchKnowledgeBases(50);
+      setKnowledgeBases(payload.bases);
+      if (payload.bases.length === 0) {
+        setKnowledgeBaseId(null);
+        setKnowledgeBaseName("");
+        return payload.bases;
+      }
+
+      const storedId = readStoredKnowledgeBaseId();
+      const matched =
+        (storedId != null
+          ? payload.bases.find((base) => base.id === storedId)
+          : null) ?? payload.bases[0];
+
+      setKnowledgeBaseId(matched.id);
+      setKnowledgeBaseName(matched.name);
+      writeStoredKnowledgeBaseId(matched.id);
+      return payload.bases;
+    } catch {
+      setKnowledgeBases([]);
+      setKnowledgeBaseId(null);
+      setKnowledgeBaseName("");
+      return [];
+    } finally {
+      setBasesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadKnowledgeBases();
+  }, [loadKnowledgeBases]);
+
+  const handleSelectKnowledgeBase = useCallback(
+    (base: KnowledgeBaseSummary) => {
+      applyKnowledgeBase(base);
+    },
+    [applyKnowledgeBase],
+  );
+
+  const handleKnowledgeBaseCreated = useCallback(
+    async (base: KnowledgeBaseSummary) => {
+      const refreshed = await loadKnowledgeBases();
+      const created =
+        refreshed.find((item) => item.id === base.id) ?? base;
+      applyKnowledgeBase(created);
+    },
+    [applyKnowledgeBase, loadKnowledgeBases],
+  );
+
   const loadKnowledgeState = useCallback(
     async (options?: { silent?: boolean }) => {
+      if (!knowledgeBaseId) {
+        setApiDocs([]);
+        setCategoryStats([]);
+        setSelectedDoc(null);
+        return;
+      }
       if (!options?.silent) {
         setIsLoading(true);
       }
       try {
-        const [documentPayload, importPayload] = await Promise.all([
-          fetchKnowledgeDocuments(50),
-          fetchKnowledgeImports(12),
+        const baseId = knowledgeBaseId;
+        const [documentPayload, importPayload, categoryPayload] = await Promise.all([
+          fetchKnowledgeDocuments(50, baseId),
+          fetchKnowledgeImports(12, baseId),
+          fetchKnowledgeCategories(baseId),
         ]);
+        setCategoryStats(categoryPayload.categories);
         const mappedDocs: KnowledgeDocument[] = documentPayload.documents.map(
           (d) => ({
             id: String(d.id),
@@ -435,6 +535,7 @@ export default function KnowledgePageClient() {
             abstract: `${d.equipment_type}${d.equipment_model ? ` / ${d.equipment_model}` : ""}`,
             revisions: [],
             sourceType: d.source_type || "manual",
+            documentType: d.document_type || "pdf",
             equipmentType: d.equipment_type || "",
             equipmentModel: d.equipment_model || "",
           }),
@@ -494,20 +595,35 @@ export default function KnowledgePageClient() {
           return mergedDocs[0] ?? null;
         });
         setImportingCount(
-          importPayload.jobs.filter(
-            (job) => job.status === "pending" || job.status === "processing",
-          ).length,
+          importPayload.jobs.filter((job) => isActiveImportStage(job.status)).length,
         );
         setFailedImportCount(
           importPayload.jobs.filter((job) => job.status === "failed").length,
         );
+        setLoadError(null);
+      } catch (error) {
+        const rawMessage =
+          error instanceof Error ? error.message : "知识库数据加载失败";
+        if (rawMessage.includes("无权") || rawMessage.includes("不存在")) {
+          void loadKnowledgeBases();
+        }
+        const apiBase = getApiBase();
+        const friendlyMessage =
+          rawMessage === "Failed to fetch" ||
+          rawMessage.toLowerCase().includes("failed to fetch")
+            ? `无法连接知识库服务（${apiBase}）。请确认后端已启动，并在 backend 目录执行：python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+            : rawMessage;
+        setLoadError(friendlyMessage);
+        if (!options?.silent) {
+          toast.error("知识文档列表加载失败，请检查后端服务");
+        }
       } finally {
         if (!options?.silent) {
           setIsLoading(false);
         }
       }
     },
-    [highlightImportJobId],
+    [highlightImportJobId, knowledgeBaseId, loadKnowledgeBases],
   );
 
   useEffect(() => {
@@ -540,32 +656,38 @@ export default function KnowledgePageClient() {
     [apiDocs],
   );
 
-  const typeCounts = useMemo(() => {
-    const counts: Partial<Record<KnowledgeContentCategoryId, number>> = {};
-    for (const doc of contentDocs) {
-      const categoryId = resolveKnowledgeCategoryId(doc);
-      counts[categoryId] = (counts[categoryId] || 0) + 1;
-    }
-    return counts;
-  }, [contentDocs]);
+  const categoryIconById = useMemo(
+    () =>
+      Object.fromEntries(
+        contentCategoryDefinitions.map((category) => [category.id, category.icon]),
+      ) as Partial<Record<string, React.ReactNode>>,
+    [],
+  );
 
-  const categoryTree: KnowledgeCategory[] = useMemo(
-    () => [
+  const categoryTree: KnowledgeCategory[] = useMemo(() => {
+    const allStat = categoryStats.find((item) => item.id === "all");
+    const children = categoryStats
+      .filter((item) => item.id !== "all")
+      .map((item) => ({
+        id: item.id as KnowledgeContentCategoryId,
+        name: item.name,
+        icon: categoryIconById[item.id] ?? <FileText className="w-4 h-4" />,
+        count: item.count,
+      }))
+      .filter((item) =>
+        contentCategoryDefinitions.some((definition) => definition.id === item.id),
+      );
+
+    return [
       {
         id: "all",
         name: "全部文档",
         icon: <FileText className="w-4 h-4" />,
-        count: apiDocs.length,
-        children: contentCategoryDefinitions
-          .map((category) => ({
-            ...category,
-            count: typeCounts[category.id] || 0,
-          }))
-          .filter((category) => category.count > 0),
+        count: allStat?.count ?? apiDocs.length,
+        children,
       },
-    ],
-    [apiDocs.length, typeCounts],
-  );
+    ];
+  }, [apiDocs.length, categoryIconById, categoryStats]);
 
   const visibleCategoryIds = useMemo(
     () =>
@@ -639,28 +761,74 @@ export default function KnowledgePageClient() {
               <p className="mt-1 text-sm text-muted-foreground">
                 上传设备手册、SOP、检修规范和现场图片，构建可检索知识库。
               </p>
+              <KnowledgeBaseToolbar
+                bases={knowledgeBases}
+                currentBaseId={knowledgeBaseId}
+                currentBaseName={knowledgeBaseName || "未选择知识库"}
+                disabled={basesLoading}
+                onSelectBase={handleSelectKnowledgeBase}
+                onCreateClick={() => setCreateBaseOpen(true)}
+              />
             </div>
-            <Link
-              href="/knowledge/graph"
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-md border border-[#5e6ad2]/30 text-[#5e6ad2] hover:bg-[#5e6ad2]/10 transition-colors"
-            >
-              <svg
-                className="w-4 h-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!knowledgeBaseId) {
+                    toast.error("请先选择或创建知识库");
+                    return;
+                  }
+                  setUploadDrawerOpen(true);
+                }}
+                disabled={!knowledgeBaseId}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-transparent px-4 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
               >
-                <circle cx="6" cy="6" r="3" />
-                <circle cx="18" cy="18" r="3" />
-                <circle cx="18" cy="6" r="3" />
-                <line x1="8.5" y1="7.5" x2="15.5" y2="16.5" />
-                <line x1="15.5" y1="7.5" x2="8.5" y2="16.5" />
-              </svg>
-              知识图谱
-            </Link>
+                <BookOpen className="h-4 w-4" />
+                <span className="hidden sm:inline">知识文档上传</span>
+              </button>
+              <Link
+                href="/knowledge/graph"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-[#5e6ad2]/30 px-4 text-sm text-[#5e6ad2] transition-colors hover:bg-[#5e6ad2]/10"
+              >
+                <svg
+                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <circle cx="6" cy="6" r="3" />
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="18" cy="6" r="3" />
+                  <line x1="8.5" y1="7.5" x2="15.5" y2="16.5" />
+                  <line x1="15.5" y1="7.5" x2="8.5" y2="16.5" />
+                </svg>
+                知识图谱
+              </Link>
+            </div>
           </div>
         </section>
+
+        {loadError ? (
+          <section className="mb-4">
+            <div className="app-card flex flex-col gap-3 border-amber-500/30 bg-amber-500/5 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p className="leading-relaxed">{loadError}</p>
+              </div>
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+                onClick={() => {
+                  void loadKnowledgeState();
+                }}
+              >
+                <RefreshCw className="h-4 w-4" />
+                重试
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {importingCount > 0 || failedImportCount > 0 ? (
           <section className="mb-4">
@@ -692,6 +860,24 @@ export default function KnowledgePageClient() {
                 <RefreshCw className="h-4 w-4" />
                 立即刷新
               </button>
+            </div>
+          </section>
+        ) : null}
+
+        {!basesLoading && knowledgeBases.length === 0 ? (
+          <section className="mb-4">
+            <div className="app-card flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+              <FolderOpen className="h-10 w-10 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">
+                暂无知识库，请先创建知识库后上传文档。
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateBaseOpen(true)}
+              >
+                新建知识库
+              </Button>
             </div>
           </section>
         ) : null}
@@ -975,6 +1161,25 @@ export default function KnowledgePageClient() {
           </aside>
         </div>
       </div>
+
+      <CreateKnowledgeBaseDialog
+        open={createBaseOpen}
+        onOpenChange={setCreateBaseOpen}
+        onCreated={(base) => {
+          void handleKnowledgeBaseCreated(base);
+        }}
+      />
+
+      <KnowledgeUploadDialog
+        open={uploadDrawerOpen}
+        onOpenChange={setUploadDrawerOpen}
+        knowledgeBaseId={knowledgeBaseId ?? 0}
+        knowledgeBaseName={knowledgeBaseName}
+        onJobsFinished={() => {
+          void loadKnowledgeState({ silent: true });
+          void loadKnowledgeBases();
+        }}
+      />
 
       <AlertDialog
         open={Boolean(deleteTarget)}

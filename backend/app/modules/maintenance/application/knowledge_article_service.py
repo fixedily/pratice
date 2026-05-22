@@ -1,4 +1,4 @@
-﻿"""Knowledge-article operations for maintenance."""
+"""Knowledge-article operations for maintenance."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -355,7 +355,13 @@ class MaintenanceKnowledgeArticleService:
 
             doc_body = (article.body or "").strip()
             if len(doc_body) >= 20 and doc_body != "待完善":
+                from app.services.knowledge_base_service import KnowledgeBaseService
+
+                default_base_id = (
+                    await KnowledgeBaseService(self.session).ensure_default_knowledge_base()
+                ).id
                 doc_create = KnowledgeDocumentCreate(
+                    knowledge_base_id=default_base_id,
                     title=article.title or f"知识文章 #{article.id}",
                     source_name=f"kb-article-{article.id}",
                     source_type="expert",
@@ -384,7 +390,7 @@ class MaintenanceKnowledgeArticleService:
                 None,
             )
             await self.session.commit()
-            cache_service.clear()
+            await cache_service.clear_async()
         except IntegrityError:
             await self.session.rollback()
             raise MaintenanceAPIError(409, "SERIES_PUBLISHED_CONFLICT", "同系列已存在已发布版本") from None
@@ -419,6 +425,6 @@ class MaintenanceKnowledgeArticleService:
             None,
         )
         await self.session.commit()
-        cache_service.clear()
+        await cache_service.clear_async()
         items = await self._serialize_articles([article])
         return items[0]

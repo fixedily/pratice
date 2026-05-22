@@ -1,4 +1,4 @@
-﻿"""Sensor data ORM model exports."""
+"""Sensor data ORM model exports."""
 from app.db.base import Base
 from app.models.sensor_data import SensorData
 

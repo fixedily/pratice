@@ -1,4 +1,4 @@
-﻿"""Semantic knowledge graph schema compatibility exports."""
+"""Semantic knowledge graph schema compatibility exports."""
 from app.schemas.knowledge_semantic_graph import (
     SemanticEntitySearchItem,
     SemanticEntitySearchResponse,

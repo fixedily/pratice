@@ -1,9 +1,8 @@
-﻿"""Lightweight in-memory TTL cache for knowledge search results.
+"""TTL cache for knowledge search results.
 
-Uses ``cachetools.TTLCache`` (LRU eviction + time-to-live).  The cache is
-process-local and intentionally simple — no Redis, no persistence.  It is
-designed for the demo / development scenario where the same query is repeated
-several times within a short window.
+Redis is used when configured and reachable so cache entries are shared across
+workers.  If Redis is disabled or degraded, the service falls back to the
+process-local TTL cache used by the demo/development path.
 
 Configuration (via environment variables / Settings):
     ENABLE_SEARCH_CACHE   bool   default True
@@ -24,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - runtime fallback
     CachetoolsTTLCache = None
 
 logger = logging.getLogger(__name__)
+SEARCH_CACHE_INDEX_PART = "__search_cache_keys__"
 
 
 class FallbackTTLCache:
@@ -123,33 +123,102 @@ def make_cache_key(
     return "search:" + hashlib.md5(raw.encode()).hexdigest()
 
 
-def get(key: str) -> Any | None:
-    """Return cached value or *None* on miss / disabled."""
+def _redis_cache_key(key: str) -> str:
+    from app.core.redis import get_redis_service
+
+    if key.startswith("search:"):
+        return get_redis_service().key("search", key.split(":", 1)[1])
+    return get_redis_service().key("search", key)
+
+
+def _redis_index_key() -> str:
+    from app.core.redis import get_redis_service
+
+    return get_redis_service().key("cache", SEARCH_CACHE_INDEX_PART)
+
+
+def _cache_enabled() -> bool:
     try:
         from app.core.config import get_settings
 
-        if not getattr(get_settings(), "enable_search_cache", True):
-            return None
+        return bool(getattr(get_settings(), "enable_search_cache", True))
     except Exception:
-        pass
-    cache = _get_cache()
-    value = cache.get(key)
+        return True
+
+
+def _cache_ttl() -> int:
+    try:
+        from app.core.config import get_settings
+
+        return int(getattr(get_settings(), "search_cache_ttl", 300))
+    except Exception:
+        return 300
+
+
+def _memory_get(key: str) -> Any | None:
+    value = _get_cache().get(key)
     if value is not None:
-        logger.debug("cache_hit key=%s", key)
+        logger.debug("cache_hit key=%s backend=memory", key)
     return value
+
+
+def _memory_set(key: str, value: Any) -> None:
+    _get_cache()[key] = value
+    logger.debug("cache_set key=%s backend=memory", key)
+
+
+def get(key: str) -> Any | None:
+    """Return cached value or *None* on miss / disabled."""
+    if not _cache_enabled():
+        return None
+    return _memory_get(key)
 
 
 def set(key: str, value: Any) -> None:  # noqa: A001
     """Store *value* under *key*.  Silently skips if cache is disabled."""
-    try:
-        from app.core.config import get_settings
+    if not _cache_enabled():
+        return
+    _memory_set(key, value)
 
-        if not getattr(get_settings(), "enable_search_cache", True):
-            return
-    except Exception:
-        pass
-    _get_cache()[key] = value
-    logger.debug("cache_set key=%s", key)
+
+async def get_async(key: str) -> Any | None:
+    """Return cached value from Redis first, then memory fallback."""
+    if not _cache_enabled():
+        return None
+    try:
+        from app.core.redis import get_redis_service
+
+        redis = get_redis_service()
+        if redis.available:
+            raw = await redis.get(_redis_cache_key(key))
+            if raw is not None:
+                logger.debug("cache_hit key=%s backend=redis", key)
+                return json.loads(raw)
+    except Exception as exc:
+        logger.warning("search_cache_redis_get_failed key=%s error=%s", key, exc)
+    return _memory_get(key)
+
+
+async def set_async(key: str, value: Any) -> None:
+    """Store value in Redis when possible and memory as a local fallback."""
+    if not _cache_enabled():
+        return
+    stored_in_redis = False
+    try:
+        from app.core.redis import get_redis_service
+
+        redis = get_redis_service()
+        if redis.available:
+            payload = json.dumps(value, ensure_ascii=False, default=str)
+            redis_key = _redis_cache_key(key)
+            await redis.set(redis_key, payload, ex=_cache_ttl())
+            await redis.sadd(_redis_index_key(), redis_key)
+            stored_in_redis = True
+            logger.debug("cache_set key=%s backend=redis", key)
+    except Exception as exc:
+        logger.warning("search_cache_redis_set_failed key=%s error=%s", key, exc)
+    if not stored_in_redis:
+        _memory_set(key, value)
 
 
 def invalidate(key: str) -> None:
@@ -158,10 +227,40 @@ def invalidate(key: str) -> None:
     cache.pop(key, None)
 
 
+async def invalidate_async(key: str) -> None:
+    invalidate(key)
+    try:
+        from app.core.redis import get_redis_service
+
+        redis = get_redis_service()
+        if redis.available:
+            await redis.delete(_redis_cache_key(key))
+    except Exception as exc:
+        logger.warning("search_cache_redis_invalidate_failed key=%s error=%s", key, exc)
+
+
 def clear() -> None:
     """Flush the entire cache (e.g. after bulk document import)."""
     _get_cache().clear()
-    logger.info("SearchCache cleared")
+    logger.info("SearchCache cleared backend=memory")
+
+
+async def clear_async() -> None:
+    """Flush search cache entries without touching unrelated Redis keys."""
+    clear()
+    try:
+        from app.core.redis import get_redis_service
+
+        redis = get_redis_service()
+        if redis.available:
+            index_key = _redis_index_key()
+            keys = await redis.smembers(index_key)
+            if keys:
+                await redis.delete(*keys)
+            await redis.delete(index_key)
+            logger.info("SearchCache cleared backend=redis count=%d", len(keys))
+    except Exception as exc:
+        logger.warning("search_cache_redis_clear_failed error=%s", exc)
 
 
 def stats() -> dict[str, int]:

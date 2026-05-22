@@ -1,4 +1,4 @@
-﻿export {
+export {
   type MaintenanceCaseDetail,
   type MaintenanceCaseListResponse,
   deleteMaintenanceTask,
@@ -9,6 +9,7 @@
   fetchTaskExport,
   fetchWorkbenchOverview,
   getApiBase,
+  maintenanceLogout,
   pingBackendReadiness,
   type MaintenanceTaskHistoryResponse,
   type WorkbenchOverview,

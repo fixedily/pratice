@@ -1,4 +1,4 @@
-﻿"""Phase 25: graph runtime state and response contract."""
+"""Phase 25: graph runtime state and response contract."""
 from datetime import datetime, timezone
 
 from app.modules.assistant.application.graph_state import CritiqueArtifact, GraphState, StageArtifact

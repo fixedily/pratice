@@ -1,4 +1,4 @@
-﻿"""Phase 18: 正式工作台与 Agent 协作骨架测试."""
+"""Phase 18: 正式工作台与 Agent 协作骨架测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch

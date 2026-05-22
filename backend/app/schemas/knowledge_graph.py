@@ -1,4 +1,4 @@
-﻿"""Knowledge graph query schemas."""
+"""Knowledge graph query schemas."""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

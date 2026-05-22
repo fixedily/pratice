@@ -1,4 +1,4 @@
-﻿"""Build an initial conditional run plan for assistant requests."""
+"""Build an initial conditional run plan for assistant requests."""
 from __future__ import annotations
 
 from app.modules.assistant.application.runtime_types import ResolvedAgentConfig, ResolvedRunPlan, RunPlanStep

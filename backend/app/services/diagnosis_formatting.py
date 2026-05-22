@@ -1,4 +1,4 @@
-﻿"""Helpers for producing structured diagnosis payloads and legacy text reports."""
+"""Helpers for producing structured diagnosis payloads and legacy text reports."""
 from __future__ import annotations
 
 import json

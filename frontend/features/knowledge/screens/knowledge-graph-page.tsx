@@ -2,10 +2,12 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react"
 import Link from "next/link"
-import { ArrowLeft, RefreshCw, Filter, Network, Sparkles } from "lucide-react"
+import { ArrowLeft, RefreshCw, Filter, Network, Sparkles, ShieldCheck } from "lucide-react"
 import { Header } from "@/shared/components/brand/app-header"
 import KnowledgeGraphG6Canvas from "@/features/knowledge/components/knowledge-graph-g6-canvas"
 import { useAppTheme } from "@/shared/theme/app-theme"
+import { useMaintenanceAuth } from "@/features/auth/maintenance-auth"
+import { canAccessKnowledgeReview } from "@/features/auth/permissions"
 import {
   Select,
   SelectContent,
@@ -17,9 +19,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/components/ui
 import {
   fetchKnowledgeGraph,
   fetchKnowledgeGraphStats,
+  fetchSemanticExtractionCandidates,
+  fetchSemanticKnowledgeGraph,
+  fetchSemanticKnowledgeGraphStats,
+  fetchSemanticKnowledgeQualityStats,
+  reviewSemanticExtractionCandidate,
   type GraphNode,
   type GraphEdge,
   type GraphStatsResponse,
+  type SemanticExtractionCandidate,
+  type SemanticGraphEntity,
+  type SemanticGraphRelation,
+  type SemanticGraphResponse,
+  type SemanticGraphStatsResponse,
+  type SemanticGraphQualityStatsResponse,
 } from "@/features/knowledge/api"
 import {
   getDominantKind,
@@ -51,10 +64,35 @@ const RELATION_LABELS: Record<string, string> = {
   published_into: "发布为",
 }
 
-const ALL_KIND_COLORS: Record<string, string> = { ...KIND_COLORS }
+const SEMANTIC_KIND_COLORS: Record<string, string> = {
+  equipment_model: "#0ea5e9",
+  fault_symptom: "#ef4444",
+  fault_cause: "#f97316",
+  component: "#10b981",
+  maintenance_action: "#6366f1",
+}
+
+const SEMANTIC_KIND_LABELS: Record<string, string> = {
+  equipment_model: "设备型号",
+  fault_symptom: "故障现象",
+  fault_cause: "故障原因",
+  component: "部件",
+  maintenance_action: "检修动作",
+}
+
+const SEMANTIC_RELATION_LABELS: Record<string, string> = {
+  symptom_possible_cause: "现象可能原因",
+  symptom_related_component: "现象关联部件",
+  component_requires_action: "部件检修动作",
+  component_has_cause: "部件故障原因",
+  cause_related_component: "原因关联部件",
+}
+
+const ALL_KIND_COLORS: Record<string, string> = { ...KIND_COLORS, ...SEMANTIC_KIND_COLORS }
+const ALL_KIND_LABELS: Record<string, string> = { ...KIND_LABELS, ...SEMANTIC_KIND_LABELS }
 
 type GraphNodeLevel = 0 | 1 | 2 | 3
-type GraphMode = "business"
+type GraphMode = "business" | "semantic"
 
 type VisualNode = GraphNode & {
   color: string
@@ -94,20 +132,30 @@ type UnifiedGraphStats = {
   edgesByType: Record<string, number>
 }
 
-function getModeTitle() {
-  return "检索证据图谱"
+function getModeTitle(mode: GraphMode) {
+  return mode === "semantic" ? "语义实体图谱" : "检索证据图谱"
 }
 
-function getModeBadge() {
-  return "证据溯源视角"
+function getModeBadge(mode: GraphMode) {
+  return mode === "semantic" ? "语义治理视角" : "证据溯源视角"
 }
 
-function getModeDescription() {
-  return "展示答案来自哪些案例、工单、手册与知识分段，突出证据来源、引用链路与知识沉淀。"
+function getModeDescription(mode: GraphMode) {
+  return mode === "semantic"
+    ? "展示故障现象、原因、部件、动作和证据关系，支持内测阶段的候选审核与质量排查。"
+    : "展示答案来自哪些案例、工单、手册与知识分段，突出证据来源、引用链路与知识沉淀。"
 }
 
-function toUnifiedStats(stats: GraphStatsResponse | null): UnifiedGraphStats | null {
+function toUnifiedStats(stats: GraphStatsResponse | SemanticGraphStatsResponse | null): UnifiedGraphStats | null {
   if (!stats) return null
+  if ("total_entities" in stats) {
+    return {
+      totalNodes: stats.total_entities,
+      totalEdges: stats.total_relations,
+      nodesByKind: stats.entities_by_type ?? {},
+      edgesByType: stats.relations_by_type ?? {},
+    }
+  }
   const graphStats = stats
   return {
     totalNodes: graphStats.total_nodes,
@@ -119,6 +167,31 @@ function toUnifiedStats(stats: GraphStatsResponse | null): UnifiedGraphStats | n
 
 function toBusinessGraphData(graph: { nodes: GraphNode[]; edges: GraphEdge[] }) {
   return buildGraphData(graph.nodes, graph.edges)
+}
+
+function toSemanticGraphData(graph: SemanticGraphResponse) {
+  const nodes: GraphNode[] = graph.entities.map((entity: SemanticGraphEntity) => ({
+    id: `entity:${entity.id}`,
+    kind: entity.entity_type,
+    label: entity.display_name || entity.canonical_name,
+    properties: {
+      标准名: entity.canonical_name,
+      状态: entity.status,
+      置信度: entity.confidence ?? "-",
+      来源: entity.source_type ?? "-",
+      主文档: entity.primary_document_id ?? "-",
+      主分段: entity.primary_chunk_id ?? "-",
+    },
+  }))
+  const edges: GraphEdge[] = graph.relations.map((relation: SemanticGraphRelation) => ({
+    id: relation.id,
+    source: `entity:${relation.source_entity_id}`,
+    target: `entity:${relation.target_entity_id}`,
+    relation_type: relation.relation_type,
+    notes: relation.evidence_summary || relation.notes || null,
+    created_at: relation.created_at,
+  }))
+  return buildGraphData(nodes, edges)
 }
 
 function truncateLabel(value: string, maxChars: number) {
@@ -256,7 +329,7 @@ function buildGraphData(nodes: GraphNode[], edges: GraphEdge[]): GraphData {
     const kind = comboId.replace("kind:", "")
     return {
       id: comboId,
-      label: truncateLabel((KIND_LABELS[kind] || kind) as string, 16),
+      label: truncateLabel((ALL_KIND_LABELS[kind] || kind) as string, 16),
       color: ALL_KIND_COLORS[kind] || "#64748b",
       kind,
       count,
@@ -312,30 +385,74 @@ function buildOverviewCards(
   ]
 }
 
+function getCandidateTitle(candidate: SemanticExtractionCandidate) {
+  const payload = candidate.payload ?? {}
+  if (candidate.candidate_type === "entity") {
+    return String(payload.display_name || payload.canonical_name || "待审核实体")
+  }
+  const source = String(payload.source_name || payload.source_entity_id || "源实体")
+  const target = String(payload.target_name || payload.target_entity_id || "目标实体")
+  return `${source} -> ${target}`
+}
+
+function getCandidateMeta(candidate: SemanticExtractionCandidate, relationLabels: Record<string, string>) {
+  const payload = candidate.payload ?? {}
+  const relationType = typeof payload.relation_type === "string" ? payload.relation_type : ""
+  const entityType = typeof payload.entity_type === "string" ? payload.entity_type : ""
+  const kind = candidate.candidate_type === "relation" ? relationLabels[relationType] || relationType : entityType
+  const confidence = typeof candidate.confidence === "number" ? `置信度 ${Math.round(candidate.confidence * 100)}%` : "未给出置信度"
+  return [kind || candidate.candidate_type, confidence].filter(Boolean).join(" · ")
+}
+
 export default function KnowledgeGraphPage() {
   const { resolvedTheme } = useAppTheme()
+  const { user } = useMaintenanceAuth()
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [], combos: [] })
-  const [stats, setStats] = useState<GraphStatsResponse | null>(null)
+  const [stats, setStats] = useState<GraphStatsResponse | SemanticGraphStatsResponse | null>(null)
+  const [qualityStats, setQualityStats] = useState<SemanticGraphQualityStatsResponse | null>(null)
+  const [candidates, setCandidates] = useState<SemanticExtractionCandidate[]>([])
   const [loading, setLoading] = useState(true)
+  const [reviewingCandidateId, setReviewingCandidateId] = useState<number | null>(null)
   const [selectedNode, setSelectedNode] = useState<VisualNode | null>(null)
   const [filterKind, setFilterKind] = useState<string>("")
   const [filterRelation, setFilterRelation] = useState<string>("")
-  const [sidebarTab, setSidebarTab] = useState<"stats" | "detail">("stats")
-  const graphMode: GraphMode = "business"
+  const [sidebarTab, setSidebarTab] = useState<"stats" | "detail" | "governance">("stats")
+  const [graphMode, setGraphMode] = useState<GraphMode>("business")
+  const canReviewGraph = canAccessKnowledgeReview(user)
 
   const loadGraph = useCallback(async () => {
     setLoading(true)
     try {
-      const [graph, s] = await Promise.all([
-        fetchKnowledgeGraph({
-          kind: filterKind || undefined,
-          relation_type: filterRelation || undefined,
-          limit: 300,
-        }),
-        fetchKnowledgeGraphStats(),
-      ])
-      const data = toBusinessGraphData(graph as { nodes: GraphNode[]; edges: GraphEdge[] })
+      const [graph, s, q, candidateList] =
+        graphMode === "semantic"
+          ? await Promise.all([
+              fetchSemanticKnowledgeGraph({
+                entity_type: filterKind || undefined,
+                relation_type: filterRelation || undefined,
+                status: "approved",
+                limit: 300,
+              }),
+              fetchSemanticKnowledgeGraphStats(),
+              fetchSemanticKnowledgeQualityStats(),
+              fetchSemanticExtractionCandidates({ status: "pending_review", limit: 6 }),
+            ])
+          : await Promise.all([
+              fetchKnowledgeGraph({
+                kind: filterKind || undefined,
+                relation_type: filterRelation || undefined,
+                limit: 300,
+              }),
+              fetchKnowledgeGraphStats(),
+              Promise.resolve(null),
+              Promise.resolve({ items: [] }),
+            ])
+      const data =
+        graphMode === "semantic"
+          ? toSemanticGraphData(graph as SemanticGraphResponse)
+          : toBusinessGraphData(graph as { nodes: GraphNode[]; edges: GraphEdge[] })
       setStats(s)
+      setQualityStats(q)
+      setCandidates(candidateList.items ?? [])
       setGraphData(data)
       setSelectedNode((current) => {
         if (!current) return null
@@ -346,20 +463,27 @@ export default function KnowledgeGraphPage() {
     } finally {
       setLoading(false)
     }
-  }, [filterKind, filterRelation])
+  }, [filterKind, filterRelation, graphMode])
 
   useEffect(() => {
     void loadGraph()
   }, [loadGraph])
 
+  useEffect(() => {
+    setFilterKind("")
+    setFilterRelation("")
+    setSelectedNode(null)
+    setSidebarTab("stats")
+  }, [graphMode])
+
   const selectedNodeId = selectedNode?.id ?? null
   const labelMaps = useMemo(
     () => ({
-      kindLabels: KIND_LABELS,
-      relationLabels: RELATION_LABELS,
-      kindColors: KIND_COLORS,
+      kindLabels: graphMode === "semantic" ? SEMANTIC_KIND_LABELS : KIND_LABELS,
+      relationLabels: graphMode === "semantic" ? SEMANTIC_RELATION_LABELS : RELATION_LABELS,
+      kindColors: graphMode === "semantic" ? SEMANTIC_KIND_COLORS : KIND_COLORS,
     }),
-    [],
+    [graphMode],
   )
   const normalizedStats = useMemo(() => toUnifiedStats(stats), [stats])
   const dominantKind = useMemo(() => getDominantKind(stats), [stats])
@@ -372,10 +496,10 @@ export default function KnowledgeGraphPage() {
   const isDark = resolvedTheme === "dark"
   const selectedLevelLabel = selectedNode
     ? selectedNode.level === 0
-      ? "证据核心"
+      ? graphMode === "semantic" ? "语义核心" : "证据核心"
       : selectedNode.level === 1
-        ? "一级证据分支"
-        : "证据节点"
+        ? graphMode === "semantic" ? "一级语义分支" : "一级证据分支"
+        : graphMode === "semantic" ? "语义节点" : "证据节点"
     : null
   const selectionSummary = getSelectionSummary(
     selectedNode
@@ -433,11 +557,26 @@ export default function KnowledgeGraphPage() {
     [graphData.nodes],
   )
 
+  const handleReviewCandidate = useCallback(
+    async (candidateId: number, action: "approve" | "reject") => {
+      setReviewingCandidateId(candidateId)
+      try {
+        await reviewSemanticExtractionCandidate(candidateId, { action })
+        await loadGraph()
+      } finally {
+        setReviewingCandidateId(null)
+      }
+    },
+    [loadGraph],
+  )
+
   const graphHasData = graphData.nodes.length > 0
   const canvasStateTitle = loading ? "正在构建知识关系视图" : "暂无图谱数据"
   const canvasStateDescription = loading
     ? "正在同步节点、关系和热点统计，请稍候。"
-    : "可先通过审核案例或创建检修任务生成关系网络。"
+    : graphMode === "semantic"
+      ? "可先导入知识文档并审核抽取候选，形成正式语义实体关系。"
+      : "可先通过审核案例或创建检修任务生成关系网络。"
 
   return (
     <div className="min-h-screen bg-background">
@@ -455,17 +594,36 @@ export default function KnowledgeGraphPage() {
             <div>
                 <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200">
                   <Network className="h-3.5 w-3.5" />
-                  {getModeBadge()}
+                  {getModeBadge(graphMode)}
                 </div>
               <h1 className="mt-2 text-2xl font-semibold text-foreground">知识图谱工作台</h1>
-              <div className="mt-2 text-lg font-medium text-foreground">{getModeTitle()}</div>
+              <div className="mt-2 text-lg font-medium text-foreground">{getModeTitle(graphMode)}</div>
               <p className="mt-1 text-sm text-muted-foreground">
-                {getModeDescription()}
+                {getModeDescription(graphMode)}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-md border border-border bg-muted/20 p-1">
+              {([
+                ["business", "证据图谱"],
+                ["semantic", "语义图谱"],
+              ] as const).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setGraphMode(mode)}
+                  className={`h-8 rounded px-3 text-sm transition-colors ${
+                    graphMode === mode
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <Select value={filterKind || "all"} onValueChange={(value) => setFilterKind(value === "all" ? "" : value)}>
@@ -536,7 +694,9 @@ export default function KnowledgeGraphPage() {
                 <div className="text-xs uppercase tracking-[0.18em] text-sky-700/80 dark:text-sky-200/70">Graph canvas</div>
                 <div className="mt-1 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                   <Sparkles className="h-3.5 w-3.5 text-sky-600 dark:text-cyan-300" />
-                  沿案例、文档、工单与知识分段拖拽查看证据链路，单击节点后查看右侧来源分析
+                  {graphMode === "semantic"
+                    ? "沿故障现象、原因、部件与动作拖拽查看语义关系，单击节点后查看右侧治理信息"
+                    : "沿案例、文档、工单与知识分段拖拽查看证据链路，单击节点后查看右侧来源分析"}
                 </div>
               </div>
               <div className="rounded-md border border-slate-200/80 bg-white/75 px-3 py-1 text-xs text-slate-700 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/8 dark:text-slate-200">
@@ -587,14 +747,15 @@ export default function KnowledgeGraphPage() {
               <div className="shrink-0 flex items-center justify-between gap-3 border-b border-border px-4 py-3">
                 <h3 className="text-sm font-medium text-foreground">图谱分析侧栏</h3>
                 <span className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] text-sky-800 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-200">
-                  {getModeBadge()}
+                  {getModeBadge(graphMode)}
                 </span>
               </div>
 
-              <Tabs value={sidebarTab} onValueChange={(value) => setSidebarTab(value as "stats" | "detail")} className="flex min-h-0 flex-1 flex-col p-4">
-                <TabsList className="grid h-10 w-full shrink-0 grid-cols-2">
+              <Tabs value={sidebarTab} onValueChange={(value) => setSidebarTab(value as "stats" | "detail" | "governance")} className="flex min-h-0 flex-1 flex-col p-4">
+                <TabsList className={`grid h-10 w-full shrink-0 ${graphMode === "semantic" ? "grid-cols-3" : "grid-cols-2"}`}>
                   <TabsTrigger value="stats">统计</TabsTrigger>
                   <TabsTrigger value="detail">详情</TabsTrigger>
+                  {graphMode === "semantic" ? <TabsTrigger value="governance">治理</TabsTrigger> : null}
                 </TabsList>
 
                 <TabsContent value="stats" className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
@@ -710,6 +871,94 @@ export default function KnowledgeGraphPage() {
                       </div>
                     ) : null}
                 </TabsContent>
+
+                {graphMode === "semantic" ? (
+                  <TabsContent value="governance" className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                    <div>
+                      <h4 className="text-sm font-medium text-foreground">内测治理</h4>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        聚焦待审核候选、无证据关系和低置信关系，作为语义图谱内测门禁。
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        ["待审核实体", qualityStats?.pending_entity_candidates ?? 0],
+                        ["待审核关系", qualityStats?.pending_relation_candidates ?? 0],
+                        ["无证据关系", qualityStats?.relations_without_evidence ?? 0],
+                        ["低置信关系", qualityStats?.low_confidence_relations ?? 0],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-md border border-border bg-muted/15 p-3">
+                          <div className="text-xs text-muted-foreground">{label}</div>
+                          <div className="mt-1 text-2xl font-semibold text-foreground">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="rounded-md border border-border bg-background p-3">
+                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                        审核权限
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                        {canReviewGraph
+                          ? "当前账号可审核语义抽取候选。审核通过后，实体或关系会进入正式图谱。"
+                          : "当前账号仅可查看语义图谱，候选审核需专家或管理员角色。"}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">待审核候选</div>
+                        <span className="text-xs text-muted-foreground">{candidates.length} 条</span>
+                      </div>
+                      {candidates.length > 0 ? (
+                        candidates.map((candidate) => (
+                          <div key={candidate.id} className="rounded-md border border-border bg-background p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-medium text-foreground">
+                                  {getCandidateTitle(candidate)}
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {getCandidateMeta(candidate, labelMaps.relationLabels)}
+                                </div>
+                              </div>
+                              <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+                                {candidate.candidate_type}
+                              </span>
+                            </div>
+                            <div className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                              {String(candidate.payload.evidence || candidate.payload.description || candidate.payload.source_type || "等待专家确认后进入正式语义图谱。")}
+                            </div>
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                disabled={!canReviewGraph || reviewingCandidateId === candidate.id}
+                                onClick={() => void handleReviewCandidate(candidate.id, "approve")}
+                                className="h-8 rounded-md bg-emerald-600 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                通过
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!canReviewGraph || reviewingCandidateId === candidate.id}
+                                onClick={() => void handleReviewCandidate(candidate.id, "reject")}
+                                className="h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                驳回
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-md border border-dashed border-border bg-background px-3 py-4 text-sm text-muted-foreground">
+                          暂无待审核候选。导入或创建知识文档后，规则抽取结果会进入这里。
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                ) : null}
 
               </Tabs>
             </div>

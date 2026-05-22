@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { TrendingDown, Zap, BookOpen } from "lucide-react";
 import type { ReactNode } from "react";
@@ -124,7 +124,7 @@ export function ValueProps() {
         <Reveal>
           <SectionDividerCue
             badge={<SectionBadge className="mb-4">核心功能</SectionBadge>}
-            title={<h2 className={`${ui.titleH2} mb-4`}>围绕场景主线构建三项核心能力</h2>}
+            title={<h2 className={`${ui.titleH2} mb-4`}>围绕赛题主线构建三项核心能力</h2>}
             description={
               <p className={`${ui.subtitle} mx-auto max-w-2xl`}>
                 用多模态检索找到依据，用作业指引承接现场处理，用案例回流持续更新知识库
@@ -144,3 +144,4 @@ export function ValueProps() {
     </section>
   );
 }
+

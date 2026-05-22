@@ -1,4 +1,4 @@
-﻿"""PDF text extraction helpers for knowledge-base ingestion."""
+"""PDF text extraction helpers for knowledge-base ingestion."""
 from __future__ import annotations
 
 import re
@@ -8,6 +8,8 @@ from pathlib import Path
 
 from app.services.knowledge_chunking import (
     build_anchored_chunk_payloads,
+    clamp_chunk_field,
+    clamp_chunk_payload,
     resolve_terminal_section_path,
 )
 
@@ -355,24 +357,30 @@ class PdfKnowledgeImportService:
             for chunk_index, chunk_payload in enumerate(page_chunks, start=1):
                 suffix = "" if len(page_chunks) == 1 else f" - 第 {chunk_index} 段"
                 effective_section_path = chunk_payload.get("section_path") or last_section_path
-                effective_section_reference = (
+                effective_section_reference = clamp_chunk_field(
                     chunk_payload.get("section_reference")
-                    or (effective_section_path.split(" > ")[-1] if effective_section_path else None)
+                    or (effective_section_path.split(" > ")[-1] if effective_section_path else None),
+                    "section_reference",
+                )
+                effective_section_path = clamp_chunk_field(effective_section_path, "section_path")
+                heading_value = (
+                    f"{effective_section_path}{suffix}"
+                    if effective_section_path
+                    else f"{title} - 第 {page.page_number} 页{suffix}"
                 )
                 payloads.append(
-                    {
-                        "heading": (
-                            f"{effective_section_path}{suffix}"
-                            if effective_section_path
-                            else f"{title} - 第 {page.page_number} 页{suffix}"
-                        ),
-                        "content": chunk_payload["content"],
-                        "page_reference": chunk_payload.get("page_reference") or f"P{page.page_number}",
-                        "section_reference": effective_section_reference,
-                        "section_path": effective_section_path,
-                        "step_anchor": chunk_payload.get("step_anchor"),
-                        "image_anchor": chunk_payload.get("image_anchor"),
-                    }
+                    clamp_chunk_payload(
+                        {
+                            "heading": heading_value,
+                            "content": chunk_payload["content"],
+                            "page_reference": chunk_payload.get("page_reference")
+                            or f"P{page.page_number}",
+                            "section_reference": effective_section_reference,
+                            "section_path": effective_section_path,
+                            "step_anchor": chunk_payload.get("step_anchor"),
+                            "image_anchor": chunk_payload.get("image_anchor"),
+                        }
+                    )
                 )
             # Track the terminal heading context even when the page ends with
             # pure heading lines and produces no corresponding content chunk.

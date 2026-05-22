@@ -51,7 +51,7 @@ def _build_svg_data_uri(code: str) -> str:
 
 
 async def issue_captcha() -> dict[str, str]:
-    """生成验证码，写入 Redis（TTL 默认 1 分钟）；Redis 不可用时内存降级。"""
+    """生成验证码，写入 Redis（TTL 默认 3 分钟）；Redis 不可用时内存降级。"""
     settings = get_settings()
     redis = get_redis_service()
     captcha_id = str(uuid.uuid4())
@@ -60,6 +60,7 @@ async def issue_captcha() -> dict[str, str]:
     return {
         "captchaId": captcha_id,
         "image": _build_svg_data_uri(code),
+        "expiresIn": settings.captcha_ttl_seconds,
     }
 
 

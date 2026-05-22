@@ -1,4 +1,4 @@
-﻿"""add_work_order_fields_to_task_and_case
+"""add_work_order_fields_to_task_and_case
 
 Revision ID: f2a6b7c8d9e1
 Revises: e4b7c6d4a9f1

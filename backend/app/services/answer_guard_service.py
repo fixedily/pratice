@@ -1,4 +1,4 @@
-﻿"""Corrective RAG: retrieval quality scoring and answer completeness guard."""
+"""Corrective RAG: retrieval quality scoring and answer completeness guard."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """从 Hugging Face 下载与「设备维护 / 机泵检修」相关的公开语料，写入仓库 datasets/knowledge/。
 
 用法（在 backend 目录下，已安装依赖）::

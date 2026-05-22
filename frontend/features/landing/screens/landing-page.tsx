@@ -1,4 +1,4 @@
-﻿import { Navbar } from "@/features/landing/components/navbar";
+import { Navbar } from "@/features/landing/components/navbar";
 import { Hero } from "@/features/landing/components/hero";
 import { TrustStrip } from "@/features/landing/components/trust-strip";
 import { ProductDemo } from "@/features/landing/components/product-demo";
@@ -32,3 +32,4 @@ export default function LandingPage() {
     </div>
   );
 }
+

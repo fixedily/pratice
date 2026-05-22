@@ -1,4 +1,4 @@
-﻿"""Phase 28: replanning policy and task closure gate."""
+"""Phase 28: replanning policy and task closure gate."""
 from types import SimpleNamespace
 
 import pytest

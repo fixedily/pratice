@@ -1,4 +1,4 @@
-﻿import { BellRing } from "lucide-react";
+import { BellRing } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, ToggleRow } from "@/features/settings/components/settings-ui";

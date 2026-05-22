@@ -1,4 +1,4 @@
-﻿"""扫描件 PDF：文本层为空时走逐页渲染 + OCR 回退。"""
+"""扫描件 PDF：文本层为空时走逐页渲染 + OCR 回退。"""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 

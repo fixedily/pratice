@@ -1,4 +1,4 @@
-﻿"""add work_order_messages attachment ids
+"""add work_order_messages attachment ids
 
 Revision ID: i2b3c4d5e6f7
 Revises: h1a2b3c4d5e6

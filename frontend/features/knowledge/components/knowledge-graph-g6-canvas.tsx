@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CommonEvent, Graph as G6Graph, type GraphOptions, NodeEvent } from "@antv/g6"

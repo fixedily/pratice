@@ -1,4 +1,4 @@
-﻿"""Prompt catalog for graph stage executors."""
+"""Prompt catalog for graph stage executors."""
 from __future__ import annotations
 
 from app.modules.assistant.application.graph_state import GraphState

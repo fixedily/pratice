@@ -1,6 +1,7 @@
 """Agent tool registry and deterministic tool execution for the workbench."""
 from __future__ import annotations
 
+import logging
 from time import perf_counter
 from typing import Any
 
@@ -9,6 +10,8 @@ from app.modules.assistant.schemas import AgentAssistRequest
 from app.modules.cases.application.case_service import MaintenanceCaseService
 from app.services.maintenance_safety_service import MaintenanceSafetyService
 from app.services.sensor_service import SensorService
+
+logger = logging.getLogger(__name__)
 
 
 class AgentToolingService:
@@ -26,40 +29,139 @@ class AgentToolingService:
         knowledge_refs: list[dict[str, Any]],
         task_preview: list[dict[str, Any]],
         related_cases: list[dict[str, Any]],
+        toolset: list[str] | None = None,
     ) -> dict[str, Any]:
         """Execute the first batch of business tools for the Agent flow."""
-        telemetry_call = await self._invoke_tool(
-            "query_device_telemetry",
-            self._query_device_telemetry,
-            request=request,
-        )
-        history_call = await self._invoke_tool(
-            "fetch_historical_repairs",
-            self._fetch_historical_repairs,
-            request=request,
-            related_cases=related_cases,
-        )
-        safety_call = await self._invoke_tool(
-            "validate_safety_preconditions",
-            self._validate_safety_preconditions,
-            request=request,
-            knowledge_refs=knowledge_refs,
-            task_preview=task_preview,
-            telemetry_call=telemetry_call,
-        )
-        authorization_call = await self._invoke_tool(
-            "require_human_authorization",
-            self._require_human_authorization,
-            request=request,
-            safety_call=safety_call,
-        )
+        selected_tools = self._resolve_toolset(toolset)
+        telemetry_call = self._default_telemetry_call()
+        history_call = self._default_history_call()
+        safety_call = self._default_safety_call()
+        authorization_call = self._default_authorization_call()
+        tool_calls: list[dict[str, Any]] = []
+
+        if "query_device_telemetry" in selected_tools:
+            telemetry_call = await self._invoke_tool(
+                "query_device_telemetry",
+                self._query_device_telemetry,
+                request=request,
+            )
+            tool_calls.append(telemetry_call)
+
+        if "fetch_historical_repairs" in selected_tools:
+            history_call = await self._invoke_tool(
+                "fetch_historical_repairs",
+                self._fetch_historical_repairs,
+                request=request,
+                related_cases=related_cases,
+            )
+            tool_calls.append(history_call)
+
+        if "validate_safety_preconditions" in selected_tools:
+            safety_call = await self._invoke_tool(
+                "validate_safety_preconditions",
+                self._validate_safety_preconditions,
+                request=request,
+                knowledge_refs=knowledge_refs,
+                task_preview=task_preview,
+                telemetry_call=telemetry_call,
+            )
+            tool_calls.append(safety_call)
+
+        if "require_human_authorization" in selected_tools:
+            authorization_call = await self._invoke_tool(
+                "require_human_authorization",
+                self._require_human_authorization,
+                request=request,
+                safety_call=safety_call,
+            )
+            tool_calls.append(authorization_call)
 
         return {
-            "tool_calls": [telemetry_call, history_call, safety_call, authorization_call],
+            "tool_calls": tool_calls,
             "telemetry_call": telemetry_call,
             "history_call": history_call,
             "safety_call": safety_call,
             "authorization_call": authorization_call,
+        }
+
+    def _resolve_toolset(self, toolset: list[str] | None) -> list[str]:
+        supported = [
+            "query_device_telemetry",
+            "fetch_historical_repairs",
+            "validate_safety_preconditions",
+            "require_human_authorization",
+        ]
+        if not toolset:
+            return supported
+        requested = {str(item).strip() for item in toolset if str(item).strip()}
+        unknown = sorted(requested.difference(supported))
+        if unknown:
+            logger.warning("agent_toolset_unknown_tools_ignored tools=%s", unknown)
+        return [tool_name for tool_name in supported if tool_name in requested]
+
+    def _default_telemetry_call(self) -> dict[str, Any]:
+        return {
+            "tool_name": "query_device_telemetry",
+            "title": self._get_tool_title("query_device_telemetry"),
+            "status": "skipped",
+            "summary": "设备遥测工具未在本次工具集中启用。",
+            "risk_level": "low",
+            "blocking": False,
+            "requires_human_authorization": False,
+            "input_summary": None,
+            "details": [],
+            "output_payload": {"available": False},
+        }
+
+    def _default_history_call(self) -> dict[str, Any]:
+        return {
+            "tool_name": "fetch_historical_repairs",
+            "title": self._get_tool_title("fetch_historical_repairs"),
+            "status": "skipped",
+            "summary": "历史维修案例工具未在本次工具集中启用。",
+            "risk_level": "low",
+            "blocking": False,
+            "requires_human_authorization": False,
+            "input_summary": None,
+            "details": [],
+            "output_payload": {"case_count": 0},
+        }
+
+    def _default_safety_call(self) -> dict[str, Any]:
+        return {
+            "tool_name": "validate_safety_preconditions",
+            "title": self._get_tool_title("validate_safety_preconditions"),
+            "status": "skipped",
+            "summary": "前置条件合规校验工具未在本次工具集中启用。",
+            "risk_level": "low",
+            "blocking": False,
+            "requires_human_authorization": False,
+            "input_summary": None,
+            "details": [],
+            "output_payload": {
+                "authorization_required": False,
+                "authorization_reasons": [],
+                "blocking_issues": [],
+                "warning_issues": [],
+                "required_checks": [],
+            },
+        }
+
+    def _default_authorization_call(self) -> dict[str, Any]:
+        return {
+            "tool_name": "require_human_authorization",
+            "title": self._get_tool_title("require_human_authorization"),
+            "status": "skipped",
+            "summary": "人工授权判定工具未在本次工具集中启用。",
+            "risk_level": "low",
+            "blocking": False,
+            "requires_human_authorization": False,
+            "input_summary": None,
+            "details": [],
+            "output_payload": {
+                "authorization_required": False,
+                "authorization_reasons": [],
+            },
         }
 
     async def _invoke_tool(self, tool_name: str, handler, **kwargs: Any) -> dict[str, Any]:

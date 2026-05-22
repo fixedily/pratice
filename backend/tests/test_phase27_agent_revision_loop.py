@@ -1,4 +1,4 @@
-﻿"""Phase 27: diagnosis-review revision loop."""
+"""Phase 27: diagnosis-review revision loop."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

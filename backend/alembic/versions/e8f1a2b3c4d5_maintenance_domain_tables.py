@@ -1,4 +1,4 @@
-﻿"""maintenance_domain_tables
+"""maintenance_domain_tables
 
 Revision ID: e8f1a2b3c4d5
 Revises: d2f6e4c1b8a9

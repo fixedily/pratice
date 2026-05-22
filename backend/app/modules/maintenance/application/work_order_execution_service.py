@@ -1,4 +1,4 @@
-﻿"""Work-order execution actions and filling operations for maintenance."""
+"""Work-order execution actions and filling operations for maintenance."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable

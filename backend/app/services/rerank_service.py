@@ -1,4 +1,4 @@
-﻿"""Reranker service: FlagEmbedding bge-reranker-v2-m3 精排封装。
+"""Reranker service: FlagEmbedding bge-reranker-v2-m3 精排封装。
 
 首次调用时懒加载模型（~2s），后续推理约 100ms/20条。
 FlagEmbedding 不可用时自动降级，返回原始候选顺序。

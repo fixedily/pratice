@@ -1,4 +1,4 @@
-﻿"""Knowledge graph query endpoints."""
+"""Knowledge graph query endpoints."""
 from __future__ import annotations
 
 from typing import Annotated

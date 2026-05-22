@@ -1,1 +1,1 @@
-﻿"""Business modules."""
+"""Business modules."""

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { createContext, createElement, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -71,3 +71,4 @@ export function useAppTheme(): UseAppThemeResult {
   }
   return ctx;
 }
+

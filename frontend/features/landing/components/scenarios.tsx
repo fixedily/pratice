@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useEmblaCarousel from "embla-carousel-react";
@@ -247,7 +247,7 @@ export function Scenarios() {
             title={<h2 className={`${ui.titleH2} mb-4`}>聚焦摩托车发动机检修演示场景</h2>}
             description={
               <p className={`${ui.subtitle} mx-auto max-w-2xl`}>
-                用启动困难、火花塞检查、压缩压力测量和案例审核入库串起场景要求的完整演示主线
+                用启动困难、火花塞检查、压缩压力测量和案例审核入库串起赛题要求的完整演示主线
               </p>
             }
           />
@@ -466,3 +466,4 @@ function InfoCol({ title, items }: { title: string; items: string[] }) {
     </div>
   );
 }
+

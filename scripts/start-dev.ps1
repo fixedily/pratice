@@ -1,4 +1,4 @@
-﻿# 本地开发一键启动：自动拉起后端（18000）与前端（3000）。
+# 本地开发一键启动：自动拉起后端（18000）与前端（3000）。
 # 用法：
 #   .\scripts\start-dev.ps1
 #   .\scripts\start-dev.ps1 -EnableFrontendTunnel
@@ -9,7 +9,7 @@ param(
     [ValidateSet("cloudflared", "localtunnel")]
     [string]$TunnelProvider = "cloudflared",
     [string]$TunnelSubdomain = "",
-    # cloudflared 转发目标主机：默认 localhost。若遇到 127.0.0.1/localhost 被系统代理拦截，可传入当前开发机上的可访问局域网 IP。
+    # cloudflared 转发目标主机：默认 localhost。若遇到 127.0.0.1/localhost 被系统代理拦截，可传入 Next 输出的 Network IP（例如 172.29.249.98）
     [string]$TunnelOriginHost = "localhost",
     # 前端启动模式：dev=开发热更新（不建议穿透给外网），share=生产模式（适合穿透给外网展示）
     [ValidateSet("dev", "share")]
@@ -243,6 +243,46 @@ NEXT_PUBLIC_API_BASE_URL=$ApiBaseUrl
     Write-Host "已更新 frontend/.env.local 的 NEXT_PUBLIC_API_BASE_URL 为 $ApiBaseUrl。" -ForegroundColor Green
 }
 
+function Get-RepoEnvValue {
+    param(
+        [string]$Key,
+        [string]$DefaultValue
+    )
+
+    $envPath = Join-Path $RepoRoot ".env"
+    if (-not (Test-Path $envPath)) {
+        return $DefaultValue
+    }
+    $line = Get-Content -Path $envPath -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match "^\s*$([regex]::Escape($Key))\s*=" } |
+        Select-Object -Last 1
+    if (-not $line) {
+        return $DefaultValue
+    }
+    return (($line -replace "^\s*$([regex]::Escape($Key))\s*=", "").Trim().Trim('"').Trim("'"))
+}
+
+function Test-RedisHint {
+    $redisEnabled = (Get-RepoEnvValue -Key "REDIS_ENABLED" -DefaultValue "true").ToLowerInvariant()
+    if ($redisEnabled -in @("0", "false", "no", "off")) {
+        Write-Host "Redis 已在 .env 中关闭：后端会使用进程内降级，仅适合本地单进程演示。" -ForegroundColor Yellow
+        return
+    }
+    $redisHost = Get-RepoEnvValue -Key "REDIS_HOST" -DefaultValue "localhost"
+    $redisPortText = Get-RepoEnvValue -Key "REDIS_PORT" -DefaultValue "6379"
+    $redisPort = 6379
+    if (-not [int]::TryParse($redisPortText, [ref]$redisPort)) {
+        $redisPort = 6379
+    }
+    $redisReady = Test-NetConnection -ComputerName $redisHost -Port $redisPort -InformationLevel Quiet -WarningAction SilentlyContinue
+    if ($redisReady) {
+        Write-Host "Redis 预检通过：$redisHost`:$redisPort。" -ForegroundColor Green
+    } else {
+        Write-Host "Redis 未连通：$redisHost`:$redisPort。后端本地可启动但会内存降级；生产 /ready 将失败。" -ForegroundColor Yellow
+        Write-Host "如需本地联调 Redis，可运行：docker compose up -d redis" -ForegroundColor Yellow
+    }
+}
+
 function Wait-ForTunnelPublicUrl {
     param(
         [string]$LogPath,
@@ -284,6 +324,8 @@ try {
     Pop-Location
 }
 Write-Host "数据库迁移完成。" -ForegroundColor Green
+
+Test-RedisHint
 
 $FrontendEnvLocal = Join-Path $Frontend ".env.local"
 Set-FrontendApiBaseUrl -EnvPath $FrontendEnvLocal -ApiBaseUrl $BackendBaseUrl
@@ -350,7 +392,7 @@ if ($EnableFrontendTunnel) {
         $tunnelLine = @"
 Set-Location -LiteralPath '$Frontend'
 Write-Host '前端内网穿透（cloudflared）已启动（Ctrl+C 停止）。' -ForegroundColor Magenta
-Write-Host '提示：若仅穿透前端，外网访问建议切演示模式。' -ForegroundColor Yellow
+Write-Host '提示：外网访问需要后端地址同样可访问。' -ForegroundColor Yellow
 # 兼容某些环境的系统代理/鉴权拦截：确保 localhost 不走代理
 `$env:NO_PROXY='localhost,127.0.0.1'
 `$env:no_proxy='localhost,127.0.0.1'
@@ -386,7 +428,7 @@ if (`$waited -ge `$maxWaitSec) {
         $tunnelLine = @"
 Set-Location -LiteralPath '$Frontend'
 Write-Host '前端内网穿透（localtunnel）已启动（Ctrl+C 停止）。' -ForegroundColor Magenta
-Write-Host '提示：若后端未穿透，建议前端切演示模式。' -ForegroundColor Yellow
+Write-Host '提示：外网访问需要后端地址同样可访问。' -ForegroundColor Yellow
 $tunnelCommand
 "@
     }

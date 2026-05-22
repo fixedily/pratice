@@ -1,4 +1,4 @@
-﻿# Push / PR 时跑全量 pytest（含慢测，约数分钟）。
+# Push / PR 时跑全量 pytest（含慢测，约数分钟）。
 # 依赖真实 LLM 的抽检与录屏 E2E 不在此工作流内，请本地配置 .env 后按需手工执行。
 name: ci
 
@@ -34,8 +34,8 @@ jobs:
 
       - name: Run Softbei evaluation
         working-directory: backend
-        run: python scripts/run_public_eval.py
+        run: python scripts/run_softbei_eval.py
 
       - name: Check Softbei quality gate
         working-directory: backend
-        run: python scripts/check_public_eval_gate.py
+        run: python scripts/check_softbei_gate.py

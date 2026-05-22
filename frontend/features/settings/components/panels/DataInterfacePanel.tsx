@@ -1,4 +1,4 @@
-﻿import { Database } from "lucide-react";
+import { Database } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, cardClass, pageText, toneClass } from "@/features/settings/components/settings-ui";

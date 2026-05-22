@@ -1,4 +1,4 @@
-﻿import { ScrollText } from "lucide-react";
+import { ScrollText } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, cardClass, pageText } from "@/features/settings/components/settings-ui";

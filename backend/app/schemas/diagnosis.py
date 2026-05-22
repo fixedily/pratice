@@ -1,4 +1,4 @@
-﻿"""Diagnosis schemas for legacy diagnose APIs and structured outputs."""
+"""Diagnosis schemas for legacy diagnose APIs and structured outputs."""
 import re
 from typing import Any, Literal
 

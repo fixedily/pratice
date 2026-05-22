@@ -1,4 +1,4 @@
-﻿"""Application lifespan handlers."""
+"""Application lifespan handlers."""
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator

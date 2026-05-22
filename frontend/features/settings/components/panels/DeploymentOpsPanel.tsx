@@ -1,4 +1,4 @@
-﻿import { Activity, Network, ServerCog } from "lucide-react";
+import { Activity, Network, ServerCog } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { SettingsSectionShell, MetricCard, cardClass, pageText, toneClass } from "@/features/settings/components/settings-ui";
@@ -48,7 +48,7 @@ export function DeploymentOpsPanel({
         <MetricCard label="系统健康" value={healthState.label} hint={healthState.detail} tone={healthTone(healthState)} />
         <MetricCard label="检修域" value={maintenanceState.label} hint={maintenanceState.detail} tone={healthTone(maintenanceState)} />
         <MetricCard label="后端就绪" value={readinessState.label} hint={readinessState.detail} tone={healthTone(readinessState)} />
-        <MetricCard label="国产化部署" value="目标 CPU 架构 / Linux" hint="场景目标环境验收项" tone="warning" />
+        <MetricCard label="国产化部署" value="LoongArch / 银河麒麟" hint="赛题目标环境验收项" tone="warning" />
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {deploymentChecks.map((item) => (

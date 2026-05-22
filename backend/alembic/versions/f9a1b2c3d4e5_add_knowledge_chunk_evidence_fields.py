@@ -1,4 +1,4 @@
-﻿"""add knowledge chunk evidence fields
+"""add knowledge chunk evidence fields
 
 Revision ID: f9a1b2c3d4e5
 Revises: f6d8c2b1a4e7

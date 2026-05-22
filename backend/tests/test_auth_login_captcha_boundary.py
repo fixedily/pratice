@@ -315,7 +315,7 @@ async def test_login_captcha_failures_count_toward_lockout(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_login_success_clears_failure_counter(client: AsyncClient):
-    username = _unique_username("clear_fail")
+    username = "tc_worker"
     for _ in range(4):
         captcha_id, captcha_code = await _fetch_captcha(client)
         fail = await _post_login(
@@ -327,24 +327,11 @@ async def test_login_success_clears_failure_counter(client: AsyncClient):
         )
         assert fail.status_code == 401
 
-    # 注册新用户以便用已知密码登录成功
-    reg_captcha_id, reg_code = await _fetch_captcha(client)
-    reg = await client.post(
-        f"{PREFIX}/auth/register",
-        json={
-            "username": username,
-            "password": "boundary1",
-            "captchaId": reg_captcha_id,
-            "captchaCode": reg_code,
-        },
-    )
-    assert reg.status_code == 200, reg.text
-
     ok_captcha_id, ok_code = await _fetch_captcha(client)
     ok = await _post_login(
         client,
         username=username,
-        password="boundary1",
+        password="testpass",
         captcha_id=ok_captcha_id,
         captcha_code=ok_code,
     )
@@ -501,13 +488,17 @@ async def test_register_duplicate_username(client: AsyncClient):
         f"{PREFIX}/auth/register",
         json={
             "username": "tc_worker",
-            "password": "secret12",
+            "real_name": "重复用户",
+            "department": "检修部",
+            "requested_role": "maintainer",
+            "password": "secret123",
+            "confirm_password": "secret123",
             "captchaId": captcha_id,
             "captchaCode": code,
         },
     )
     assert resp.status_code == 409
-    assert resp.json()["business_code"] == "DUPLICATE_USERNAME"
+    assert resp.json()["business_code"] == "DUPLICATE_ACCOUNT"
 
 
 @pytest.mark.asyncio
@@ -517,7 +508,11 @@ async def test_register_short_username_and_password(client: AsyncClient):
         f"{PREFIX}/auth/register",
         json={
             "username": "ab",
-            "password": "secret12",
+            "real_name": "短用户名",
+            "department": "检修部",
+            "requested_role": "maintainer",
+            "password": "secret123",
+            "confirm_password": "secret123",
             "captchaId": captcha_id,
             "captchaCode": code,
         },
@@ -530,7 +525,11 @@ async def test_register_short_username_and_password(client: AsyncClient):
         f"{PREFIX}/auth/register",
         json={
             "username": _unique_username("shortpwd"),
+            "real_name": "短密码",
+            "department": "检修部",
+            "requested_role": "maintainer",
             "password": "12345",
+            "confirm_password": "12345",
             "captchaId": captcha_id2,
             "captchaCode": code2,
         },
@@ -540,34 +539,30 @@ async def test_register_short_username_and_password(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_forgot_password_mismatch_and_unknown_user(client: AsyncClient):
+async def test_password_reset_request_requires_account_and_hides_unknown_user(client: AsyncClient):
     captcha_id, code = await _fetch_captcha(client)
-    mismatch = await client.post(
-        f"{PREFIX}/auth/forgot-password",
+    invalid = await client.post(
+        f"{PREFIX}/auth/password-reset/request",
         json={
-            "username": "tc_worker",
-            "new_password": "newpass1",
-            "confirm_password": "newpass2",
+            "account": "",
             "captchaId": captcha_id,
             "captchaCode": code,
         },
     )
-    assert mismatch.status_code == 400
-    assert mismatch.json()["business_code"] == "PASSWORD_MISMATCH"
+    assert invalid.status_code == 400
+    assert invalid.json()["business_code"] == "INVALID_ACCOUNT"
 
     captcha_id2, code2 = await _fetch_captcha(client)
     missing = await client.post(
-        f"{PREFIX}/auth/forgot-password",
+        f"{PREFIX}/auth/password-reset/request",
         json={
-            "username": _unique_username("nouser"),
-            "new_password": "newpass1",
-            "confirm_password": "newpass1",
+            "account": _unique_username("nouser"),
             "captchaId": captcha_id2,
             "captchaCode": code2,
         },
     )
-    assert missing.status_code == 404
-    assert missing.json()["business_code"] == "USER_NOT_FOUND"
+    assert missing.status_code == 200
+    assert missing.json()["data"]["message"] == "如果账号存在，系统将发送重置验证码。"
 
 
 @pytest.mark.asyncio
@@ -577,31 +572,19 @@ async def test_forgot_password_invalid_captcha_does_not_lock_login(client: Async
     for _ in range(6):
         cid, _ = await _fetch_captcha(client)
         await client.post(
-            f"{PREFIX}/auth/forgot-password",
+            f"{PREFIX}/auth/password-reset/request",
             json={
-                "username": username,
-                "new_password": "newpass1",
-                "confirm_password": "newpass1",
+                "account": username,
                 "captchaId": cid,
                 "captchaCode": "ZZZZ",
             },
         )
 
-    reg_id, reg_code = await _fetch_captcha(client)
-    await client.post(
-        f"{PREFIX}/auth/register",
-        json={
-            "username": username,
-            "password": "newpass1",
-            "captchaId": reg_id,
-            "captchaCode": reg_code,
-        },
-    )
     login_captcha_id, login_code = await _fetch_captcha(client)
     login = await _post_login(
         client,
-        username=username,
-        password="newpass1",
+        username="tc_worker",
+        password="testpass",
         captcha_id=login_captcha_id,
         captcha_code=login_code,
     )

@@ -1,4 +1,4 @@
-﻿"""Phase 19: 正式知识导入管理接口测试."""
+"""Phase 19: 正式知识导入管理接口测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,8 +11,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import app
+from app.modules.maintenance.deps import CurrentUserCtx, get_current_user_ctx
 from app.models.base import Base
-from app.models.knowledge import KnowledgeDocument, KnowledgeRelation
+from app.models.knowledge import KnowledgeBase, KnowledgeDocument, KnowledgeRelation
 from app.modules.knowledge.application.import_service import KnowledgeImportService
 
 
@@ -28,6 +29,35 @@ def override_db_session():
         yield
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture(autouse=True)
+def override_current_user():
+    """导入与创建知识库接口要求登录。"""
+
+    async def _override_current_user():
+        return CurrentUserCtx(
+            user_id=1,
+            username="tester",
+            roles=["expert"],
+            display_name="测试用户",
+        )
+
+    app.dependency_overrides[get_current_user_ctx] = _override_current_user
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user_ctx, None)
+
+
+@pytest.fixture(autouse=True)
+def mock_default_knowledge_base_resolver():
+    """文档列表接口会解析默认知识库，测试环境统一返回 id=1。"""
+    with patch(
+        "app.modules.knowledge.router.KnowledgeBaseService.resolve_knowledge_base_id",
+        new=AsyncMock(return_value=1),
+    ):
+        yield
 
 
 @pytest.mark.asyncio
@@ -79,6 +109,7 @@ async def test_knowledge_import_upload_endpoint():
     """上传 PDF 时应先返回已受理的导入任务摘要。"""
     mocked_payload = {
         "id": 7,
+        "knowledge_base_id": 1,
         "import_type": "pdf",
         "processing_note": None,
         "title": "摩托车发动机维修手册",
@@ -123,18 +154,67 @@ async def test_knowledge_import_upload_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_knowledge_import_upload_rejects_non_pdf():
+async def test_knowledge_import_upload_rejects_unsupported_file():
     """导入接口应拒绝不受支持的文件类型。"""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/knowledge/imports",
-            files={"file": ("notes.txt", b"hello", "text/plain")},
+            files={"file": ("notes.exe", b"hello", "application/octet-stream")},
             data={"equipment_type": "摩托车发动机"},
         )
 
     assert response.status_code == 400
-    assert "PDF" in response.json()["message"] or "PNG" in response.json()["message"]
+    message = response.json()["message"]
+    assert "PDF" in message or "TXT" in message
+
+
+@pytest.mark.asyncio
+async def test_knowledge_import_upload_accepts_text_file():
+    """导入接口应接受 TXT 文本知识文档。"""
+    mocked_payload = {
+        "id": 11,
+        "knowledge_base_id": 1,
+        "import_type": "text",
+        "processing_note": "纯文本/Markdown 将直接分段入库，无需 OCR。",
+        "title": "检修要点",
+        "source_name": "notes.txt",
+        "source_type": "manual",
+        "equipment_type": "摩托车发动机",
+        "equipment_model": None,
+        "fault_type": None,
+        "section_reference": None,
+        "replace_existing": False,
+        "status": "pending",
+        "page_count": None,
+        "chunk_count": None,
+        "document_id": None,
+        "preview_excerpt": None,
+        "error_message": None,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+    with patch(
+        "app.modules.knowledge.router.KnowledgeImportService.import_pdf_upload",
+        new=AsyncMock(return_value=mocked_payload),
+    ), patch("app.modules.knowledge.router.KnowledgeImportWorker.schedule_job"):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/knowledge/imports",
+                files={
+                    "file": (
+                        "notes.txt",
+                        "火花塞检查步骤".encode("utf-8"),
+                        "text/plain",
+                    )
+                },
+                data={"equipment_type": "摩托车发动机"},
+            )
+
+    assert response.status_code == 202
+    assert response.json()["import_type"] == "text"
 
 
 @pytest.mark.asyncio
@@ -185,6 +265,7 @@ async def test_knowledge_import_upload_accepts_image_upload():
     """正式导入接口应接受图片型知识文档并先返回排队状态。"""
     mocked_payload = {
         "id": 12,
+        "knowledge_base_id": 1,
         "import_type": "image_ocr",
         "processing_note": "图片已通过视觉 OCR 导入知识库，建议结合来源回溯进行人工校对。",
         "title": "点火系统图示",
@@ -232,6 +313,7 @@ async def test_retry_knowledge_import_job_endpoint():
     """失败任务应能重新入队。"""
     mocked_payload = {
         "id": 15,
+        "knowledge_base_id": 1,
         "import_type": "pdf",
         "processing_note": None,
         "title": "摩托车发动机维修手册",
@@ -272,6 +354,7 @@ async def test_list_knowledge_import_jobs_endpoint():
     mocked_jobs = [
         {
             "id": 11,
+            "knowledge_base_id": 1,
             "import_type": "pdf",
             "processing_note": None,
             "title": "摩托车发动机维修手册",
@@ -312,6 +395,7 @@ async def test_get_knowledge_import_job_endpoint():
     """应能查询单个导入任务详情。"""
     mocked_payload = {
         "id": 9,
+        "knowledge_base_id": 1,
         "import_type": "pdf",
         "processing_note": None,
         "title": "正时链条维修手册",
@@ -352,6 +436,8 @@ async def test_list_knowledge_documents_endpoint():
     mocked_documents = [
         {
             "id": 1,
+            "knowledge_base_id": 1,
+            "document_type": "pdf",
             "title": "摩托车发动机维修手册",
             "source_name": "manual.pdf",
             "source_type": "manual",
@@ -395,6 +481,7 @@ async def test_list_knowledge_documents_forwards_filters():
     assert response.status_code == 200
     mocked_list_documents.assert_awaited_once_with(
         limit=5,
+        knowledge_base_id=1,
         query="火花塞",
         equipment_type="摩托车发动机",
         equipment_model="LX200",
@@ -407,6 +494,8 @@ async def test_get_knowledge_document_detail_endpoint():
     """知识文档详情接口应返回来源回溯字段。"""
     mocked_detail = {
         "id": 1,
+        "knowledge_base_id": 1,
+        "document_type": "pdf",
         "title": "摩托车发动机维修手册",
         "source_name": "manual.pdf",
         "source_type": "manual",
@@ -497,7 +586,14 @@ async def test_delete_document_clears_search_cache_and_relations():
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as session:
+            knowledge_base = KnowledgeBase(
+                name="测试知识库",
+                slug="test-knowledge-base",
+            )
+            session.add(knowledge_base)
+            await session.flush()
             document = KnowledgeDocument(
+                knowledge_base_id=knowledge_base.id,
                 title="维修手册",
                 source_name="manual.pdf",
                 source_type="manual",
@@ -521,7 +617,7 @@ async def test_delete_document_clears_search_cache_and_relations():
             await session.commit()
 
             service = KnowledgeImportService(session)
-            with patch("app.services.cache_service.clear") as mocked_cache_clear:
+            with patch("app.services.cache_service.clear_async") as mocked_cache_clear:
                 await service.delete_document(document.id)
 
             assert mocked_cache_clear.call_count == 1
@@ -533,3 +629,49 @@ async def test_delete_document_clears_search_cache_and_relations():
             ).scalars().all() == []
     finally:
         await engine.dispose()
+
+
+def test_classify_text_and_json_upload_files():
+    service = KnowledgeImportService(SimpleNamespace())
+    text_type, _ = service._classify_import_file(
+        filename="notes.txt",
+        content_type="text/plain",
+    )
+    json_type, _ = service._classify_import_file(
+        filename="records.jsonl",
+        content_type="application/x-ndjson",
+    )
+    assert text_type == "text"
+    assert json_type == "json"
+
+
+@pytest.mark.asyncio
+async def test_prepare_text_and_json_upload_content():
+    service = KnowledgeImportService(SimpleNamespace())
+    text_prepared = await service._prepare_upload_content(
+        import_type="text",
+        filename="notes.txt",
+        file_bytes="spark plug check\nreplacement steps".encode("utf-8"),
+        content_type="text/plain",
+        title="检修要点",
+        equipment_type="摩托车发动机",
+        equipment_model=None,
+        fault_type=None,
+        section_reference=None,
+    )
+    assert "spark plug check" in text_prepared["content"]
+    assert text_prepared["chunk_payloads"]
+
+    json_prepared = await service._prepare_upload_content(
+        import_type="json",
+        filename="case.json",
+        file_bytes='{"content": "ignition troubleshooting"}'.encode("utf-8"),
+        content_type="application/json",
+        title="案例 JSON",
+        equipment_type="摩托车发动机",
+        equipment_model=None,
+        fault_type=None,
+        section_reference=None,
+    )
+    assert "ignition troubleshooting" in json_prepared["content"]
+    assert json_prepared["final_import_type"] == "json"

@@ -1,4 +1,4 @@
-﻿"""Semantic knowledge graph query endpoints."""
+"""Semantic knowledge graph query endpoints."""
 from __future__ import annotations
 
 from typing import Annotated
@@ -10,6 +10,7 @@ from app.db.session import get_session
 from app.modules.knowledge.application.semantic_graph_service import (
     SemanticKnowledgeGraphService,
 )
+from app.modules.knowledge.deps import CurrentUserCtx, require_user_ctx
 from app.modules.knowledge.schemas.semantic_graph import (
     SemanticDuplicateEntityRecommendationResponse,
     SemanticEntitySearchResponse,
@@ -51,9 +52,31 @@ def _bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
+async def _require_semantic_graph_reader(
+    ctx: Annotated[CurrentUserCtx, Depends(require_user_ctx)],
+) -> CurrentUserCtx:
+    return ctx
+
+
+async def _require_semantic_graph_writer(
+    ctx: Annotated[CurrentUserCtx, Depends(require_user_ctx)],
+) -> CurrentUserCtx:
+    if not ctx.has_any("expert", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"success": False, "business_code": "FORBIDDEN", "message": "角色权限不足"},
+        )
+    return ctx
+
+
+def _actor_name(ctx: CurrentUserCtx) -> str:
+    return ctx.display_name or ctx.username
+
+
 @router.get("", response_model=SemanticGraphResponse)
 async def get_semantic_graph(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
     relation_type: str | None = Query(None, description="Filter by semantic relation type"),
     entity_type: str | None = Query(None, description="Filter by semantic entity type"),
     status: str | None = Query("approved", description="Filter by relation status"),
@@ -70,6 +93,7 @@ async def get_semantic_graph(
 @router.get("/entities", response_model=SemanticEntitySearchResponse)
 async def search_semantic_entities(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
     query: str | None = Query(None, description="Search by canonical name, display name, or description"),
     entity_type: str | None = Query(None, description="Filter by semantic entity type"),
     status: str | None = Query("active", description="Filter by entity status"),
@@ -89,6 +113,7 @@ async def search_semantic_entities(
 )
 async def recommend_duplicate_semantic_entities(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
     entity_type: str | None = Query(None, description="Filter by semantic entity type"),
     min_score: float = Query(0.82, ge=0, le=1),
     limit: int = Query(50, ge=1, le=200),
@@ -108,6 +133,7 @@ async def recommend_duplicate_semantic_entities(
 async def create_semantic_extraction_job(
     data: SemanticExtractionJobCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
     try:
         return await _svc(session).create_extraction_job(data)
@@ -124,6 +150,7 @@ async def create_semantic_extraction_job_from_document(
     document_id: int,
     data: SemanticExtractionFromDocumentRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
     try:
         detail = await _svc(session).create_rule_extraction_job_from_document(document_id, data)
@@ -137,6 +164,7 @@ async def create_semantic_extraction_job_from_document(
 @router.get("/extraction-candidates", response_model=SemanticExtractionCandidateListResponse)
 async def list_semantic_extraction_candidates(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
     candidate_type: str | None = Query(None, description="Filter by extracted candidate type"),
     status: str | None = Query("pending_review", description="Filter by candidate review status"),
     job_id: int | None = Query(None, description="Filter by extraction job ID"),
@@ -155,7 +183,11 @@ async def review_semantic_extraction_candidate(
     candidate_id: int,
     data: SemanticExtractionCandidateReviewCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(
+        update={"reviewer_id": str(ctx.user_id), "reviewer_name": _actor_name(ctx)}
+    )
     try:
         candidate = await _svc(session).review_extraction_candidate(candidate_id, data)
     except ValueError as exc:
@@ -169,7 +201,9 @@ async def review_semantic_extraction_candidate(
 async def create_semantic_entity(
     data: SemanticGraphEntityCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(update={"created_by": _actor_name(ctx)})
     try:
         return await _svc(session).create_entity(data)
     except ValueError as exc:
@@ -180,6 +214,7 @@ async def create_semantic_entity(
 async def get_semantic_entity_detail(
     entity_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
 ):
     detail = await _svc(session).get_entity_detail(entity_id)
     if detail is None:
@@ -192,7 +227,9 @@ async def update_semantic_entity(
     entity_id: int,
     data: SemanticGraphEntityUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(update={"updated_by": _actor_name(ctx)})
     entity = await _svc(session).update_entity(entity_id, data)
     if entity is None:
         raise HTTPException(status_code=404, detail="Semantic entity not found")
@@ -208,6 +245,7 @@ async def add_semantic_entity_alias(
     entity_id: int,
     data: SemanticGraphEntityAliasCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
     try:
         alias = await _svc(session).add_entity_alias(entity_id, data)
@@ -223,7 +261,11 @@ async def review_semantic_entity(
     entity_id: int,
     data: SemanticGraphEntityReviewCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(
+        update={"reviewer_id": str(ctx.user_id), "reviewer_name": _actor_name(ctx)}
+    )
     entity = await _svc(session).review_entity(entity_id, data)
     if entity is None:
         raise HTTPException(status_code=404, detail="Semantic entity not found")
@@ -235,7 +277,9 @@ async def merge_semantic_entity(
     entity_id: int,
     data: SemanticGraphEntityMergeCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(update={"merged_by": _actor_name(ctx)})
     try:
         result = await _svc(session).merge_entity(entity_id, data)
     except ValueError as exc:
@@ -248,6 +292,7 @@ async def merge_semantic_entity(
 @router.get("/neighbors", response_model=SemanticGraphResponse)
 async def get_semantic_neighbors(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
     entity_id: int = Query(..., description="Semantic entity ID"),
     depth: int = Query(1, ge=1, le=3),
     relation_type: str | None = Query(None, description="Filter by semantic relation type"),
@@ -265,6 +310,7 @@ async def get_semantic_neighbors(
 async def get_semantic_relation_detail(
     relation_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
 ):
     detail = await _svc(session).get_relation_detail(relation_id)
     if detail is None:
@@ -276,7 +322,9 @@ async def get_semantic_relation_detail(
 async def create_semantic_relation(
     data: SemanticGraphRelationCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(update={"created_by": _actor_name(ctx)})
     try:
         return await _svc(session).create_relation(data)
     except ValueError as exc:
@@ -288,7 +336,9 @@ async def update_semantic_relation(
     relation_id: int,
     data: SemanticGraphRelationUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(update={"updated_by": _actor_name(ctx)})
     relation = await _svc(session).update_relation(relation_id, data)
     if relation is None:
         raise HTTPException(status_code=404, detail="Semantic relation not found")
@@ -304,6 +354,7 @@ async def add_semantic_relation_evidence(
     relation_id: int,
     data: SemanticGraphRelationEvidenceCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
     try:
         evidence = await _svc(session).add_relation_evidence(relation_id, data)
@@ -319,7 +370,11 @@ async def review_semantic_relation(
     relation_id: int,
     data: SemanticGraphRelationReviewCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_writer)],
 ):
+    data = data.model_copy(
+        update={"reviewer_id": str(ctx.user_id), "reviewer_name": _actor_name(ctx)}
+    )
     relation = await _svc(session).review_relation(relation_id, data)
     if relation is None:
         raise HTTPException(status_code=404, detail="Semantic relation not found")
@@ -329,6 +384,7 @@ async def review_semantic_relation(
 @router.get("/stats", response_model=SemanticGraphStatsResponse)
 async def get_semantic_graph_stats(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
 ):
     return await _svc(session).get_stats()
 
@@ -336,6 +392,7 @@ async def get_semantic_graph_stats(
 @router.get("/quality-stats", response_model=SemanticGraphQualityStatsResponse)
 async def get_semantic_graph_quality_stats(
     session: Annotated[AsyncSession, Depends(get_session)],
+    _ctx: Annotated[CurrentUserCtx, Depends(_require_semantic_graph_reader)],
 ):
     return await _svc(session).get_quality_stats()
 

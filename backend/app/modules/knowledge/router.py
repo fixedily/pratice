@@ -1,4 +1,4 @@
-﻿"""Knowledge base APIs for 公开演示检修知识系统."""
+"""Knowledge base APIs for 软件杯检修知识系统."""
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError
 from app.db.session import get_session
 from app.modules.knowledge.application.import_service import KnowledgeImportService
+from app.modules.knowledge.deps import CurrentUserCtx, optional_user_ctx, require_user_ctx
 from app.modules.knowledge.application.search_service import KnowledgeService
 from app.modules.knowledge.schemas.imports import (
     KnowledgeChunkPreview,
@@ -20,6 +21,12 @@ from app.modules.knowledge.schemas.imports import (
     KnowledgeImportPreviewResponse,
 )
 from app.modules.knowledge.schemas.search import (
+    KnowledgeBaseCreate,
+    KnowledgeBaseListResponse,
+    KnowledgeBaseResponse,
+    KnowledgeBaseUpdate,
+    KnowledgeCategoryListResponse,
+    KnowledgeCategoryStat,
     KnowledgeDocumentCreate,
     KnowledgeDocumentResponse,
     KnowledgeGraphContext,
@@ -29,6 +36,7 @@ from app.modules.knowledge.schemas.search import (
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
 )
+from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.knowledge_import_worker import KnowledgeImportWorker
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["知识库"])
@@ -37,6 +45,51 @@ logger = logging.getLogger(__name__)
 
 def _build_import_job_response(payload: dict) -> KnowledgeImportJobResponse:
     return KnowledgeImportJobResponse(**payload)
+
+
+def _user_id(ctx: CurrentUserCtx | None) -> int | None:
+    return ctx.user_id if ctx is not None else None
+
+
+def _raise_knowledge_base_error(exc: BaseException) -> None:
+    if isinstance(exc, PermissionError):
+        raise AppError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            error_code="knowledge_base_forbidden",
+            message=str(exc) or "无权访问该知识库。",
+        ) from exc
+    message = str(exc)
+    if "不存在" in message:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            error_code="knowledge_base_not_found",
+            message=message,
+        ) from exc
+    raise AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        error_code="knowledge_base_invalid_request",
+        message=message,
+    ) from exc
+
+
+def _parse_optional_knowledge_base_id(raw: str | int | None) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise AppError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="knowledge_base_invalid_id",
+            message="knowledge_base_id 必须为正整数。",
+        ) from exc
+    if parsed < 1:
+        raise AppError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="knowledge_base_invalid_id",
+            message="knowledge_base_id 必须为正整数。",
+        )
+    return parsed
 
 
 @router.post(
@@ -63,6 +116,7 @@ async def create_knowledge_document(
 
     return KnowledgeDocumentResponse(
         id=document.id,
+        knowledge_base_id=getattr(document, "knowledge_base_id", request.knowledge_base_id or 1),
         title=document.title,
         source_name=document.source_name,
         source_type=document.source_type,
@@ -90,6 +144,10 @@ async def preview_knowledge_import(
     section_reference: str | None = Form(default=None, description="章节说明"),
     source_type: str = Form(default="manual", description="知识来源类型，默认 manual"),
     replace_existing: bool = Form(default=False, description="存在同名文档时是否覆盖导入"),
+    knowledge_base_id: str | None = Form(
+        default=None,
+        description="目标知识库 ID；为空时使用默认知识库",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> KnowledgeImportPreviewResponse:
     filename = (file.filename or "").strip()
@@ -121,6 +179,7 @@ async def preview_knowledge_import(
             section_reference=(section_reference or "").strip() or None,
             source_type=(source_type or "manual").strip() or "manual",
             replace_existing=replace_existing,
+            knowledge_base_id=_parse_optional_knowledge_base_id(knowledge_base_id),
         )
     except ValueError as exc:
         raise AppError(
@@ -129,6 +188,130 @@ async def preview_knowledge_import(
             message=str(exc),
         ) from exc
     return KnowledgeImportPreviewResponse(**payload)
+
+
+@router.get(
+    "/bases",
+    response_model=KnowledgeBaseListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="知识库列表",
+    description="返回可用知识库，上传文档时需指定 knowledge_base_id。",
+)
+async def list_knowledge_bases(
+    limit: int = Query(default=50, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
+) -> KnowledgeBaseListResponse:
+    service = KnowledgeBaseService(session)
+    await service.ensure_default_knowledge_base()
+    items = await service.list_knowledge_bases_with_counts(
+        limit=limit,
+        user_id=_user_id(user_ctx),
+    )
+    return KnowledgeBaseListResponse(
+        total=len(items),
+        bases=[KnowledgeBaseResponse(**item) for item in items],
+    )
+
+
+@router.post(
+    "/bases",
+    response_model=KnowledgeBaseResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="新建知识库",
+)
+async def create_knowledge_base(
+    request: KnowledgeBaseCreate,
+    session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx = Depends(require_user_ctx),
+) -> KnowledgeBaseResponse:
+    service = KnowledgeBaseService(session)
+    try:
+        payload = await service.create_knowledge_base(
+            name=request.name,
+            description=request.description,
+            type=request.type,
+            visibility=request.visibility,
+            owner_id=user_ctx.user_id,
+        )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
+    return KnowledgeBaseResponse(**payload)
+
+
+@router.get(
+    "/bases/{base_id}",
+    response_model=KnowledgeBaseResponse,
+    status_code=status.HTTP_200_OK,
+    summary="知识库详情",
+)
+async def get_knowledge_base_detail(
+    base_id: int,
+    session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
+) -> KnowledgeBaseResponse:
+    service = KnowledgeBaseService(session)
+    try:
+        payload = await service.get_knowledge_base_detail(
+            base_id,
+            user_id=_user_id(user_ctx),
+        )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
+    return KnowledgeBaseResponse(**payload)
+
+
+@router.patch(
+    "/bases/{base_id}",
+    response_model=KnowledgeBaseResponse,
+    status_code=status.HTTP_200_OK,
+    summary="更新知识库",
+)
+async def update_knowledge_base(
+    base_id: int,
+    request: KnowledgeBaseUpdate,
+    session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
+) -> KnowledgeBaseResponse:
+    service = KnowledgeBaseService(session)
+    try:
+        payload = await service.update_knowledge_base(
+            base_id,
+            user_id=_user_id(user_ctx),
+            name=request.name,
+            description=request.description,
+            type=request.type,
+            visibility=request.visibility,
+        )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
+    return KnowledgeBaseResponse(**payload)
+
+
+@router.get(
+    "/categories",
+    response_model=KnowledgeCategoryListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="知识库分类统计",
+)
+async def list_knowledge_categories(
+    knowledge_base_id: int = Query(..., description="知识库 ID"),
+    session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
+) -> KnowledgeCategoryListResponse:
+    service = KnowledgeBaseService(session)
+    try:
+        payload = await service.list_category_stats(
+            knowledge_base_id,
+            user_id=_user_id(user_ctx),
+        )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
+    return KnowledgeCategoryListResponse(
+        knowledge_base_id=payload["knowledge_base_id"],
+        total=payload["total"],
+        categories=[KnowledgeCategoryStat(**item) for item in payload["categories"]],
+    )
 
 
 @router.get(
@@ -141,10 +324,28 @@ async def preview_knowledge_import(
 async def list_knowledge_import_jobs(
     limit: int = Query(default=8, ge=1, le=50, description="返回导入任务数量上限"),
     status_filter: str | None = Query(default=None, alias="status", description="按任务状态过滤"),
+    batch_id: str | None = Query(default=None, description="按批量上传批次 ID 过滤"),
+    knowledge_base_id: int | None = Query(default=None, description="按知识库 ID 过滤"),
     session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
 ) -> KnowledgeImportJobListResponse:
     service = KnowledgeImportService(session)
-    jobs = await service.list_import_jobs(limit=limit, status=status_filter)
+    base_service = KnowledgeBaseService(session)
+    resolved_base_id: int | None = None
+    try:
+        if knowledge_base_id is not None:
+            resolved_base_id = await base_service.resolve_knowledge_base_id(
+                knowledge_base_id,
+                user_id=_user_id(user_ctx),
+            )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
+    jobs = await service.list_import_jobs(
+        limit=limit,
+        status=status_filter,
+        batch_id=batch_id,
+        knowledge_base_id=resolved_base_id,
+    )
     return KnowledgeImportJobListResponse(
         total=len(jobs),
         jobs=[_build_import_job_response(payload) for payload in jobs],
@@ -167,7 +368,13 @@ async def import_knowledge_document(
     section_reference: str | None = Form(default=None, description="章节说明"),
     source_type: str = Form(default="manual", description="知识来源类型，默认 manual"),
     replace_existing: bool = Form(default=False, description="存在同名文档时是否覆盖导入"),
+    batch_id: str | None = Form(default=None, description="批量上传批次 ID，多文件上传时保持一致"),
+    knowledge_base_id: str | None = Form(
+        default=None,
+        description="目标知识库 ID；为空时使用默认知识库",
+    ),
     session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx = Depends(require_user_ctx),
 ) -> KnowledgeImportJobResponse:
     filename = (file.filename or "").strip()
     if not filename:
@@ -185,9 +392,14 @@ async def import_knowledge_document(
         equipment_model or "",
         replace_existing,
     )
-    service = KnowledgeImportService(session)
+    base_service = KnowledgeBaseService(session)
+    import_service = KnowledgeImportService(session)
     try:
-        payload = await service.import_pdf_upload(
+        resolved_base_id = await base_service.resolve_knowledge_base_id(
+            _parse_optional_knowledge_base_id(knowledge_base_id),
+            user_id=user_ctx.user_id,
+        )
+        payload = await import_service.import_pdf_upload(
             filename=filename,
             file_bytes=await file.read(),
             content_type=file.content_type,
@@ -198,7 +410,11 @@ async def import_knowledge_document(
             section_reference=(section_reference or "").strip() or None,
             source_type=(source_type or "manual").strip() or "manual",
             replace_existing=replace_existing,
+            batch_id=batch_id,
+            knowledge_base_id=resolved_base_id,
         )
+    except PermissionError as exc:
+        _raise_knowledge_base_error(exc)
     except ValueError as exc:
         raise AppError(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -307,11 +523,25 @@ async def list_knowledge_documents(
     equipment_type: str | None = Query(default=None, description="按设备类型过滤"),
     equipment_model: str | None = Query(default=None, description="按设备型号过滤"),
     source_type: str | None = Query(default=None, description="按来源类型过滤"),
+    knowledge_base_id: int | None = Query(
+        default=None,
+        description="按知识库 ID 过滤；为空时返回默认知识库下的文档",
+    ),
     session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
 ) -> KnowledgeDocumentListResponse:
+    base_service = KnowledgeBaseService(session)
+    try:
+        resolved_base_id = await base_service.resolve_knowledge_base_id(
+            knowledge_base_id,
+            user_id=_user_id(user_ctx),
+        )
+    except (ValueError, PermissionError) as exc:
+        _raise_knowledge_base_error(exc)
     service = KnowledgeImportService(session)
     documents = await service.list_documents(
         limit=limit,
+        knowledge_base_id=resolved_base_id,
         query=query,
         equipment_type=equipment_type,
         equipment_model=equipment_model,

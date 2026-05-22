@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { ArrowUp, ArrowDown, Minus } from "lucide-react"
 import { cn } from "@/shared/lib/utils"
@@ -123,3 +123,4 @@ export function StatCard({
     </div>
   )
 }
+

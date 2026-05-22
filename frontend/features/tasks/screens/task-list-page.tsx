@@ -12,7 +12,6 @@ import {
   postAgentAssist,
   type MaintenanceLevelOption,
   type MaintenanceTaskHistoryItem,
-  type MaintenanceTaskDetail,
 } from "@/features/tasks/api";
 import { uploadMaintenanceAttachment } from "@/features/tickets/api";
 import { getMaintenanceToken } from "@/features/auth/lib/token-store";
@@ -453,9 +452,6 @@ export function TaskListPageContent({ mode = "all" }: { mode?: TaskListMode }) {
   const [diagImageFile, setDiagImageFile] = useState<File | null>(null);
   const [diagLogFile, setDiagLogFile] = useState<File | null>(null);
   const [diagRecordFile, setDiagRecordFile] = useState<File | null>(null);
-  const [latestTaskId, setLatestTaskId] = useState<number | null>(null);
-  const [latestAdvice, setLatestAdvice] = useState<string | null>(null);
-  const [latestSourceRefs, setLatestSourceRefs] = useState<MaintenanceTaskDetail["source_refs"]>([]);
   const [diagPhase, setDiagPhase] = useState<DiagnosePhase>("idle");
   const [diagProgressHasAttachment, setDiagProgressHasAttachment] = useState(false);
 
@@ -867,14 +863,6 @@ export function TaskListPageContent({ mode = "all" }: { mode?: TaskListMode }) {
             runningTitle={runningDiagMessage.title}
             runningDescription={runningDiagMessage.description}
             onSubmit={runSmartDiagnose}
-            hasResult={latestTaskId !== null}
-            onViewDetail={
-              latestTaskId
-                ? () => {
-                    window.location.href = `/tasks/${latestTaskId}`;
-                  }
-                : undefined
-            }
           />
         </div>
       ) : null}

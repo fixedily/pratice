@@ -10,6 +10,8 @@ export function AuthPageShell({ children }: { children: ReactNode }) {
   );
 }
 
+export const AuthLayout = AuthPageShell;
+
 export function AuthPageBackground() {
   return (
     <div className="pointer-events-none absolute inset-0">
@@ -43,3 +45,5 @@ export function AuthPageCard({ children }: { children: ReactNode }) {
     </div>
   );
 }
+
+export const AuthCard = AuthPageCard;

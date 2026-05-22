@@ -1,4 +1,4 @@
-﻿# File: app/schemas/sensor_data.py
+# File: app/schemas/sensor_data.py
 """Pydantic V2 schemas for sensor data validation.
 
 Auto-generated from app/models/sensor_data.py

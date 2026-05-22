@@ -1,4 +1,4 @@
-﻿# File: app/models/__init__.py
+# File: app/models/__init__.py
 """SQLAlchemy ORM models."""
 from app.models.base import Base
 from app.models.sensor_data import SensorData
@@ -14,6 +14,7 @@ from app.models.knowledge import (
     KgRelation,
     KgRelationEvidence,
     KgRelationReview,
+    KnowledgeBase,
     KnowledgeDocument,
     KnowledgeImportJob,
     KnowledgeChunk,
@@ -30,12 +31,15 @@ from app.models.tasks import (
 from app.models.maintenance_domain import (
     Annotation,
     ApprovalTask,
+    AuthLog,
     AuditLog,
     AuthUser,
     Device,
     Escalation,
     FlowTemplate,
     KnowledgeArticle,
+    PasswordResetRequest,
+    PasswordResetToken,
     Attachment,
     RetrievalSnapshot,
     Role,
@@ -62,6 +66,7 @@ __all__ = [
     "KgRelation",
     "KgRelationEvidence",
     "KgRelationReview",
+    "KnowledgeBase",
     "KnowledgeDocument",
     "KnowledgeImportJob",
     "KnowledgeChunk",
@@ -73,6 +78,9 @@ __all__ = [
     "MaintenanceTaskTemplate",
     "MaintenanceTaskTemplateStep",
     "AuthUser",
+    "PasswordResetRequest",
+    "PasswordResetToken",
+    "AuthLog",
     "Role",
     "UserRole",
     "Device",

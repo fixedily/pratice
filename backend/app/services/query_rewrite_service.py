@@ -1,4 +1,4 @@
-﻿"""LLM-based query rewriting for improved retrieval coverage.
+"""LLM-based query rewriting for improved retrieval coverage.
 
 Generates multiple query variants from a single user query, preserving
 temporal constraints and domain-specific terms.

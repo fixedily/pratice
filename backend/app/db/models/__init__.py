@@ -1,4 +1,4 @@
-﻿"""Canonical ORM model exports."""
+"""Canonical ORM model exports."""
 from app.db.base import Base
 from app.models.knowledge import (
     AgentRun,

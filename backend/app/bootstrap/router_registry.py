@@ -1,4 +1,4 @@
-﻿"""Router registration for the application factory."""
+"""Router registration for the application factory."""
 from fastapi import FastAPI
 
 from app.modules.assistant.router import router as agents_router
@@ -19,7 +19,7 @@ def register_routers(app: FastAPI) -> None:
     """Register all public API routers."""
     app.include_router(health_router)
     app.include_router(auth_router)
-    # 检修域契约 API；legacy：tasks / agents / knowledge / cases 等仍保留用于场景工作台
+    # 检修域契约 API；legacy：tasks / agents / knowledge / cases 等仍保留用于赛题工作台
     app.include_router(maintenance_router)
     app.include_router(observability_router)
     app.include_router(workbench_router)

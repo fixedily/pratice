@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { Server, Cpu, HardDrive, Gauge } from "lucide-react"
 import { StatusTag } from "./status-tag"
@@ -177,3 +177,4 @@ export function DeviceGrid({ devices, loading = false, emptyState = false }: Dev
     </div>
   )
 }
+

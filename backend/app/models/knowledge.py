@@ -1,4 +1,4 @@
-﻿"""Knowledge base models for the 公开演示检修知识系统."""
+"""Knowledge base models for the 软件杯检修知识系统."""
 from datetime import datetime
 
 from sqlalchemy import (
@@ -9,6 +9,9 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     Numeric,
+    event,
+    insert,
+    select,
     String,
     Text,
     UniqueConstraint,
@@ -16,6 +19,38 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+
+DEFAULT_KNOWLEDGE_BASE_SLUG = "maintenance-default"
+DEFAULT_KNOWLEDGE_BASE_NAME = "设备检修知识库"
+DEFAULT_KNOWLEDGE_BASE_DESCRIPTION = "设备检修、故障诊断与维修手册的统一知识库。"
+
+
+class KnowledgeBase(Base):
+    """Business-domain knowledge repository grouping multiple documents."""
+
+    __tablename__ = "knowledge_bases"
+    __table_args__ = (UniqueConstraint("slug", name="uq_knowledge_bases_slug"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    type: Mapped[str] = mapped_column(String(30), default="comprehensive", nullable=False, index=True)
+    visibility: Mapped[str] = mapped_column(String(30), default="internal", nullable=False, index=True)
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    documents: Mapped[list["KnowledgeDocument"]] = relationship(
+        back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )
 
 
 class DeviceModel(Base):
@@ -44,8 +79,16 @@ class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_base_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(30), default="pdf", nullable=False, index=True)
+    source_modality: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    object_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     equipment_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     equipment_model: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
@@ -59,6 +102,7 @@ class KnowledgeDocument(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")
     chunks: Mapped[list["KnowledgeChunk"]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",
@@ -72,9 +116,18 @@ class KnowledgeImportJob(Base):
     __tablename__ = "knowledge_import_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_base_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     import_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    file_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     equipment_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -83,6 +136,9 @@ class KnowledgeImportJob(Base):
     section_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
     replace_existing: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    current_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    error_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
     file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -128,6 +184,11 @@ class KnowledgeChunk(Base):
         nullable=False,
         index=True,
     )
+    knowledge_base_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     heading: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -146,6 +207,52 @@ class KnowledgeChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
+
+
+def _ensure_default_knowledge_base_id(connection) -> int:
+    base_table = KnowledgeBase.__table__
+    stmt = select(base_table.c.id).where(base_table.c.slug == DEFAULT_KNOWLEDGE_BASE_SLUG).limit(1)
+    existing = connection.execute(stmt).scalar_one_or_none()
+    if existing is not None:
+        return int(existing)
+
+    now = datetime.utcnow()
+    result = connection.execute(
+        insert(base_table).values(
+            name=DEFAULT_KNOWLEDGE_BASE_NAME,
+            slug=DEFAULT_KNOWLEDGE_BASE_SLUG,
+            description=DEFAULT_KNOWLEDGE_BASE_DESCRIPTION,
+            type="comprehensive",
+            visibility="internal",
+            owner_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return int(result.inserted_primary_key[0])
+
+
+@event.listens_for(KnowledgeDocument, "before_insert")
+def _assign_default_knowledge_base_id(mapper, connection, target) -> None:  # noqa: ANN001
+    if getattr(target, "knowledge_base_id", None) is not None:
+        return
+    target.knowledge_base_id = _ensure_default_knowledge_base_id(connection)
+
+
+@event.listens_for(KnowledgeChunk, "before_insert")
+def _assign_chunk_knowledge_base_id(mapper, connection, target) -> None:  # noqa: ANN001
+    if getattr(target, "knowledge_base_id", None) is not None:
+        return
+    if getattr(target, "document_id", None) is not None:
+        document_table = KnowledgeDocument.__table__
+        stmt = select(document_table.c.knowledge_base_id).where(
+            document_table.c.id == target.document_id
+        )
+        document_base_id = connection.execute(stmt).scalar_one_or_none()
+        if document_base_id is not None:
+            target.knowledge_base_id = int(document_base_id)
+            return
+    target.knowledge_base_id = _ensure_default_knowledge_base_id(connection)
 
 
 class MaintenanceCase(Base):

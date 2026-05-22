@@ -1,4 +1,4 @@
-﻿"""Knowledge chunking and anchor extraction helpers."""
+"""Knowledge chunking and anchor extraction helpers."""
 from __future__ import annotations
 
 import re
@@ -78,6 +78,20 @@ def _split_inline_procedural_paragraph(paragraph: str) -> list[str]:
     return parts or [compact]
 
 
+CHUNK_FIELD_LIMITS: dict[str, int] = {
+    "heading": 255,
+    "section_reference": 100,
+    "section_path": 255,
+    "step_anchor": 255,
+    "page_reference": 50,
+    "image_anchor": 100,
+    "equipment_type": 100,
+    "equipment_model": 100,
+    "fault_type": 100,
+    "source_modality": 30,
+}
+
+
 def _normalize_anchor_text(value: str | None, *, max_length: int = 120) -> str | None:
     condensed = " ".join((value or "").split()).strip()
     if not condensed:
@@ -85,6 +99,25 @@ def _normalize_anchor_text(value: str | None, *, max_length: int = 120) -> str |
     if len(condensed) <= max_length:
         return condensed
     return condensed[: max_length - 1].rstrip() + "…"
+
+
+def clamp_chunk_field(value: str | None, field: str) -> str | None:
+    """Clamp one chunk metadata field to the database column limit."""
+    if value is None:
+        return None
+    limit = CHUNK_FIELD_LIMITS.get(field)
+    if limit is None:
+        return value
+    return _normalize_anchor_text(value, max_length=limit)
+
+
+def clamp_chunk_payload(payload: dict[str, str | None]) -> dict[str, str | None]:
+    """Ensure chunk anchor metadata fits ORM column sizes before persistence."""
+    clamped = dict(payload)
+    for field in CHUNK_FIELD_LIMITS:
+        if field in clamped:
+            clamped[field] = clamp_chunk_field(clamped.get(field), field)
+    return clamped
 
 
 def _split_segment_by_length(text: str, max_chars: int) -> list[str]:
@@ -167,14 +200,27 @@ def _apply_heading_to_section_stack(
     level: int,
     heading: str,
 ) -> list[str]:
+    compact_heading = _normalize_anchor_text(heading, max_length=96) or heading[:96]
     if level == 99:
         if section_stack and ACTION_SUBSECTION_PATTERN.match(section_stack[-1]):
-            return [*section_stack[:-1], heading]
-        return [*section_stack, heading]
+            return [*section_stack[:-1], compact_heading]
+        return [*section_stack, compact_heading]
 
     updated_stack = section_stack[: level - 1]
-    updated_stack.append(heading)
+    updated_stack.append(compact_heading)
     return updated_stack
+
+
+def _build_section_path(section_stack: list[str], *, default_section: str | None) -> str | None:
+    if section_stack:
+        return clamp_chunk_field(" > ".join(section_stack), "section_path")
+    return clamp_chunk_field(default_section, "section_path")
+
+
+def _build_section_label(section_stack: list[str], *, default_section: str | None) -> str | None:
+    if section_stack:
+        return clamp_chunk_field(section_stack[-1], "section_reference")
+    return clamp_chunk_field(default_section, "section_reference")
 
 
 def _normalize_procedural_block_items(text: str) -> str:
@@ -364,12 +410,17 @@ def build_anchored_chunk_payloads(
     # We split it back into a list so that the level-based truncation logic
     # (section_stack[:level-1]) works correctly when a new heading is found.
     if inherited_section_path:
-        section_stack: list[str] = [
-            s.strip() for s in inherited_section_path.split(" > ") if s.strip()
+        section_stack = [
+            _normalize_anchor_text(part.strip(), max_length=96) or part.strip()[:96]
+            for part in inherited_section_path.split(" > ")
+            if part.strip()
         ]
     else:
         section_stack = []
-    default_section = _normalize_anchor_text(section_reference, max_length=140)
+    default_section = clamp_chunk_field(
+        _normalize_anchor_text(section_reference, max_length=140),
+        "section_reference",
+    )
     segments: list[dict[str, str | None]] = []
     for paragraph in paragraphs:
         heading_info = _detect_section_heading(paragraph)
@@ -385,8 +436,8 @@ def build_anchored_chunk_payloads(
             if paragraph.strip() == heading and "。" not in heading and "；" not in heading:
                 continue
 
-        section_path = " > ".join(section_stack) if section_stack else default_section
-        section_label = section_stack[-1] if section_stack else default_section
+        section_path = _build_section_path(section_stack, default_section=default_section)
+        section_label = _build_section_label(section_stack, default_section=default_section)
         step_anchor = None if heading_info is not None else _detect_step_anchor(paragraph)
         for segment in _split_segment_by_length(paragraph, max_chars):
             segments.append(
@@ -421,17 +472,19 @@ def build_anchored_chunk_payloads(
             return
         chunk_number = len(payloads) + 1
         payloads.append(
-            {
-                "heading": current_section_path or current_section_reference or title,
-                "content": "\n\n".join(current_segments).strip(),
-                "section_reference": current_section_reference or default_section,
-                "section_path": current_section_path or default_section,
-                "step_anchor": current_step_anchor,
-                "page_reference": page_reference,
-                "image_anchor": (
-                    f"{image_anchor_prefix}-{chunk_number}" if image_anchor_prefix else None
-                ),
-            }
+            clamp_chunk_payload(
+                {
+                    "heading": current_section_path or current_section_reference or title,
+                    "content": "\n\n".join(current_segments).strip(),
+                    "section_reference": current_section_reference or default_section,
+                    "section_path": current_section_path or default_section,
+                    "step_anchor": current_step_anchor,
+                    "page_reference": page_reference,
+                    "image_anchor": (
+                        f"{image_anchor_prefix}-{chunk_number}" if image_anchor_prefix else None
+                    ),
+                }
+            )
         )
         current_segments = []
         current_section_reference = None
@@ -478,12 +531,17 @@ def resolve_terminal_section_path(
         return _normalize_anchor_text(section_reference, max_length=140)
 
     if inherited_section_path:
-        section_stack: list[str] = [
-            s.strip() for s in inherited_section_path.split(" > ") if s.strip()
+        section_stack = [
+            _normalize_anchor_text(part.strip(), max_length=96) or part.strip()[:96]
+            for part in inherited_section_path.split(" > ")
+            if part.strip()
         ]
     else:
         section_stack = []
-    default_section = _normalize_anchor_text(section_reference, max_length=140)
+    default_section = clamp_chunk_field(
+        _normalize_anchor_text(section_reference, max_length=140),
+        "section_reference",
+    )
 
     for paragraph in paragraphs:
         heading_info = _detect_section_heading(paragraph)
@@ -497,8 +555,8 @@ def resolve_terminal_section_path(
         )
 
     if section_stack:
-        return " > ".join(section_stack)
-    return default_section
+        return _build_section_path(section_stack, default_section=default_section)
+    return clamp_chunk_field(default_section, "section_path")
 
 
 def _build_procedural_chunk_payloads(
@@ -527,15 +585,17 @@ def _build_procedural_chunk_payloads(
         chunk_no = len(payloads) + 1
         step_title = current_step_anchor or current_section_reference or title
         payloads.append(
-            {
-                "heading": f"{current_section_path or current_section_reference or title} - {step_title}",
-                "content": _format_procedural_chunk_content("\n\n".join(current_bucket).strip()),
-                "section_reference": current_section_reference or default_section,
-                "section_path": current_section_path or default_section,
-                "step_anchor": current_step_anchor,
-                "page_reference": page_reference,
-                "image_anchor": f"{image_anchor_prefix}-{chunk_no}" if image_anchor_prefix else None,
-            }
+            clamp_chunk_payload(
+                {
+                    "heading": f"{current_section_path or current_section_reference or title} - {step_title}",
+                    "content": _format_procedural_chunk_content("\n\n".join(current_bucket).strip()),
+                    "section_reference": current_section_reference or default_section,
+                    "section_path": current_section_path or default_section,
+                    "step_anchor": current_step_anchor,
+                    "page_reference": page_reference,
+                    "image_anchor": f"{image_anchor_prefix}-{chunk_no}" if image_anchor_prefix else None,
+                }
+            )
         )
         current_bucket = []
         current_step_anchor = None
@@ -611,7 +671,10 @@ def split_text_into_chunks(
 
 
 __all__ = [
+    "CHUNK_FIELD_LIMITS",
     "build_anchored_chunk_payloads",
+    "clamp_chunk_field",
+    "clamp_chunk_payload",
     "resolve_terminal_section_path",
     "split_text_into_chunks",
     "split_text_into_paragraphs",

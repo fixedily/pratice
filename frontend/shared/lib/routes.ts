@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 应用内主要路径（落地页 ↔ 控制台 ↔ 登录）
  */
 export const ROUTES = {
@@ -9,6 +9,7 @@ export const ROUTES = {
   login: "/login",
   register: "/register",
   forgotPassword: "/forgot-password",
+  resetPassword: "/reset-password",
   adminSystemConfigs: "/admin/system-configs",
   diagnosisCreate: "/tasks/new",
   diagnosisHistory: "/tasks/history",

@@ -157,7 +157,7 @@ export function CaptchaField({ value, onChange, error, image, loading, onRefresh
           {error}
         </p>
       ) : (
-        <p className="text-xs text-slate-500 dark:text-tertiary">验证码 1 分钟内有效，点击图片可刷新</p>
+        <p className="text-xs text-slate-500 dark:text-tertiary">验证码 3 分钟内有效，点击图片可刷新</p>
       )}
     </div>
   );

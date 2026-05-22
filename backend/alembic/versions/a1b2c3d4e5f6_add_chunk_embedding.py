@@ -1,4 +1,4 @@
-﻿"""add chunk embedding pgvector
+"""add chunk embedding pgvector
 
 Revision ID: a1b2c3d4e5f6
 Revises: f6d8c2b1a4e7

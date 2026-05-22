@@ -1,4 +1,4 @@
-﻿"""Phase 16: 案例沉淀、审核与人工修正测试."""
+"""Phase 16: 案例沉淀、审核与人工修正测试."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 

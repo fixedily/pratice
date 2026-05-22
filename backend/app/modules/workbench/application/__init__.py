@@ -1,1 +1,2 @@
-﻿"""Application services for the workbench module."""
+"""Application services for the workbench module."""
+

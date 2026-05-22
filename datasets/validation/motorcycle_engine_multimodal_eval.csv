@@ -1,4 +1,4 @@
-﻿case_id,category,modality,query,image_path,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
+case_id,category,modality,query,image_path,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
 MM-01,success,image+text,请结合图片判断是否存在火花塞积炭，并给出与启动困难相关的检修依据,datasets/img/spark_plug_carbon_fouling_photo.png,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|积炭|间隙标准值|更换火花塞,Top-3 内应命中火花塞检查或启动困难相关知识,真实照片+文本
 MM-02,success,image+text,请结合图片识别火花塞的关键测量位置，并检索火花塞间隙标准值,datasets/img/spark_plug_gap_out_of_spec_check.png,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|塞尺|间隙标准值|0.7|0.9,Top-3 内应命中火花塞间隙检查与标准值,示意图+参数问题
 MM-03,fuzzy,image+text,这张图片像是点火相关零件，请结合图片判断应优先检查什么,datasets/img/spark_plug_removal_reference.png,摩托车发动机,通用,点火系统,1.1 拆卸火花塞,P2,高压帽|火花塞专用套筒|逆时针|拆卸火花塞,Top-3 内应命中火花塞拆卸或检查前置步骤,弱文本依赖图片定位

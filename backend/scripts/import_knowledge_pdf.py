@@ -41,6 +41,7 @@ async def import_pdf(args: argparse.Namespace) -> None:
     )
 
     request = KnowledgeDocumentCreate(
+        knowledge_base_id=1,
         title=title,
         source_name=pdf_path.name,
         source_type=args.source_type,

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { TaskListPageContent } from "@/features/tasks/screens/task-list-page";
 

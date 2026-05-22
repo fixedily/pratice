@@ -1,4 +1,4 @@
-﻿"""Policies for turning review outcomes into critique artifacts."""
+"""Policies for turning review outcomes into critique artifacts."""
 from __future__ import annotations
 
 from typing import Any

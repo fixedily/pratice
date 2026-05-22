@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
@@ -7,7 +7,6 @@ import {
   createMaintenanceCase,
   deleteMaintenanceCase,
   fetchCasesList,
-  importKnowledgeDocument,
 } from "@/features/cases/api"
 import { toast } from "sonner"
 import {
@@ -26,7 +25,6 @@ import {
   Zap,
   ThermometerSun,
   Trash2,
-  UploadCloud,
 } from "lucide-react"
 import { Header } from "@/shared/components/brand/app-header"
 import {
@@ -48,7 +46,6 @@ import {
   DialogTitle,
 } from "@/shared/components/ui/dialog"
 import { Button } from "@/shared/components/ui/button"
-import { Checkbox } from "@/shared/components/ui/checkbox"
 import { Input } from "@/shared/components/ui/input"
 import { Label } from "@/shared/components/ui/label"
 import {
@@ -570,13 +567,6 @@ export default function CasesPage() {
   const [deleteTarget, setDeleteTarget] = useState<FaultCase | null>(null)
   const [deleteSubmitting, setDeleteSubmitting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [uploadDrawerOpen, setUploadDrawerOpen] = useState(false)
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
-  const [uploadEquipmentType, setUploadEquipmentType] = useState("")
-  const [uploadKnowledgeType, setUploadKnowledgeType] = useState<KnowledgeType>("manual")
-  const [uploadTitle, setUploadTitle] = useState("")
-  const [uploadReplaceExisting, setUploadReplaceExisting] = useState(true)
-  const [uploadSubmitting, setUploadSubmitting] = useState(false)
   const [newTitle, setNewTitle] = useState("")
   const [newEquipmentType, setNewEquipmentType] = useState("")
   const [newEquipmentModel, setNewEquipmentModel] = useState("")
@@ -586,14 +576,6 @@ export default function CasesPage() {
   const [newResolution, setNewResolution] = useState("")
   const [newWorkOrderId, setNewWorkOrderId] = useState("")
   const [newPriority, setNewPriority] = useState<"low" | "medium" | "urgent">("medium")
-
-  const resetUploadForm = useCallback(() => {
-    setUploadFile(null)
-    setUploadEquipmentType("")
-    setUploadKnowledgeType("manual")
-    setUploadTitle("")
-    setUploadReplaceExisting(true)
-  }, [])
 
   const resetCreateForm = useCallback(() => {
     setCreateError(null)
@@ -820,37 +802,6 @@ export default function CasesPage() {
     setSearchQuery("")
   }
 
-  const submitKnowledgeUpload = useCallback(() => {
-    if (!uploadFile) {
-      toast.error("请先选择上传文件")
-      return
-    }
-    if (!uploadEquipmentType.trim()) {
-      toast.error("请填写设备类型")
-      return
-    }
-
-    void (async () => {
-      setUploadSubmitting(true)
-      try {
-        const payload = await importKnowledgeDocument({
-          file: uploadFile,
-          equipment_type: uploadEquipmentType.trim(),
-          title: uploadTitle.trim() || undefined,
-          source_type: uploadKnowledgeType,
-          replace_existing: uploadReplaceExisting,
-        })
-        setUploadDrawerOpen(false)
-        resetUploadForm()
-        router.push(`/knowledge?from=cases&highlightImportJob=${payload.id}`)
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "上传失败，请稍后重试")
-      } finally {
-        setUploadSubmitting(false)
-      }
-    })()
-  }, [resetUploadForm, router, uploadEquipmentType, uploadFile, uploadKnowledgeType, uploadReplaceExisting, uploadTitle])
-
   // 过滤数据
   const filteredCases = sourceCases.filter((c) => {
     if (searchQuery && !c.title.includes(searchQuery) && !c.deviceName.includes(searchQuery) && !c.faultTags.some((t) => t.includes(searchQuery))) {
@@ -1052,14 +1003,6 @@ export default function CasesPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setUploadDrawerOpen(true)}
-                  className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-transparent px-3 text-sm text-foreground transition-colors hover:bg-muted"
-                >
-                  <BookOpen className="w-4 h-4" />
-                  <span className="hidden sm:inline">知识文档上传</span>
-                </button>
-                <button
-                  type="button"
                   onClick={() => {
                     resetCreateForm()
                     setCreateOpen(true)
@@ -1222,136 +1165,6 @@ export default function CasesPage() {
           </div>
         )}
       </main>
-
-      <Dialog
-        open={uploadDrawerOpen}
-        onOpenChange={(open) => {
-          setUploadDrawerOpen(open)
-          if (!open && !uploadSubmitting) {
-            resetUploadForm()
-          }
-        }}
-      >
-        <DialogContent className="left-auto right-0 top-0 h-screen w-full max-w-xl translate-x-0 translate-y-0 rounded-none border-y-0 border-r-0 border-l border-border bg-popover p-0 text-popover-foreground data-[state=open]:slide-in-from-right data-[state=closed]:slide-out-to-right">
-          <div className="h-full overflow-y-auto p-6">
-            <DialogHeader>
-              <DialogTitle>知识文档上传</DialogTitle>
-              <DialogDescription>
-                在案例库内完成上传，保持当前上下文不跳转页面。
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="mt-5 space-y-4">
-              <button
-                type="button"
-                onClick={() => document.getElementById("cases-knowledge-upload-input")?.click()}
-                className="w-full rounded-lg border border-dashed border-border bg-muted px-4 py-6 text-left transition-colors hover:bg-muted/80"
-              >
-                <div className="flex items-center gap-2 text-foreground">
-                  <UploadCloud className="h-4 w-4" />
-                  <span className="text-sm">拖拽 PDF / 图片到此处，或点击选择文件</span>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">支持 PDF、PNG、JPG、WEBP。</p>
-              </button>
-              <input
-                id="cases-knowledge-upload-input"
-                type="file"
-                accept=".pdf,.png,.jpg,.jpeg,.webp"
-                className="hidden"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-              />
-              {uploadFile ? <p className="text-xs text-muted-foreground">已选择：{uploadFile.name}</p> : null}
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label className="text-foreground">设备类型 *</Label>
-                  <Input
-                    value={uploadEquipmentType}
-                    onChange={(e) => setUploadEquipmentType(e.target.value)}
-                    placeholder="如：摩托车发动机"
-                    className="app-input"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label className="text-foreground">知识类型 *</Label>
-                  <Select
-                    value={uploadKnowledgeType}
-                    onValueChange={(value) => setUploadKnowledgeType(value as KnowledgeType)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="知识类型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="manual">设备手册</SelectItem>
-                      <SelectItem value="sop">SOP流程</SelectItem>
-                      <SelectItem value="case">故障案例</SelectItem>
-                      <SelectItem value="expert">专家经验</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <Label className="text-foreground">文档标题</Label>
-                <Input
-                  value={uploadTitle}
-                  onChange={(e) => setUploadTitle(e.target.value)}
-                  placeholder="默认使用文件名"
-                  className="app-input"
-                />
-              </div>
-
-              <label className="flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3">
-                <Checkbox
-                  checked={uploadReplaceExisting}
-                  onCheckedChange={(checked) => setUploadReplaceExisting(Boolean(checked))}
-                  className="mt-0.5"
-                />
-                <div className="space-y-1">
-                  <div className="text-sm text-foreground">同名文档覆盖导入</div>
-                  <p className="text-xs text-muted-foreground">
-                    勾选后，如知识库已存在同名文档，将删除旧文档并使用当前文件重新切分导入。
-                  </p>
-                </div>
-              </label>
-
-              <div className="rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground">
-                上传后流程：上传成功 → 文本解析/OCR → 分段切片 → 向量化索引 → 待审核 → 入库完成
-              </div>
-            </div>
-
-            <DialogFooter className="mt-6 flex items-center justify-between gap-2">
-              <Link
-                href="/knowledge?from=cases"
-                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-              >
-                进入知识文档管理页
-              </Link>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-border bg-transparent text-foreground hover:bg-muted hover:text-foreground"
-                  onClick={() => {
-                    setUploadDrawerOpen(false)
-                    resetUploadForm()
-                  }}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="button"
-                  className="bg-[#5e6ad2] text-white hover:bg-[#6b77db]"
-                  disabled={uploadSubmitting}
-                  onClick={submitKnowledgeUpload}
-                >
-                  {uploadSubmitting ? "上传中..." : "开始上传"}
-                </Button>
-              </div>
-            </DialogFooter>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <AlertDialog
         open={Boolean(deleteTarget)}
@@ -1584,3 +1397,4 @@ export default function CasesPage() {
     </div>
   )
 }
+

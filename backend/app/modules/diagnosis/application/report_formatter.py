@@ -1,4 +1,4 @@
-﻿"""Compatibility export for diagnosis formatting helpers."""
+"""Compatibility export for diagnosis formatting helpers."""
 from app.services.diagnosis_formatting import (
     build_structured_diagnosis,
     extract_report_section,

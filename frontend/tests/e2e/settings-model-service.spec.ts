@@ -1,4 +1,4 @@
-﻿import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 import type { MaintenanceSystemConfigItem } from "@/shared/lib/http";
 

@@ -1,4 +1,4 @@
-﻿"""Phase 21: PostgreSQL 索引与主链路集成测试.
+"""Phase 21: PostgreSQL 索引与主链路集成测试.
 
 运行前请设置:
     TEST_POSTGRESQL_URL=postgresql+asyncpg://<user>:<password>@<host>:<port>/<db>

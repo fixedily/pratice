@@ -1,4 +1,4 @@
-﻿"""add work order assignment fields
+"""add work order assignment fields
 
 Revision ID: fa3b7c9d1e2f
 Revises: bb23cc45dd67

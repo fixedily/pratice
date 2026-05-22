@@ -1,4 +1,4 @@
-﻿"""Resolve persisted assistant runtime config into typed objects."""
+"""Resolve persisted assistant runtime config into typed objects."""
 from __future__ import annotations
 
 import json

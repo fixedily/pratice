@@ -1,4 +1,4 @@
-﻿import { Network } from "lucide-react";
+import { Network } from "lucide-react";
 
 import { Button } from "@/shared/components/ui/button";
 import { MetricCard, SettingsSectionShell, ToggleRow } from "@/features/settings/components/settings-ui";

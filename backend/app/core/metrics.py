@@ -1,4 +1,4 @@
-﻿"""Lightweight in-process metrics for debugging and maintenance observability."""
+"""Lightweight in-process metrics for debugging and maintenance observability."""
 from __future__ import annotations
 
 import asyncio

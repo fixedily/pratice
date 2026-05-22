@@ -1,4 +1,4 @@
-﻿export {
+export {
   createMaintenanceDevice,
   createMaintenanceTask,
   createWorkOrder,

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState } from "react";
 import { SearchCheck, ListChecks, Network, FileCheck } from "lucide-react";
@@ -148,3 +148,4 @@ export function Capabilities() {
     </section>
   );
 }
+

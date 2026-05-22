@@ -1,4 +1,4 @@
-﻿"""Task schema compatibility exports."""
+"""Task schema compatibility exports."""
 from app.schemas.tasks import (
     KnowledgeReference,
     MaintenanceTaskCreate,

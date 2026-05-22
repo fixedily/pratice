@@ -1,4 +1,4 @@
-﻿# Docker Compose 配置 - PostgreSQL 生产数据库
+# Docker Compose 配置 - PostgreSQL 生产数据库
 # 使用方式: docker-compose up -d
 version: "3.9"
 

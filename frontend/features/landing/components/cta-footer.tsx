@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
 import { ArrowRight } from "lucide-react";
@@ -108,7 +108,7 @@ export function Footer() {
               title="开发者中心"
               links={[
                 { label: "API 接口文档", action: "locked" },
-                { label: "跨平台部署指南", href: "/docs/跨平台部署指南.pdf" },
+                { label: "龙架构部署指南", href: "/docs/龙架构部署指南.pdf" },
                 { label: "系统操作手册", href: "/docs/系统操作手册.pdf" },
               ]}
               onTeamClick={() => setTeamDialogOpen(true)}

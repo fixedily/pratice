@@ -1,4 +1,4 @@
-﻿"""Schemas for workbench overview APIs."""
+"""Schemas for workbench overview APIs."""
 from datetime import datetime
 
 from pydantic import BaseModel, Field

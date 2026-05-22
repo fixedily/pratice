@@ -1,4 +1,4 @@
-﻿"""SQL expression helpers for knowledge retrieval."""
+"""SQL expression helpers for knowledge retrieval."""
 from __future__ import annotations
 
 from typing import Any
