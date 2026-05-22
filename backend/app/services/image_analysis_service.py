@@ -1,4 +1,4 @@
-"""Image-assisted retrieval helpers for TODO-SB-3."""
+﻿"""Image-assisted retrieval helpers for TODO-SB-3."""
 from __future__ import annotations
 
 import base64
@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - langchain-core is already required
     HumanMessage = None
 
 
-MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,}")
 _IGNORE_TOKENS = {
     "img",
@@ -90,6 +90,15 @@ class ImageAnalysisResult:
 class FaultImageAnalysisService:
     """Analyze a single fault image and turn it into retrieval hints."""
 
+    def _resolve_provider(self, requested_provider: str | None) -> str:
+        settings = get_settings()
+        provider = (requested_provider or "").strip().lower()
+        if provider in {"", "openai"}:
+            configured = (settings.image_analysis_provider or settings.default_llm_provider or "openai").strip().lower()
+            if configured:
+                return configured
+        return provider or "openai"
+
     async def analyze(
         self,
         image_base64: str,
@@ -104,7 +113,8 @@ class FaultImageAnalysisService:
         """Analyze an image via a multimodal model, with deterministic fallback."""
         image_bytes = self._decode_image(image_base64)
         if len(image_bytes) > MAX_IMAGE_BYTES:
-            raise ValueError("单张故障图片不能超过 4 MB。")
+            raise ValueError("单张故障图片不能超过 10 MB。")
+        resolved_provider = self._resolve_provider(model_provider)
 
         fallback = self._build_fallback(
             image_filename=image_filename,
@@ -113,12 +123,12 @@ class FaultImageAnalysisService:
             equipment_model=equipment_model,
         )
 
-        llm = self._create_multimodal_llm(model_provider=model_provider, model_name=model_name)
+        llm = self._create_multimodal_llm(model_provider=resolved_provider, model_name=model_name)
         if llm is None or HumanMessage is None:
             return fallback
 
         content = self._build_message_content(
-            model_provider=model_provider,
+            model_provider=resolved_provider,
             image_base64=image_base64,
             image_mime_type=image_mime_type or "image/jpeg",
             query=query,
@@ -246,8 +256,9 @@ class FaultImageAnalysisService:
 
     def _create_multimodal_llm(self, model_provider: str, model_name: str | None) -> Any | None:
         settings = get_settings()
+        normalized_provider = self._resolve_provider(model_provider)
 
-        if model_provider == "anthropic" and LangChainAnthropic and settings.anthropic_api_key:
+        if normalized_provider == "anthropic" and LangChainAnthropic and settings.anthropic_api_key:
             return LangChainAnthropic(
                 model=model_name or "claude-sonnet-4-20250514",
                 api_key=settings.anthropic_api_key,
@@ -257,19 +268,19 @@ class FaultImageAnalysisService:
         if LangChainOpenAI is None:
             return None
 
+        if normalized_provider == "zhipu" and settings.zhipu_api_key:
+            return LangChainOpenAI(
+                model=model_name or settings.zhipu_vision_model or settings.default_vision_model,
+                api_key=settings.zhipu_api_key,
+                base_url=settings.zhipu_api_base,
+                temperature=0.1,
+            )
+
         if settings.openai_api_key:
             return LangChainOpenAI(
                 model=model_name or "gpt-4o-mini",
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_api_base,
-                temperature=0.1,
-            )
-
-        if settings.deepseek_api_key:
-            return LangChainOpenAI(
-                model=model_name or "deepseek-chat",
-                api_key=settings.deepseek_api_key,
-                base_url=settings.openai_api_base or "https://api.deepseek.com",
                 temperature=0.1,
             )
 
@@ -301,7 +312,9 @@ class FaultImageAnalysisService:
         if context_parts:
             prompt = f"{prompt}\n\n已知上下文：{'；'.join(context_parts)}"
 
-        if model_provider == "anthropic":
+        normalized_provider = self._resolve_provider(model_provider)
+
+        if normalized_provider == "anthropic":
             return [
                 {"type": "text", "text": prompt},
                 {
@@ -317,7 +330,9 @@ class FaultImageAnalysisService:
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{image_mime_type};base64,{image_base64}",
+                    # Zhipu OpenAI-compatible VLM expects a raw URL or raw base64 payload here.
+                    # Data URI format will be rejected with "图片输入格式/解析错误".
+                    "url": image_base64 if normalized_provider == "zhipu" else f"data:{image_mime_type};base64,{image_base64}",
                 },
             },
         ]

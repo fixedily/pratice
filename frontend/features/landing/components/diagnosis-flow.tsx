@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { Database, AlertTriangle, Search, FileText, ClipboardCheck } from "lucide-react";
@@ -9,36 +9,36 @@ import { ui } from "@/shared/theme/ui-tokens";
 const steps = [
   {
     icon: <Database className="h-6 w-6" />,
-    title: "输入问题",
-    descriptionLines: ["支持文本、图片", "与设备型号输入"],
-    guide: "先收集故障描述、现场图片与设备上下文，构建可检索的问题入口。",
-    bullets: ["文本提问", "故障图片上传", "设备型号绑定"],
+    title: "提交问题",
+    descriptionLines: ["选择设备并输入", "文字或现场图片"],
+    guide: "先收集检修问题、现场图片与设备上下文，构建可检索的问题入口。",
+    bullets: ["文字提问", "故障图片上传", "设备型号绑定"],
   },
   {
     icon: <AlertTriangle className="h-6 w-6" />,
     title: "检索知识",
-    descriptionLines: ["召回检修手册、", "SOP 与历史案例"],
-    guide: "通过语义检索与跨模态匹配定位最相关的检修依据与步骤片段。",
+    descriptionLines: ["召回维修手册、", "SOP 与历史案例"],
+    guide: "通过语义检索与跨模态匹配定位最相关的维修依据与步骤片段。",
     bullets: ["手册片段召回", "跨模态匹配", "知识出处可追溯"],
   },
   {
     icon: <Search className="h-6 w-6" />,
     title: "生成指引",
-    descriptionLines: ["自动生成步骤化", "作业预案"],
-    guide: "根据命中的知识依据生成标准化作业指引、风险提示与执行建议。",
-    bullets: ["步骤化预案", "合规提醒", "关键风险标注"],
+    descriptionLines: ["生成步骤化", "作业预案"],
+    guide: "根据命中的知识依据生成步骤建议、风险提示与执行建议，结果以当前召回内容为准。",
+    bullets: ["步骤化预案", "风险提醒", "关键依据标注"],
   },
   {
     icon: <FileText className="h-6 w-6" />,
     title: "回填结果",
-    descriptionLines: ["记录检修结论、", "附件与处理说明"],
-    guide: "执行结束后回填检修结果、现场凭证和补充说明，形成结构化留痕。",
+    descriptionLines: ["记录处理结论、", "附件与补充说明"],
+    guide: "执行结束后回填处理结果、现场凭证和补充说明，形成结构化留痕。",
     bullets: ["结构化回填", "附件凭证上传", "结论说明归档"],
   },
   {
     icon: <ClipboardCheck className="h-6 w-6" />,
-    title: "审核更新",
-    descriptionLines: ["审核发布并更新", "知识条目"],
+    title: "审核入库",
+    descriptionLines: ["专家审核并发布", "新的知识条目"],
     guide: "专家复核后发布候选知识，将案例与修订意见纳入持续更新闭环。",
     bullets: ["专家审核发布", "知识条目更新", "案例持续沉淀"],
   },
@@ -60,8 +60,8 @@ export function DiagnosisFlow() {
     <section id="workflow" className={`scroll-mt-24 ${ui.section}`}>
       <div className={ui.container}>
         <SectionDividerCue
-          badge={<SectionBadge className="mb-4">诊断流程</SectionBadge>}
-          title={<h2 className={`${ui.titleH2} mb-4`}>5 步完成智能检修闭环</h2>}
+          badge={<SectionBadge className="mb-4">检修闭环</SectionBadge>}
+          title={<h2 className={`${ui.titleH2} mb-4`}>5 步走通知识检索与作业闭环</h2>}
           description={
             <p className={`${ui.subtitle} mx-auto max-w-2xl transition-opacity duration-300`}>
               {steps[activeStep]?.guide}
@@ -187,4 +187,3 @@ export function DiagnosisFlow() {
     </section>
   );
 }
-

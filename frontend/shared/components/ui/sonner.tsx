@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useAppTheme } from '@/shared/theme/app-theme'
 import { Toaster as Sonner, ToasterProps } from 'sonner'
@@ -23,4 +23,3 @@ const Toaster = ({ ...props }: ToasterProps) => {
 }
 
 export { Toaster }
-

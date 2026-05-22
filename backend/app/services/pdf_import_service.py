@@ -1,4 +1,4 @@
-"""PDF text extraction helpers for knowledge-base ingestion."""
+﻿"""PDF text extraction helpers for knowledge-base ingestion."""
 from __future__ import annotations
 
 import re

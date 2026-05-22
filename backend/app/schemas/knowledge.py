@@ -1,4 +1,4 @@
-"""Knowledge base request and response schemas."""
+﻿"""Knowledge base request and response schemas."""
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -33,6 +33,11 @@ class KnowledgeDocumentResponse(BaseModel):
 class KnowledgeSearchRequest(BaseModel):
     """Knowledge search request."""
 
+    graph_relation_types: list[str] = Field(
+        default_factory=list,
+        description="语义图谱扩展时允许的关系类型；为空表示不过滤。",
+    )
+
     work_order_id: str | None = Field(default=None, description="工单编号")
     report_source: str | None = Field(default=None, description="报修来源")
     priority: str = Field(default="medium", description="工单优先级")
@@ -44,6 +49,7 @@ class KnowledgeSearchRequest(BaseModel):
     image_base64: str | None = Field(default=None, description="单张故障图片的 Base64 编码")
     image_mime_type: str | None = Field(default=None, description="故障图片 MIME 类型，例如 image/png")
     image_filename: str | None = Field(default=None, description="故障图片原始文件名")
+    attachment_ids: list[int] = Field(default_factory=list, description="已上传的图片附件 ID 列表")
     model_provider: str = Field(default="openai", description="图片识别模型提供商")
     model_name: str | None = Field(default=None, description="图片识别模型名称")
     limit: int = Field(default=5, ge=1, le=20, description="返回结果上限")
@@ -68,6 +74,27 @@ class KnowledgeSearchRequest(BaseModel):
             stripped = value.strip()
             return stripped or None
         return value
+
+    @field_validator("attachment_ids", mode="before")
+    @classmethod
+    def normalize_attachment_ids(cls, value: object) -> list[int]:
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise ValueError("attachment_ids 必须为整数列表。")
+        normalized: list[int] = []
+        for item in value:
+            if isinstance(item, str):
+                item = item.strip()
+                if not item:
+                    continue
+                if not item.isdigit():
+                    raise ValueError("attachment_ids 必须为整数列表。")
+                item = int(item)
+            if not isinstance(item, int) or item < 1:
+                raise ValueError("attachment_ids 仅支持正整数。")
+            normalized.append(item)
+        return normalized
 
     @field_validator("maintenance_level")
     @classmethod
@@ -96,6 +123,7 @@ class KnowledgeSearchRequest(BaseModel):
                 (self.equipment_model or "").strip(),
                 (self.fault_type or "").strip(),
                 (self.image_base64 or "").strip(),
+                self.attachment_ids,
             ]
         ):
             raise ValueError(
@@ -144,6 +172,54 @@ class KnowledgeSearchHit(BaseModel):
     rerank_score: float | None = None
 
 
+class KnowledgeGraphEntityContext(BaseModel):
+    id: int
+    entity_type: str
+    canonical_name: str
+    match_type: str | None = None
+    match_score: float | None = None
+
+
+class KnowledgeGraphRelationContext(BaseModel):
+    id: int
+    relation_type: str
+    source_entity_id: int
+    source_name: str
+    target_entity_id: int
+    target_name: str
+    confidence: float | None = None
+    evidence_chunk_ids: list[int] = Field(default_factory=list)
+
+
+class KnowledgeGraphContext(BaseModel):
+    matched_entities: list[KnowledgeGraphEntityContext] = Field(default_factory=list)
+    expanded_relations: list[KnowledgeGraphRelationContext] = Field(default_factory=list)
+    enhanced_keywords: list[str] = Field(default_factory=list)
+
+
+class KnowledgeReasoningEvidenceChunk(BaseModel):
+    chunk_id: int
+    document_id: int
+    title: str
+    source_name: str
+    citation_label: str | None = None
+    section_reference: str | None = None
+    page_reference: str | None = None
+    excerpt: str
+    score: float | None = None
+
+
+class KnowledgeReasoningChain(BaseModel):
+    question: str | None = None
+    matched_entities: list[KnowledgeGraphEntityContext] = Field(default_factory=list)
+    expanded_relations: list[KnowledgeGraphRelationContext] = Field(default_factory=list)
+    evidence_chunks: list[KnowledgeReasoningEvidenceChunk] = Field(default_factory=list)
+    selected_answer_claims: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    warnings: list[str] = Field(default_factory=list)
+    explanation_text: str | None = None
+
+
 class KnowledgeSearchResponse(BaseModel):
     """Knowledge search response."""
 
@@ -157,5 +233,7 @@ class KnowledgeSearchResponse(BaseModel):
     coverage_warnings: list[str] = Field(default_factory=list)
     grounded: bool = True
     image_analysis: KnowledgeImageAnalysis | None = None
+    graph_context: KnowledgeGraphContext | None = None
+    reasoning_chain: KnowledgeReasoningChain | None = None
     total: int
     results: list[KnowledgeSearchHit]

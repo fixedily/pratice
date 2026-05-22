@@ -1,4 +1,4 @@
-"""Observability endpoints for backend diagnostics."""
+﻿"""Observability endpoints for backend diagnostics."""
 from fastapi import APIRouter, status
 
 from app.core.metrics import build_metrics_snapshot

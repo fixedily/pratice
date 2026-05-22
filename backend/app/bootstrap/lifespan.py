@@ -1,4 +1,4 @@
-"""Application lifespan handlers."""
+﻿"""Application lifespan handlers."""
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
@@ -16,6 +16,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = get_engine()
     logger = logging.getLogger("app.lifecycle")
     logger.info("application_started")
+    try:
+        from app.core.redis import init_redis
+
+        redis_svc = await init_redis()
+        if redis_svc.degraded:
+            logger.warning("redis_degraded_mode memory_fallback_enabled")
+    except Exception:
+        logger.exception("redis_init_failed")
     try:
         resumed_job_ids = await KnowledgeImportWorker.resume_pending_jobs()
     except Exception:
@@ -49,5 +57,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    try:
+        from app.core.redis import close_redis
+
+        await close_redis()
+    except Exception:
+        logger.exception("redis_shutdown_failed")
     await engine.dispose()
     logger.info("application_stopped")

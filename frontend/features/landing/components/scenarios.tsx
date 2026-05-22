@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useEmblaCarousel from "embla-carousel-react";
@@ -39,94 +39,94 @@ type Scenario = {
 
 const scenarios: Scenario[] = [
   {
-    id: "petro",
-    icon: Flame,
-    industry: "石油化工",
-    title: "炼化装置预测性维护",
-    description: "实时监测压缩机、泵组等关键设备，提前预警腐蚀与泄漏风险",
-    tag: "高频",
-    cluster: "流程工业",
-    subtitle: "针对压缩机、泵组、换热器等关键设备的异常预警与健康管理。",
-    devices: ["往复式压缩机", "离心泵", "换热器", "塔器及管道"],
-    diagnoses: ["异常振动", "密封泄漏", "结垢堵塞", "腐蚀减薄"],
-    dataTypes: ["振动信号", "温度数据", "压力数据", "电流/功率数据"],
-    benefits: ["非计划停机下降 30%+", "巡检效率提升", "维修成本下降", "设备寿命延长"],
-    caseHint: "某炼化园区压缩机故障预警项目，3个月内将突发停机率降低 32%。",
-  },
-  {
-    id: "steel",
-    icon: Layers,
-    industry: "钢铁冶金",
-    title: "高炉与轧机健康管理",
-    description: "融合温度、振动、电流多维传感器，精准定位轧辊磨损与炉况异常",
-    tag: "推荐",
-    cluster: "流程工业",
-    subtitle: "围绕高炉、连铸、轧机核心环节，实现设备健康评分与异常根因定位。",
-    devices: ["高炉鼓风机", "连铸机", "轧机主传动", "轧辊系统"],
-    diagnoses: ["轧辊磨损", "炉况波动", "电机异常发热", "传动冲击"],
-    dataTypes: ["电流电压", "振动频谱", "温度曲线", "转速扭矩"],
-    benefits: ["成材率提升", "停机损失降低", "设备寿命延长", "检修节奏可控"],
-    caseHint: "某钢厂热轧线通过在线诊断，月均异常停机从 6 次降至 3 次。",
-  },
-  {
-    id: "cnc",
+    id: "startup",
     icon: Cog,
-    industry: "装备制造",
-    title: "数控机床故障诊断",
-    description: "主轴振动与刀具磨损实时分析，减少非计划停机，提升加工良率",
-    tag: "典型",
+    industry: "摩托车发动机",
+    title: "启动困难排查",
+    description: "围绕启动困难、间歇异响等问题，召回维修手册与历史案例，生成检查步骤",
+    tag: "演示主线",
     cluster: "离散制造",
-    subtitle: "聚焦主轴、刀具、进给系统，构建加工稳定性与精度异常预警能力。",
-    devices: ["数控主轴", "伺服驱动", "刀具系统", "冷却润滑单元"],
-    diagnoses: ["刀具磨损", "主轴偏摆", "伺服抖动", "润滑不足"],
-    dataTypes: ["振动与加速度", "主轴电流", "温升趋势", "加工参数日志"],
-    benefits: ["良率提升", "换刀策略优化", "设备可用率提升", "维护工时下降"],
-    caseHint: "某机加产线接入后，异常停机时长下降 28%，产品一次合格率提升 6%。",
+    subtitle: "以摩托车发动机启动困难为入口，演示从问题输入到知识检索、作业指引和案例沉淀的完整链路。",
+    devices: ["发动机总成", "点火系统", "起动电机", "气缸组件"],
+    diagnoses: ["启动困难", "间歇异响", "点火异常", "压缩不足"],
+    dataTypes: ["文字描述", "现场图片", "维修手册 PDF", "历史案例"],
+    benefits: ["命中手册出处", "生成检查步骤", "保留检索快照", "支持结果回填"],
+    caseHint: "演示问题：摩托车启动困难，排气管冒黑烟怎么修？系统返回手册出处和分步检查建议。",
   },
   {
-    id: "power",
+    id: "spark-plug",
     icon: Zap,
-    industry: "电力能源",
-    title: "发电机组状态监测",
-    description: "风机、汽轮机全生命周期健康评估，支持电网稳定运行",
-    tag: "通用",
-    cluster: "流程工业",
-    subtitle: "针对风机与汽轮机关键部件，建立全生命周期健康监测与风险预警。",
-    devices: ["汽轮机", "风机齿轮箱", "发电机轴承", "冷却系统"],
-    diagnoses: ["轴承磨损", "齿轮异常", "温升偏移", "润滑失效"],
-    dataTypes: ["振动数据", "油液指标", "温度压力", "运行工况日志"],
-    benefits: ["可利用率提升", "检修窗口优化", "备件成本下降", "电网稳定性增强"],
-    caseHint: "某电厂机组状态监测项目，将突发检修次数降低 35%。",
+    industry: "点火系统",
+    title: "火花塞检查与更换",
+    description: "从火花塞拆卸、积碳检查、间隙确认到安装复核，形成可执行作业步骤",
+    tag: "高频",
+    cluster: "离散制造",
+    subtitle: "适合展示维修手册分段命中、步骤化作业指引和风险提醒。",
+    devices: ["火花塞", "点火线圈", "高压线", "燃烧室"],
+    diagnoses: ["积碳严重", "间隙异常", "点火弱", "启动失败"],
+    dataTypes: ["手册片段", "故障图片", "SOP 步骤", "检修备注"],
+    benefits: ["步骤可执行", "风险提醒明确", "结果可回填", "案例可复用"],
+    caseHint: "命中《摩托车发动机维修手册》火花塞相关章节后，生成拆卸、检查和安装复核步骤。",
   },
   {
-    id: "rail",
-    icon: Train,
-    industry: "轨道交通",
-    title: "列车走行部故障检测",
-    description: "轮对、轴承、制动系统多源数据融合分析，保障行车安全",
+    id: "compression",
+    icon: Layers,
+    industry: "气缸组件",
+    title: "压缩压力测量",
+    description: "根据手册要求生成压缩压力测量步骤，记录测量结果并支持专家复核",
     tag: "典型",
     cluster: "离散制造",
-    subtitle: "对轮对、轴承与制动系统进行多源融合诊断，提升运行安全与维护效率。",
-    devices: ["轮对系统", "轴承箱", "制动单元", "牵引电机"],
-    diagnoses: ["踏面异常", "轴承过热", "制动衰减", "振动冲击超限"],
-    dataTypes: ["振动声学", "温度采样", "电流功率", "检修履历数据"],
-    benefits: ["行车安全提升", "故障定位加速", "检修作业标准化", "运维成本可控"],
-    caseHint: "某城轨线路上线后，走行部相关故障工单平均处理时长下降 41%。",
+    subtitle: "适合展示标准化工步、高危提醒和结构化结果回填。",
+    devices: ["气缸头", "气门", "活塞环", "压力表"],
+    diagnoses: ["压缩不足", "气门漏气", "活塞环磨损", "启动困难"],
+    dataTypes: ["测量记录", "维修手册", "现场凭证", "专家备注"],
+    benefits: ["测量口径统一", "凭证留痕", "专家可复核", "知识可沉淀"],
+    caseHint: "检修员按步骤测量压缩压力，回填读数和现场图片后进入专家审核。",
   },
   {
-    id: "pharma",
-    icon: FlaskConical,
-    industry: "食品医药",
-    title: "洁净生产线质量保障",
-    description: "温控、压差、流量异常实时告警，满足 GMP 合规要求",
+    id: "starter",
+    icon: Train,
+    industry: "起动系统",
+    title: "起动电机检修",
+    description: "结合设备型号与故障描述，召回起动电机相关手册片段并生成排查流程",
     tag: "通用",
     cluster: "离散制造",
-    subtitle: "面向洁净车间与关键工艺段，保障温湿压稳定并支撑合规审计留痕。",
-    devices: ["洁净空调机组", "压差控制系统", "灌装产线", "循环水系统"],
-    diagnoses: ["温控偏差", "压差异常", "流量波动", "设备污染风险"],
-    dataTypes: ["温湿压数据", "流量信号", "报警日志", "批次工艺记录"],
-    benefits: ["合规风险降低", "批次稳定性提升", "报废率下降", "巡检效率提升"],
-    caseHint: "某制药企业引入后，关键环境参数偏差告警响应时间缩短 50%。",
+    subtitle: "适合展示设备型号过滤、知识出处和检修任务流转。",
+    devices: ["起动电机", "继电器", "蓄电池", "线路连接"],
+    diagnoses: ["无法起动", "电机无响应", "线路松动", "电压不足"],
+    dataTypes: ["设备型号", "故障描述", "图片附件", "历史工单"],
+    benefits: ["按型号过滤", "减少无关召回", "工单可追踪", "处理结果可复用"],
+    caseHint: "输入设备型号后，系统优先召回对应起动电机检修片段，并生成检查顺序。",
+  },
+  {
+    id: "abnormal-noise",
+    icon: Flame,
+    industry: "运行异响",
+    title: "异响与润滑检查",
+    description: "围绕运行异响、润滑不足等现象，生成检查建议并标注关键风险",
+    tag: "风险",
+    cluster: "离散制造",
+    subtitle: "适合展示风险提醒、检索依据和人工修正入口。",
+    devices: ["曲轴箱", "轴承", "润滑系统", "传动部件"],
+    diagnoses: ["运行异响", "润滑不足", "轴承磨损", "温升异常"],
+    dataTypes: ["现场描述", "巡检图片", "维修经验", "专家修订"],
+    benefits: ["风险优先提示", "依据可回溯", "专家可修正", "后续可再检索"],
+    caseHint: "系统生成初步排查步骤后，专家可修订结论并沉淀为新的案例。",
+  },
+  {
+    id: "case-review",
+    icon: FlaskConical,
+    industry: "知识更新",
+    title: "检修案例审核入库",
+    description: "将处理结论、附件凭证和人工修正转为候选知识，审核通过后进入知识库",
+    tag: "闭环",
+    cluster: "离散制造",
+    subtitle: "适合展示从工单结果到候选知识、专家审核和发布入库的后半段闭环。",
+    devices: ["候选案例", "知识条目", "审核记录", "发布版本"],
+    diagnoses: ["结果回填", "专家复核", "修订发布", "再次命中"],
+    dataTypes: ["工单摘要", "处理说明", "现场附件", "审核意见"],
+    benefits: ["案例沉淀", "审核可追踪", "发布可回滚", "知识持续更新"],
+    caseHint: "结单后生成候选知识，专家审核通过后，后续相似问题可再次命中该案例。",
   },
 ];
 
@@ -244,10 +244,10 @@ export function Scenarios() {
         <Reveal>
           <SectionDividerCue
             badge={<SectionBadge className="mb-4">适用场景</SectionBadge>}
-            title={<h2 className={`${ui.titleH2} mb-4`}>映射六类检修适配场景</h2>}
+            title={<h2 className={`${ui.titleH2} mb-4`}>聚焦摩托车发动机检修演示场景</h2>}
             description={
               <p className={`${ui.subtitle} mx-auto max-w-2xl`}>
-                保留行业覆盖视角，重点展示机泵检修、多模态检索与案例回流这类赛题适配落点
+                用启动困难、火花塞检查、压缩压力测量和案例审核入库串起场景要求的完整演示主线
               </p>
             }
           />
@@ -424,10 +424,10 @@ export function Scenarios() {
               panelVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1",
             )}
           >
-            <InfoCol title="典型设备" items={panelScenario?.devices ?? []} />
-            <InfoCol title="诊断对象" items={panelScenario?.diagnoses ?? []} />
-            <InfoCol title="数据类型" items={panelScenario?.dataTypes ?? []} />
-            <InfoCol title="预期收益" items={panelScenario?.benefits ?? []} />
+            <InfoCol title="相关对象" items={panelScenario?.devices ?? []} />
+            <InfoCol title="检修问题" items={panelScenario?.diagnoses ?? []} />
+            <InfoCol title="输入材料" items={panelScenario?.dataTypes ?? []} />
+            <InfoCol title="演示价值" items={panelScenario?.benefits ?? []} />
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="mb-2 text-sm font-semibold text-text-primary">查看案例</div>
               <p className="mb-4 text-sm leading-6 text-text-secondary">{panelScenario?.caseHint ?? ""}</p>
@@ -466,4 +466,3 @@ function InfoCol({ title, items }: { title: string; items: string[] }) {
     </div>
   );
 }
-

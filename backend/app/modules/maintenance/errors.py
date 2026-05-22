@@ -1,4 +1,4 @@
-"""检修域统一业务异常（映射为接口文档响应包）。"""
+﻿"""检修域统一业务异常（映射为接口文档响应包）。"""
 
 
 class MaintenanceAPIError(Exception):

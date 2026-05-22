@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Database, Info } from "lucide-react";
@@ -14,19 +14,19 @@ const metrics = [
     from: 9,
     prefix: "< ",
     suffix: "min",
-    label: "检索响应时长",
-    description: "从输入问题到返回知识依据",
-    caliber: "口径：从提交文本 / 图片 / 型号问题到返回首屏检索结果的平均耗时，基于演示样本统计。",
+    label: "首屏检索耗时",
+    description: "从提交问题到返回知识依据",
+    caliber: "口径：从提交文字 / 图片 / 型号问题到返回首屏检索结果的平均用时，基于演示样本统计。",
     featured: false as const,
   },
   {
-    key: "hit",
+    key: "guide",
     target: 94.7,
     from: 72,
     suffix: "%",
-    label: "步骤生成成功率",
-    description: "可生成有效步骤预案",
-    caliber: "口径：检索命中后成功生成结构化步骤预案的任务占比，来自演示任务集回放。",
+    label: "步骤预案生成率",
+    description: "检索命中后生成结构化工步",
+    caliber: "口径：检索命中后成功生成结构化作业预案的任务占比，来自演示任务集回放。",
     featured: false as const,
   },
   {
@@ -34,9 +34,9 @@ const metrics = [
     target: 98.2,
     from: 81,
     suffix: "%",
-    label: "工单闭环率",
-    description: "检修流程从创建到结单",
-    caliber: "口径：工单从知识检索、步骤执行、结果回填到审核结单的完整闭环完成率。",
+    label: "闭环流程通过率",
+    description: "从任务创建到审核入库",
+    caliber: "口径：演示任务从知识检索、步骤执行、结果回填到审核入库的完整流程通过率。",
     featured: true as const,
   },
   {
@@ -44,8 +44,8 @@ const metrics = [
     target: 85,
     from: 58,
     suffix: "%+",
-    label: "知识复用率",
-    description: "历史案例与手册被再次命中",
+    label: "知识再次命中率",
+    description: "已发布案例被后续任务调用",
     caliber: "口径：历史案例、手册片段与已发布知识条目在后续检修任务中被有效调用的比例。",
     featured: false as const,
   },
@@ -163,9 +163,9 @@ export function Metrics() {
     <section id="metrics" ref={sectionRef} className={`scroll-mt-24 ${ui.section}`}>
       <div className={ui.container}>
         <SectionDividerCue
-          badge={<SectionBadge className="mb-4">能力验证</SectionBadge>}
-          title={<h2 className={`${ui.titleH2} mb-4`}>用数据验证系统能力</h2>}
-          description={<p className={`${ui.subtitle} mx-auto max-w-2xl`}>围绕检索、步骤预案、闭环和知识复用四条链路展示演示验证结果</p>}
+          badge={<SectionBadge className="mb-4">演示验证</SectionBadge>}
+          title={<h2 className={`${ui.titleH2} mb-4`}>演示样本验证结果</h2>}
+          description={<p className={`${ui.subtitle} mx-auto max-w-2xl`}>围绕检索、步骤预案、闭环流转和知识复用四条链路展示当前演示验证结果</p>}
         />
 
         <div ref={panelRef} className={`${ui.panel} relative min-h-[176px] overflow-hidden`}>
@@ -234,7 +234,7 @@ export function Metrics() {
                 <span className="ml-2">{metrics[focusIndex]?.caliber}</span>
               </>
             ) : (
-              <span>滑入上方指标卡后查看对应口径说明。</span>
+              <span>滑入上方指标卡后查看对应演示口径。</span>
             )}
           </div>
         </div>
@@ -249,4 +249,3 @@ export function Metrics() {
     </section>
   );
 }
-

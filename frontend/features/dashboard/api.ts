@@ -1,4 +1,4 @@
-export {
+﻿export {
   type MaintenanceCaseDetail,
   type MaintenanceCaseListResponse,
   deleteMaintenanceTask,
@@ -10,7 +10,6 @@ export {
   fetchWorkbenchOverview,
   getApiBase,
   pingBackendReadiness,
-  type MaintenanceTaskDetail,
   type MaintenanceTaskHistoryResponse,
   type WorkbenchOverview,
 } from "@/shared/lib/http";

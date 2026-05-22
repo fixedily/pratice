@@ -1,4 +1,4 @@
-"""Unified application error primitives."""
+﻿"""Unified application error primitives."""
 from __future__ import annotations
 
 from typing import Any

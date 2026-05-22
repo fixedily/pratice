@@ -1,4 +1,4 @@
-"""Database engine and session helpers."""
+﻿"""Database engine and session helpers."""
 from app.core.database import (
     AsyncEngine,
     AsyncSession,

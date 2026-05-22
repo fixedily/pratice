@@ -1,4 +1,4 @@
-"""Schemas for workbench overview APIs."""
+﻿"""Schemas for workbench overview APIs."""
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -58,6 +58,18 @@ class WorkbenchMetricHighlight(BaseModel):
     accent: str = "neutral"
 
 
+class WorkbenchRecommendedKnowledge(BaseModel):
+    """Recommended knowledge summary for the workbench home page."""
+
+    chunk_id: int | None = None
+    document_id: int | None = None
+    title: str
+    source_name: str | None = None
+    section_reference: str | None = None
+    page_reference: str | None = None
+    excerpt: str | None = None
+
+
 class WorkbenchOverviewResponse(BaseModel):
     """Aggregated workbench overview for the formal front-end."""
 
@@ -67,5 +79,7 @@ class WorkbenchOverviewResponse(BaseModel):
     agent_capabilities: list[str] = Field(default_factory=list)
     quality_highlights: list[WorkbenchMetricHighlight] = Field(default_factory=list)
     runtime_highlights: list[WorkbenchMetricHighlight] = Field(default_factory=list)
+    recommended_knowledge_count: int = 0
+    recommended_knowledge: list[WorkbenchRecommendedKnowledge] = Field(default_factory=list)
     recent_tasks: list[WorkbenchTaskSummary] = Field(default_factory=list)
     recent_cases: list[WorkbenchCaseSummary] = Field(default_factory=list)

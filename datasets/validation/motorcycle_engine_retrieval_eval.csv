@@ -1,4 +1,4 @@
-case_id,category,modality,query,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
+﻿case_id,category,modality,query,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
 ME-01,success,text,火花塞怎么拆卸,摩托车发动机,通用,点火系统,1.1 拆卸火花塞,P2,尖嘴钳|高压帽|火花塞专用套筒|逆时针,Top-3 内应命中火花塞拆卸步骤,适合做最基础的关键词检索演示
 ME-02,success,text,火花塞间隙标准值是多少,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,塞尺|间隙标准值|0.7~0.9mm,Top-3 内应命中火花塞检查与标准值,适合验证数字型知识是否能被检出
 ME-03,fuzzy,text,发动机压缩压力偏低该查什么,摩托车发动机,通用,压缩压力异常,1.4 测量压缩压力,P3,压力表|1300~1900kPa|活塞环磨损|气缸头垫片,Top-3 内应命中压缩压力测量与结果分析,适合验证模糊症状检索

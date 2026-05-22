@@ -1,4 +1,4 @@
-"""Knowledge graph schema compatibility exports."""
+﻿"""Knowledge graph schema compatibility exports."""
 from app.schemas.knowledge_graph import (
     GraphEdge,
     GraphNode,

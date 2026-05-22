@@ -1,11 +1,11 @@
-"use client";
+﻿"use client";
 
-import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Play } from "lucide-react";
 import Link from "next/link";
+import { useMaintenanceAuth } from "@/features/auth/maintenance-auth";
 import { fetchWorkbenchOverview, fetchHealth } from "@/features/dashboard/api";
-import { ROUTES } from "@/shared/lib/routes";
+import { ROUTES, protectedEntryHref } from "@/shared/lib/routes";
 import { cn } from "@/shared/lib/utils";
 
 import { Button } from "@/shared/components/ui/button";
@@ -16,17 +16,39 @@ function formatInt(n: number) {
   return n.toLocaleString("en-US");
 }
 
-function randDelta(maxAbs: number) {
-  // 随机小幅变化，避免 0
-  const v = Math.floor(Math.random() * (maxAbs * 2 + 1)) - maxAbs;
-  return v === 0 ? 1 : v;
+function boundedDelta(value: number, min: number, max: number) {
+  const delta = Math.floor(Math.random() * 3) - 1;
+  const nextValue = Math.max(min, Math.min(max, value + delta));
+  return { value: nextValue, delta: nextValue - value };
 }
 
-type TrendBar = { id: string; h: number };
+function calcClosureRate(closedTotal: number, pending: number, newAlerts: number) {
+  return Math.max(86, Math.min(94, 84 + Math.round(closedTotal / 12) - Math.round(pending / 10) - Math.round(newAlerts / 8)));
+}
 
-function randBarHeight() {
-  // 高度随机但克制：避免过矮/过满
-  return Math.max(26, Math.min(92, 40 + Math.floor(Math.random() * 46)));
+type TrendPoint = { id: string; value: number };
+
+function buildTrendLine(points: TrendPoint[]) {
+  const width = 320;
+  const height = 76;
+  const paddingX = 6;
+  const paddingY = 9;
+  const innerWidth = width - paddingX * 2;
+  const innerHeight = height - paddingY * 2;
+  const maxValue = Math.max(12, ...points.map((point) => point.value));
+
+  const coords = points.map((point, index) => {
+    const x = paddingX + (innerWidth / Math.max(1, points.length - 1)) * index;
+    const y = paddingY + (1 - point.value / maxValue) * innerHeight;
+    return { ...point, x, y };
+  });
+
+  const linePath = coords.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
+  const areaPath = coords.length
+    ? `${linePath} L ${coords[coords.length - 1]!.x.toFixed(1)} ${height - paddingY} L ${coords[0]!.x.toFixed(1)} ${height - paddingY} Z`
+    : "";
+
+  return { width, height, coords, linePath, areaPath };
 }
 
 type Severity = "high" | "medium" | "low";
@@ -72,24 +94,19 @@ function useTweenNumber(target: number, durationMs = 700) {
 }
 
 export function Hero() {
-  const trendGlowThreshold = 72; // 高于该阈值发光
-  const barCount = 12;
-  const barWidthPx = 5;
+  const { isLoggedIn } = useMaintenanceAuth();
+  const trendPointCount = 12;
   // 注意：首屏必须是确定性的（避免 SSR/CSR hydration mismatch）
-  const [trendBars, setTrendBars] = useState<TrendBar[]>(() => {
-    const initialHeights = [41, 68, 52, 74, 46, 82, 58, 71, 49, 77, 63, 55];
-    return initialHeights.slice(0, barCount).map((h, i) => ({ id: `bar-${i}`, h }));
+  const [trendPoints, setTrendPoints] = useState<TrendPoint[]>(() => {
+    const initialValues = [4, 6, 5, 8, 7, 10, 6, 9, 8, 7, 9, 6];
+    return initialValues.slice(0, trendPointCount).map((value, i) => ({ id: `point-${i}`, value }));
   });
-  const [shifting, setShifting] = useState(false);
-  const shiftTimeoutRef = useRef<number | null>(null);
-  const nextBarIdRef = useRef(barCount);
-  const trendRowRef = useRef<HTMLDivElement | null>(null);
-  const [trendStepPx, setTrendStepPx] = useState<number>(barWidthPx + 4);
+  const nextTrendPointIdRef = useRef(trendPointCount);
 
   const [kpi, setKpi] = useState(() => ({
-    devices: { value: 1247, delta: 12 },
-    alerts: { value: 23, delta: -8 },
-    done: { value: 156, delta: 34 },
+    devices: { value: 21, delta: 2 },
+    alerts: { value: 7, delta: -1 },
+    done: { value: calcClosureRate(85, 21, 7), delta: 1 },
   }));
   const kpiIntervalRef = useRef<number | null>(null);
   const trendIntervalRef = useRef<number | null>(null);
@@ -99,22 +116,29 @@ export function Hero() {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const [alerts, setAlerts] = useState<AlertItem[]>(() => [
-    { id: "a0", device: "压缩机-A03", type: "振动异常", severity: "high", createdAtMs: Date.now() - 2 * 60_000 },
-    { id: "a1", device: "电机-B12", type: "温度过高", severity: "medium", createdAtMs: Date.now() - 5 * 60_000 },
-    { id: "a2", device: "泵组-C07", type: "压力波动", severity: "low", createdAtMs: Date.now() - 12 * 60_000 },
+    { id: "a0", device: "发动机总成", type: "S7 执行处理", severity: "high", createdAtMs: Date.now() - 2 * 60_000 },
+    { id: "a1", device: "火花塞", type: "S3 等待接单", severity: "medium", createdAtMs: Date.now() - 5 * 60_000 },
+    { id: "a2", device: "起动电机", type: "S10 案例沉淀", severity: "low", createdAtMs: Date.now() - 12 * 60_000 },
   ]);
   const alertSeqRef = useRef(3);
 
-  const formatRelative = (createdAtMs: number) => {
-    const diff = Math.max(0, nowMs - createdAtMs);
-    if (diff < 30_000) return "刚刚";
-    const mins = Math.max(1, Math.round(diff / 60_000));
-    return `${mins}分钟前`;
+  const formatEventTime = (createdAtMs: number) => {
+    const eventDate = new Date(createdAtMs);
+    const nowDate = new Date(nowMs);
+    const hours = String(eventDate.getHours()).padStart(2, "0");
+    const minutes = String(eventDate.getMinutes()).padStart(2, "0");
+    const isToday = eventDate.toDateString() === nowDate.toDateString();
+
+    if (isToday) return `今日 ${hours}:${minutes}`;
+
+    const month = String(eventDate.getMonth() + 1).padStart(2, "0");
+    const day = String(eventDate.getDate()).padStart(2, "0");
+    return `${month}-${day} ${hours}:${minutes}`;
   };
 
   const randomAlert = (): Omit<AlertItem, "id" | "createdAtMs"> => {
-    const devices = ["压缩机-A03", "电机-B12", "泵组-C07", "风机-D08", "阀门-E02", "轴承-F11"];
-    const types = ["振动异常", "温度过高", "压力波动", "电流偏移", "润滑不足", "噪声升高"];
+    const devices = ["发动机总成", "火花塞", "起动电机", "气缸组件", "点火线圈", "润滑系统"];
+    const types = ["S3 等待接单", "S5 维修接单", "S7 执行处理", "S8 结果回填", "S9 验收确认", "S10 案例沉淀"];
     const severity: Severity = (() => {
       const r = Math.random();
       return r < 0.25 ? "high" : r < 0.65 ? "medium" : "low";
@@ -124,36 +148,25 @@ export function Hero() {
     return { device, type, severity };
   };
 
-  // 首次进入：从 0 滚动到初始值；之后每 2s 小幅随机变动并同步滚动
+  // KPI 只做低频小幅刷新，避免营销预览看起来像随机数仪表盘。
   useEffect(() => {
     const tick = () => {
       setKpi((prev) => {
-        const nextDevicesDelta = randDelta(20);
-        const nextAlertsDelta = randDelta(6);
-        const nextDoneDelta = randDelta(12);
+        const devices = boundedDelta(prev.devices.value, 16, 25);
+        const alerts = boundedDelta(prev.alerts.value, 4, 10);
 
         return {
-          devices: {
-            value: Math.max(0, prev.devices.value + nextDevicesDelta),
-            delta: nextDevicesDelta,
-          },
-          alerts: {
-            value: Math.max(0, prev.alerts.value + nextAlertsDelta),
-            delta: nextAlertsDelta,
-          },
-          done: {
-            value: Math.max(0, prev.done.value + nextDoneDelta),
-            delta: nextDoneDelta,
-          },
+          devices,
+          alerts,
+          done: prev.done,
         };
       });
     };
 
-    // 2s 后开始循环变动
     const timeoutId = window.setTimeout(() => {
       tick();
-      kpiIntervalRef.current = window.setInterval(tick, 2000);
-    }, 2000);
+      kpiIntervalRef.current = window.setInterval(tick, 6500);
+    }, 6500);
 
     return () => {
       window.clearTimeout(timeoutId);
@@ -161,42 +174,39 @@ export function Hero() {
     };
   }, []);
 
-  // 诊断趋势：每 2s 向左滚动一格，右侧生成新柱子（高度随机）
+  // 闭环完成率与近 24 小时完成量联动，同时受当前待处理和今日检索任务影响。
   useEffect(() => {
-    const calcStep = () => {
-      const el = trendRowRef.current;
-      if (!el) return;
-      const w = el.getBoundingClientRect().width;
-      // justify-between 时，相邻柱子起点距离 = (容器宽度 - 柱子宽度) / (n-1)
-      const step = barCount > 1 ? (w - barWidthPx) / (barCount - 1) : w;
-      if (Number.isFinite(step) && step > 0) setTrendStepPx(step);
-    };
+    setKpi((prev) => {
+      const closedTotal = trendPoints.reduce((sum, point) => sum + point.value, 0);
+      const nextRate = calcClosureRate(closedTotal, prev.devices.value, prev.alerts.value);
+      if (nextRate === prev.done.value) return prev;
 
-    calcStep();
-    window.addEventListener("resize", calcStep);
+      return {
+        ...prev,
+        done: { value: nextRate, delta: nextRate - prev.done.value },
+      };
+    });
+  }, [trendPoints, kpi.alerts.value, kpi.devices.value]);
 
+  // 近 24 小时闭环趋势按 2 小时粒度展示完成量，保留自然峰谷。
+  useEffect(() => {
     const tick = () => {
-      setShifting(true);
-      if (shiftTimeoutRef.current) window.clearTimeout(shiftTimeoutRef.current);
-      shiftTimeoutRef.current = window.setTimeout(() => {
-        setTrendBars((prev) => {
-          const next = prev.slice(1);
-          next.push({ id: `bar-${nextBarIdRef.current++}`, h: randBarHeight() });
-          return next;
-        });
-        setShifting(false);
-      }, 620);
+      setTrendPoints((prev) => {
+        const previous = prev[prev.length - 1]?.value ?? 6;
+        const nextValue = Math.max(3, Math.min(11, previous + Math.floor(Math.random() * 5) - 2));
+        const next = prev.slice(1);
+        next.push({ id: `point-${nextTrendPointIdRef.current++}`, value: nextValue });
+        return next;
+      });
     };
 
-    trendIntervalRef.current = window.setInterval(tick, 2000);
+    trendIntervalRef.current = window.setInterval(tick, 3600);
     return () => {
       if (trendIntervalRef.current) window.clearInterval(trendIntervalRef.current);
-      if (shiftTimeoutRef.current) window.clearTimeout(shiftTimeoutRef.current);
-      window.removeEventListener("resize", calcStep);
     };
   }, []);
 
-  // 实时告警：每 2s 顶部弹出新告警；底部淡出后移除；联动“今日告警”
+  // 风险任务：每 2s 顶部弹出新的待办风险；底部淡出后移除。
   useEffect(() => {
     const maxAlerts = 3;
     const exitMs = 520;
@@ -254,12 +264,21 @@ export function Hero() {
 
   const stats = useMemo(
     () => [
-      { label: "在线设备", value: devicesDisplay, delta: kpi.devices.delta, isMain: false },
-      { label: "今日告警", value: alertsDisplay, delta: kpi.alerts.delta, isMain: false },
-      { label: "诊断完成", value: doneDisplay, delta: kpi.done.delta, isMain: true },
+      { label: "待处理工单", value: devicesDisplay, delta: kpi.devices.delta, suffix: "", isMain: false },
+      { label: "今日检索任务", value: alertsDisplay, delta: kpi.alerts.delta, suffix: "", isMain: false },
+      { label: "闭环完成率", value: doneDisplay, delta: kpi.done.delta, suffix: "%", isMain: true },
     ],
     [alertsDisplay, devicesDisplay, doneDisplay, kpi.alerts.delta, kpi.devices.delta, kpi.done.delta],
   );
+  const trendLine = useMemo(() => buildTrendLine(trendPoints), [trendPoints]);
+  const trendSummary = useMemo(() => {
+    const latestSlot = trendPoints[trendPoints.length - 1]?.value ?? 0;
+    const previousSlot = trendPoints[trendPoints.length - 2]?.value ?? latestSlot;
+    const total = trendPoints.reduce((sum, point) => sum + point.value, 0);
+    const delta = latestSlot - previousSlot;
+
+    return { total, delta };
+  }, [trendPoints]);
 
   return (
     <section id="home" className="relative overflow-hidden pt-24 pb-12 lg:pt-28 lg:pb-14">
@@ -278,21 +297,21 @@ export function Hero() {
         <div className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">
           {/* Left content */}
           <div className="text-center lg:text-left">
-            <SectionBadge className="mb-5 text-[13px]">多模态智能检修系统</SectionBadge>
+            <SectionBadge className="mb-5 text-[13px]">设备检修知识与作业助手</SectionBadge>
 
             {/* 层级：说明(微) → 主标题(最大) → 强调行(中) → 收束行(小) */}
             <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.2em] text-text-tertiary sm:text-xs">
-              面向检修闭环的智能辅助平台
+              多模态检修知识检索与作业系统
             </p>
             <h1 className="mb-3 text-4xl font-bold leading-[1.06] tracking-[-0.045em] text-text-primary sm:text-5xl lg:text-[64px]">
-              <span className="block">让故障定位</span>
-              <span className="block">从数小时缩短到</span>
+              <span className="block">把检修问题变成</span>
+              <span className="block">可追溯依据与</span>
               <span className="block">
-                <span className="hero-accent">几分钟</span>
+                <span className="hero-accent">作业步骤</span>
               </span>
             </h1>
-            <p className="mx-auto mb-8 max-w-[500px] text-[16px] leading-7 text-text-secondary lg:mx-0">
-              融合文本、图片、设备型号等多模态输入，结合检索增强与作业闭环，快速完成知识定位、步骤指引与结果回填。
+            <p className="mx-auto mb-8 max-w-[540px] text-[16px] leading-7 text-text-secondary lg:mx-0">
+              支持文字、图片和设备型号输入，先检索维修手册、SOP 与历史案例，再生成标准化作业指引，并将处理结果回流为可审核、可复用的知识条目。
             </p>
 
             <div className="mt-6 flex h-12 flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center lg:justify-start">
@@ -303,12 +322,12 @@ export function Hero() {
                 asChild
               >
                 <Link
-                  href={ROUTES.dashboard}
+                  href={isLoggedIn ? "/tasks" : protectedEntryHref(ROUTES.dashboard)}
                   onClick={() => {
-                    void fetchWorkbenchOverview();
+                    if (!isLoggedIn) void fetchWorkbenchOverview();
                   }}
                 >
-                  立即体验
+                  {isLoggedIn ? "继续检修" : "进入检修演示"}
                   <ArrowRight className="h-4 w-4 opacity-90" />
                 </Link>
               </Button>
@@ -322,17 +341,17 @@ export function Hero() {
                 }}
               >
                 <Play className="h-4 w-4 opacity-80" />
-                查看能力
+                查看系统能力
               </Button>
             </div>
 
             {/* Trust indicators */}
             <div className="mt-10 border-t border-border/80 pt-5">
               <p className="mb-5 text-[13px] leading-snug text-landing-text-muted">
-                面向 B/S 架构交付，支持可交互 Web 界面、多模态大模型 API 接入与龙架构服务器部署要求。
+                围绕检修主线，串联多模态检索、图谱证据链与工单闭环，覆盖作业指引、结果回填与案例审核入库。
               </p>
               <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 lg:justify-start">
-                {["多模态知识检索", "标准化作业指引", "知识沉淀与更新", "工单闭环追踪"].map((name, i) => (
+                {["检修知识检索", "图谱与证据链", "工单闭环", "案例审核入库"].map((name, i) => (
                   <span key={name} className="inline-flex items-center gap-x-3">
                     {i > 0 ? (
                       <span className="hidden select-none text-[10px] text-[rgba(255,255,255,0.2)] sm:inline" aria-hidden>
@@ -358,8 +377,8 @@ export function Hero() {
                       <div className="h-2 w-2 rounded-full bg-accent" />
                     </div>
                     <div>
-                      <div className="text-[11px] font-medium text-[#0f172a]">诊断完成</div>
-                      <div className="text-[10px] text-[#6b7280]">电机-B12 已恢复</div>
+                      <div className="text-[11px] font-medium text-[#0f172a]">知识回流</div>
+                      <div className="text-[10px] text-[#6b7280]">S8 结果回填中</div>
                     </div>
                   </div>
                 </div>
@@ -371,11 +390,11 @@ export function Hero() {
                     <div className="h-2.5 w-2.5 rounded-full bg-[#28ca42]/90" />
                   </div>
                   <div className="flex-1 text-center">
-                    <span className="text-[11px] text-[#d5deec]">故障诊断控制台</span>
+                    <span className="text-[11px] text-[#d5deec]">检修知识闭环工作台</span>
                   </div>
                 </div>
 
-                {/* Mock dashboard content */}
+                {/* Mock workbench content */}
                 <div className="space-y-3">
                   {/* Stats row */}
                   <div className="grid grid-cols-3 gap-2.5">
@@ -398,6 +417,7 @@ export function Hero() {
                             }
                           >
                             {formatInt(stat.value)}
+                            {stat.suffix ? <span className="ml-0.5 text-[18px]">{stat.suffix}</span> : null}
                           </div>
                           <div
                             className={`text-[11px] tabular-nums ${isMain ? "font-medium text-[rgba(74,222,128,0.7)]" : "text-[#7f8ba1]"
@@ -412,7 +432,7 @@ export function Hero() {
 
                   {/* Alert list preview */}
                   <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2.5 sm:p-3">
-                    <div className="mb-2.5 text-[11px] text-[#c8d0de]">实时告警</div>
+                    <div className="mb-2.5 text-[11px] text-[#c8d0de]">待处理检修任务</div>
                     <div className="space-y-2">
                       {alerts.slice(0, 3).map((alert) => (
                         <div
@@ -441,7 +461,7 @@ export function Hero() {
                             </span>
                           </div>
                           <span className="shrink-0 pl-2 text-[10px] tabular-nums text-[#7f8ba1]">
-                            {formatRelative(alert.createdAtMs)}
+                            {formatEventTime(alert.createdAtMs)}
                           </span>
                         </div>
                       ))}
@@ -450,32 +470,85 @@ export function Hero() {
 
                   {/* Chart placeholder */}
                   <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2.5 sm:p-3">
-                    <div className="mb-2 text-[11px] text-[#c8d0de]">诊断趋势</div>
-                    <div className="overflow-hidden">
-                      <div
-                        ref={trendRowRef}
-                        className="flex h-[72px] w-full items-end justify-between px-0.5"
-                        style={{
-                          transform: shifting ? `translateX(-${trendStepPx}px)` : "translateX(0px)",
-                          transition: shifting ? "transform 620ms ease" : "none",
-                          willChange: "transform",
-                        }}
-                      >
-                        {trendBars.map((b) => {
-                          const isHot = b.h >= trendGlowThreshold;
-                          return (
-                            <div
-                              key={b.id}
-                              className={`landing-chart-bar w-[5px] shrink-0 ${isHot ? "landing-chart-bar-highlight" : ""}`}
-                              style={{ height: `${b.h}%` } as CSSProperties}
-                            />
-                          );
-                        })}
+                    <div className="mb-2.5 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-[11px] font-medium text-[#dce5f3]">近 24 小时闭环任务</div>
+                        <div className="mt-0.5 text-[10px] text-[#7f8ba1]">每 2 小时完成量，联动闭环完成率</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[18px] font-semibold leading-none tabular-nums text-brand-light">
+                          {trendSummary.total}
+                        </div>
+                        <div
+                          className={cn(
+                            "mt-0.5 text-[10px] tabular-nums",
+                            trendSummary.delta >= 0 ? "text-brand-light/80" : "text-[#94a3b8]",
+                          )}
+                        >
+                          较上一时段 {trendSummary.delta >= 0 ? "+" : ""}
+                          {trendSummary.delta}
+                        </div>
                       </div>
                     </div>
-                    <div className="mt-2 flex justify-between text-[11px] tracking-[-0.01em] text-[#7f8ba1]">
-                      <span>近 12 周</span>
-                      <span>单位：次 / 周</span>
+                    <div className="relative h-[72px] overflow-hidden rounded-[6px] bg-[linear-gradient(180deg,rgba(15,23,42,0.15),rgba(15,23,42,0.02))]">
+                      <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-white/[0.05]" />
+                      <svg
+                        className="h-full w-full overflow-visible"
+                        viewBox={`0 0 ${trendLine.width} ${trendLine.height}`}
+                        preserveAspectRatio="none"
+                        role="img"
+                        aria-label="近 24 小时每 2 小时已闭环任务折线趋势"
+                      >
+                        <defs>
+                          <linearGradient id="hero-closure-line" x1="0" x2="1" y1="0" y2="0">
+                            <stop offset="0%" stopColor="#22c55e" stopOpacity="0.55" />
+                            <stop offset="55%" stopColor="#34d399" stopOpacity="1" />
+                            <stop offset="100%" stopColor="#86efac" stopOpacity="0.82" />
+                          </linearGradient>
+                          <linearGradient id="hero-closure-area" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#22c55e" stopOpacity="0.24" />
+                            <stop offset="100%" stopColor="#22c55e" stopOpacity="0" />
+                          </linearGradient>
+                        </defs>
+                        <path d={trendLine.areaPath} fill="url(#hero-closure-area)" className="transition-all duration-700 ease-out" />
+                        <path
+                          d={trendLine.linePath}
+                          fill="none"
+                          stroke="rgba(16,185,129,0.18)"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="9"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <path
+                          d={trendLine.linePath}
+                          fill="none"
+                          stroke="url(#hero-closure-line)"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="3"
+                          vectorEffect="non-scaling-stroke"
+                          className="drop-shadow-[0_0_10px_rgba(34,197,94,0.45)] transition-all duration-700 ease-out"
+                        />
+                        {trendLine.coords.map((point, index) => (
+                          <circle
+                            key={point.id}
+                            cx={point.x}
+                            cy={point.y}
+                            r={index === trendLine.coords.length - 1 ? 3.2 : 2.1}
+                            fill={index === trendLine.coords.length - 1 ? "#86efac" : "#22c55e"}
+                            opacity={index % 2 === 0 || index === trendLine.coords.length - 1 ? 1 : 0.42}
+                            className="transition-all duration-700 ease-out"
+                          />
+                        ))}
+                      </svg>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-[11px] tracking-[-0.01em] text-[#7f8ba1]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-brand-light" />
+                        每 2 小时闭环
+                      </span>
+                      <span>单位：件 / 2h</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-2.5 rounded-md border border-white/[0.08] bg-[#111827] px-2.5 py-2 sm:px-3 sm:py-2.5">
@@ -484,8 +557,8 @@ export function Hero() {
                         <span className="text-[10px] font-semibold text-[#94a3b8]">AI</span>
                       </div>
                       <div className="min-w-0">
-                        <div className="truncate text-[11px] font-medium text-[#d1d5db]">系统状态 · 智能分析中</div>
-                        <div className="truncate text-[10px] text-[#9ca3af]">正在生成诊断报告 · 预计 18s</div>
+                        <div className="truncate text-[11px] font-medium text-[#d1d5db]">知识检索 · 命中维修手册</div>
+                        <div className="truncate text-[10px] text-[#9ca3af]">已关联相似案例与作业步骤</div>
                       </div>
                     </div>
                     <span className="shrink-0 rounded border border-[rgba(74,222,128,0.2)] bg-[rgba(74,222,128,0.08)] px-1.5 py-0.5 text-[8px] font-medium tabular-nums tracking-wide text-[rgba(74,222,128,0.95)]">
@@ -501,4 +574,3 @@ export function Hero() {
     </section>
   );
 }
-

@@ -1,4 +1,4 @@
-"""Workbench overview APIs for the formal Next.js front-end."""
+﻿"""Workbench overview APIs for the formal Next.js front-end."""
 import logging
 
 from fastapi import APIRouter, Depends, status
@@ -10,6 +10,7 @@ from app.modules.workbench.schemas import (
     WorkbenchCaseSummary,
     WorkbenchMetricHighlight,
     WorkbenchOverviewResponse,
+    WorkbenchRecommendedKnowledge,
     WorkbenchStatCard,
     WorkbenchTaskSummary,
 )
@@ -40,6 +41,11 @@ async def get_workbench_overview(
         ],
         runtime_highlights=[
             WorkbenchMetricHighlight(**item) for item in payload.get("runtime_highlights", [])
+        ],
+        recommended_knowledge_count=payload.get("recommended_knowledge_count", 0),
+        recommended_knowledge=[
+            WorkbenchRecommendedKnowledge(**item)
+            for item in payload.get("recommended_knowledge", [])
         ],
         recent_tasks=[WorkbenchTaskSummary(**item) for item in payload["recent_tasks"]],
         recent_cases=[WorkbenchCaseSummary(**item) for item in payload["recent_cases"]],

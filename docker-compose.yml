@@ -1,8 +1,24 @@
-# Docker Compose 配置 - PostgreSQL 生产数据库
+﻿# Docker Compose 配置 - PostgreSQL 生产数据库
 # 使用方式: docker-compose up -d
 version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: fault_detection_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: fault_detection_postgres
@@ -30,4 +46,6 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local

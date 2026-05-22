@@ -1,4 +1,4 @@
-"""Maintenance task workflow APIs for TODO-SB-4."""
+﻿"""Maintenance task workflow APIs for TODO-SB-4."""
 import logging
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -19,6 +19,7 @@ from app.modules.tasks.schemas import (
     MaintenanceTaskTimelineUpsert,
 )
 from app.schemas.diagnosis import DiagnosisStructuredPayload
+from app.schemas.knowledge import KnowledgeReasoningChain
 
 router = APIRouter(prefix="/api/v1", tags=["检修任务"])
 logger = logging.getLogger(__name__)
@@ -45,7 +46,15 @@ def _build_task_response(payload: dict) -> MaintenanceTaskResponse:
             if payload.get("diagnosis_structured") is not None
             else None
         ),
+        reasoning_chain=(
+            KnowledgeReasoningChain(**payload["reasoning_chain"])
+            if payload.get("reasoning_chain") is not None
+            else None
+        ),
         execution_timeline=payload.get("execution_timeline") or [],
+        workflow_stages=payload.get("workflow_stages") or [],
+        workflow_total=payload.get("workflow_total", 5),
+        workflow_completed=payload.get("workflow_completed", 1),
         total_steps=payload["total_steps"],
         completed_steps=payload["completed_steps"],
         source_refs=[KnowledgeReference(**item) for item in payload.get("source_refs", [])],
@@ -62,6 +71,8 @@ def _build_task_response(payload: dict) -> MaintenanceTaskResponse:
         updated_at=payload.get("updated_at"),
         run_started_at=payload.get("run_started_at"),
         run_finished_at=payload.get("run_finished_at"),
+        linked_work_order_id=payload.get("linked_work_order_id"),
+        linked_case_id=payload.get("linked_case_id"),
     )
 
 
@@ -252,7 +263,7 @@ async def list_maintenance_history(
     response_model=MaintenanceTaskExportResponse,
     status_code=status.HTTP_200_OK,
     summary="导出检修任务",
-    description="导出任务、步骤、知识引用和总结，供报告或答辩展示使用。",
+    description="导出任务、步骤、知识引用和总结，供报告或演示展示使用。",
 )
 async def export_maintenance_task(
     task_id: int,

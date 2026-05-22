@@ -21,10 +21,11 @@ bearer_scheme = HTTPBearer(auto_error=False)
 class CurrentUserCtx:
     """已认证用户上下文。"""
 
-    def __init__(self, user_id: int, username: str, roles: list[str]) -> None:
+    def __init__(self, user_id: int, username: str, roles: list[str], display_name: str | None = None) -> None:
         self.user_id = user_id
         self.username = username
         self.roles = roles
+        self.display_name = display_name
 
     def has_any(self, *role_codes: str) -> bool:
         return bool(self.roles and set(role_codes) & set(self.roles))
@@ -63,7 +64,7 @@ async def get_current_user_ctx(
             detail={"success": False, "business_code": "UNAUTHORIZED", "message": "用户不可用"},
         )
     roles = [r.code for r in user.roles]
-    return CurrentUserCtx(user_id=user.id, username=user.username, roles=roles)
+    return CurrentUserCtx(user_id=user.id, username=user.username, roles=roles, display_name=user.display_name)
 
 
 def require_roles(*allowed: str):

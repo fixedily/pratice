@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { use, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
@@ -10,18 +10,22 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   Copy,
   Edit3,
   ExternalLink,
   FileText,
   Link2,
-  Share2,
+  MessageSquareWarning,
+  ScanSearch,
+  ShieldAlert,
   Tag,
   Wrench,
   XCircle,
 } from "lucide-react"
 import { fetchCaseDetail, reviewMaintenanceCase, addCaseCorrection, type MaintenanceCaseDetail } from "@/features/cases/api"
 import { Header } from "@/shared/components/brand/app-header"
+import { Button } from "@/shared/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -36,26 +40,81 @@ interface PageProps {
 
 type FaultLevel = "low" | "medium" | "urgent"
 type VerifyStatus = "verified" | "pending" | "rejected"
+type KnowledgeRef = MaintenanceCaseDetail["knowledge_refs"][number]
+type PageLoadState = "loading" | "ready" | "error" | "invalid"
 
-const faultLevelConfig: Record<FaultLevel, { label: string; className: string }> = {
-  low: { label: "例行", className: "bg-blue-500/15 text-blue-400 border-blue-500/20" },
-  medium: { label: "标准", className: "bg-amber-500/15 text-amber-400 border-amber-500/20" },
-  urgent: { label: "紧急", className: "bg-red-500/15 text-red-400 border-red-500/20" },
+const faultLevelConfig: Record<FaultLevel, { label: string; className: string; accentClass: string }> = {
+  low: {
+    label: "例行",
+    className: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+    accentClass: "text-blue-400",
+  },
+  medium: {
+    label: "标准",
+    className: "bg-amber-500/15 text-amber-400 border-amber-500/20",
+    accentClass: "text-amber-400",
+  },
+  urgent: {
+    label: "紧急",
+    className: "bg-red-500/15 text-red-400 border-red-500/20",
+    accentClass: "text-red-400",
+  },
 }
 
-const verifyStatusConfig: Record<VerifyStatus, { label: string; dotColor: string; textColor: string; bgColor: string }> = {
-  verified: { label: "已验证", dotColor: "bg-emerald-400", textColor: "text-emerald-400", bgColor: "bg-emerald-500/10" },
-  pending: { label: "待验证", dotColor: "bg-amber-400", textColor: "text-amber-400", bgColor: "bg-amber-500/10" },
-  rejected: { label: "已驳回", dotColor: "bg-red-400", textColor: "text-red-400", bgColor: "bg-red-500/10" },
+const verifyStatusConfig: Record<
+  VerifyStatus,
+  {
+    label: string
+    dotColor: string
+    textColor: string
+    bgColor: string
+    borderColor: string
+    bannerClass: string
+    summary: string
+  }
+> = {
+  verified: {
+    label: "已验证",
+    dotColor: "bg-emerald-400",
+    textColor: "text-emerald-400",
+    bgColor: "bg-emerald-500/10",
+    borderColor: "border-emerald-500/20",
+    bannerClass: "border-emerald-500/35 bg-emerald-500/12 text-emerald-300",
+    summary: "已审核通过，可作为知识案例继续复用。",
+  },
+  pending: {
+    label: "待验证",
+    dotColor: "bg-amber-400",
+    textColor: "text-amber-400",
+    bgColor: "bg-amber-500/10",
+    borderColor: "border-amber-500/20",
+    bannerClass: "border-amber-500/35 bg-amber-500/12 text-amber-300",
+    summary: "等待专家核验案例内容、步骤和证据后发布。",
+  },
+  rejected: {
+    label: "已驳回",
+    dotColor: "bg-red-400",
+    textColor: "text-red-400",
+    bgColor: "bg-red-500/10",
+    borderColor: "border-red-500/20",
+    bannerClass: "border-red-500/35 bg-red-500/12 text-red-300",
+    summary: "该案例未进入知识库，请根据驳回意见修订后再提交。",
+  },
 }
 
 const tocItems = [
   { id: "symptoms", label: "故障现象" },
-  { id: "root-cause", label: "根因分析" },
-  { id: "action-plan", label: "处理方案" },
-  { id: "evidence", label: "证据数据" },
-  { id: "related", label: "关联知识" },
+  { id: "root-cause", label: "根因判断" },
+  { id: "action-plan", label: "处理步骤" },
+  { id: "evidence", label: "证据与出处" },
+  { id: "audit", label: "修正与审核" },
 ]
+
+const correctionTargetLabelMap: Record<string, string> = {
+  model_output: "故障现象",
+  summary: "根因判断",
+  procedure: "处理步骤",
+}
 
 function mapPriorityToLevel(priority: string | null | undefined): FaultLevel {
   const normalized = String(priority || "").trim().toLowerCase()
@@ -71,9 +130,9 @@ function mapCaseStatus(status: string | null | undefined): VerifyStatus {
   return "pending"
 }
 
-function textOrNone(value: string | null | undefined) {
+function textOrNone(value: string | null | undefined, fallback = "无") {
   const normalized = String(value || "").trim()
-  return normalized || "无"
+  return normalized || fallback
 }
 
 function splitLines(value: string | null | undefined) {
@@ -83,12 +142,35 @@ function splitLines(value: string | null | undefined) {
     .filter(Boolean)
 }
 
-function SectionEmpty() {
+function SectionEmpty({ message }: { message: string }) {
   return (
     <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
-      无
+      {message}
     </div>
   )
+}
+
+function SectionActionButton({
+  label,
+  onClick,
+}: {
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground" onClick={onClick}>
+      <Edit3 className="h-3.5 w-3.5" />
+      {label}
+    </Button>
+  )
+}
+
+function getKnowledgeRefTitle(ref: KnowledgeRef) {
+  return textOrNone(ref.title || ref.source_name, "未命名文档")
+}
+
+function getKnowledgeRefSource(ref: KnowledgeRef) {
+  return textOrNone(ref.source_name || ref.type, "知识来源")
 }
 
 export default function CaseDetailPage({ params }: PageProps) {
@@ -96,10 +178,12 @@ export default function CaseDetailPage({ params }: PageProps) {
   const [activeSection, setActiveSection] = useState("symptoms")
   const [copiedSteps, setCopiedSteps] = useState(false)
   const [remoteCase, setRemoteCase] = useState<MaintenanceCaseDetail | null>(null)
+  const [pageLoadState, setPageLoadState] = useState<PageLoadState>("loading")
   const [reviewBusy, setReviewBusy] = useState(false)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectNote, setRejectNote] = useState("")
   const [correctionOpen, setCorrectionOpen] = useState(false)
+  const [correctionBusy, setCorrectionBusy] = useState(false)
   const [correctionTarget, setCorrectionTarget] = useState("")
   const [correctionOriginal, setCorrectionOriginal] = useState("")
   const [correctionContent, setCorrectionContent] = useState("")
@@ -111,12 +195,19 @@ export default function CaseDetailPage({ params }: PageProps) {
   }, [caseId])
 
   useEffect(() => {
-    if (!Number.isFinite(numericCaseId)) return
+    if (!Number.isFinite(numericCaseId)) {
+      setPageLoadState("invalid")
+      return
+    }
+    setPageLoadState("loading")
     void (async () => {
       try {
         const detail = await fetchCaseDetail(numericCaseId)
         setRemoteCase(detail)
+        setPageLoadState("ready")
       } catch {
+        setRemoteCase(null)
+        setPageLoadState("error")
         toast.error("案例详情加载失败")
       }
     })()
@@ -125,16 +216,39 @@ export default function CaseDetailPage({ params }: PageProps) {
   const levelConfig = faultLevelConfig[mapPriorityToLevel(remoteCase?.priority)]
   const statusConfig = verifyStatusConfig[mapCaseStatus(remoteCase?.status)]
 
-  const summaryText = textOrNone(remoteCase?.symptom_description)
+  const summaryText = textOrNone(remoteCase?.symptom_description, "暂无故障现象描述。")
   const rootCauseLines = splitLines(remoteCase?.resolution_summary)
   const processingSteps = (remoteCase?.processing_steps || []).filter((item) => item.trim())
   const knowledgeRefs = remoteCase?.knowledge_refs || []
   const correctionRecords = remoteCase?.corrections || []
+  const reviewNote = textOrNone(remoteCase?.review_note, "")
+
+  const overviewItems = [
+    { label: "设备类型", value: textOrNone(remoteCase?.equipment_type) },
+    { label: "设备型号", value: textOrNone(remoteCase?.equipment_model) },
+    { label: "故障类型", value: textOrNone(remoteCase?.fault_type) },
+    { label: "来源工单", value: textOrNone(remoteCase?.work_order_id) },
+    { label: "更新时间", value: textOrNone(formatDateTimeLocal(remoteCase?.updated_at || null)) },
+    { label: "审核人", value: textOrNone(remoteCase?.reviewer_name) },
+    { label: "审核时间", value: textOrNone(formatDateTimeLocal(remoteCase?.reviewed_at || null)) },
+    { label: "关联文档", value: `${knowledgeRefs.length} 条` },
+    { label: "修正记录", value: `${correctionRecords.length} 条` },
+  ]
+
+  const summaryStats = [
+    { label: "审核状态", value: statusConfig.label },
+    { label: "故障等级", value: levelConfig.label },
+    { label: "设备", value: textOrNone(remoteCase?.equipment_type) },
+    { label: "型号", value: textOrNone(remoteCase?.equipment_model) },
+    { label: "来源工单", value: textOrNone(remoteCase?.work_order_id) },
+    { label: "关联知识", value: `${knowledgeRefs.length} 条` },
+    { label: "修正记录", value: `${correctionRecords.length} 条` },
+  ]
 
   useEffect(() => {
     const handleScroll = () => {
       const sections = tocItems.map((item) => document.getElementById(item.id))
-      const scrollPosition = window.scrollY + 100
+      const scrollPosition = window.scrollY + 140
       for (let index = sections.length - 1; index >= 0; index -= 1) {
         const section = sections[index]
         if (section && section.offsetTop <= scrollPosition) {
@@ -152,7 +266,7 @@ export default function CaseDetailPage({ params }: PageProps) {
     if (!Number.isFinite(numericCaseId)) return
     setReviewBusy(true)
     try {
-      const updated = await reviewMaintenanceCase(numericCaseId, { action: "approve", reviewer_name: "评审专家" })
+      const updated = await reviewMaintenanceCase(numericCaseId, { action: "approve" })
       setRemoteCase(updated)
       toast.success("案例已通过审核，已沉淀为知识文档")
     } catch (error) {
@@ -168,7 +282,6 @@ export default function CaseDetailPage({ params }: PageProps) {
     try {
       const updated = await reviewMaintenanceCase(numericCaseId, {
         action: "reject",
-        reviewer_name: "评审专家",
         review_note: rejectNote,
       })
       setRemoteCase(updated)
@@ -191,7 +304,8 @@ export default function CaseDetailPage({ params }: PageProps) {
   }
 
   const submitCorrection = async () => {
-    if (!Number.isFinite(numericCaseId) || !correctionContent.trim()) return
+    if (!Number.isFinite(numericCaseId) || !correctionContent.trim() || correctionBusy) return
+    setCorrectionBusy(true)
     try {
       const updated = await addCaseCorrection(numericCaseId, {
         correction_target: correctionTarget,
@@ -204,6 +318,8 @@ export default function CaseDetailPage({ params }: PageProps) {
       toast.success("修正已提交")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "提交失败")
+    } finally {
+      setCorrectionBusy(false)
     }
   }
 
@@ -212,31 +328,13 @@ export default function CaseDetailPage({ params }: PageProps) {
       const text = processingSteps.length > 0
         ? processingSteps.map((item, index) => `${index + 1}. ${item}`).join("\n")
         : "无"
-      await navigator.clipboard.writeText(text)
-      toast.success("处理步骤已复制")
-      setCopiedSteps(true)
-      setTimeout(() => setCopiedSteps(false), 2000)
-    })()
-  }
-
-  const shareCase = () => {
-    void (async () => {
-      const shareUrl = typeof window !== "undefined" ? window.location.href : ""
-      if (!shareUrl) return
       try {
-        if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
-          await navigator.share({
-            title: remoteCase?.title || caseId,
-            text: `查看故障案例：${remoteCase?.title || caseId}`,
-            url: shareUrl,
-          })
-          toast.success("已打开系统分享面板")
-          return
-        }
-        await navigator.clipboard.writeText(shareUrl)
-        toast.success("复制链接成功")
+        await navigator.clipboard.writeText(text)
+        toast.success("处理步骤已复制")
+        setCopiedSteps(true)
+        setTimeout(() => setCopiedSteps(false), 2000)
       } catch {
-        toast.error("分享失败，请稍后重试")
+        toast.error("当前环境不支持复制，请手动复制处理步骤")
       }
     })()
   }
@@ -248,76 +346,215 @@ export default function CaseDetailPage({ params }: PageProps) {
     }
   }
 
+  if (pageLoadState === "invalid") {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <main className="app-main app-main-wide">
+          <div className="app-card flex min-h-[320px] flex-col items-center justify-center gap-3 p-8 text-center">
+            <div className="text-lg font-medium text-foreground">案例编号无效</div>
+            <p className="max-w-md text-sm leading-6 text-muted-foreground">
+              当前链接中的案例编号无法识别，请返回案例库重新选择。
+            </p>
+            <Button asChild variant="outline">
+              <Link href="/cases">返回案例库</Link>
+            </Button>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  if (pageLoadState === "error") {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <main className="app-main app-main-wide">
+          <div className="app-card flex min-h-[320px] flex-col items-center justify-center gap-3 p-8 text-center">
+            <div className="text-lg font-medium text-foreground">案例详情加载失败</div>
+            <p className="max-w-md text-sm leading-6 text-muted-foreground">
+              可能是网络异常，或该案例已不存在。请稍后重试，或返回案例库重新进入。
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button type="button" onClick={() => {
+                setPageLoadState("loading")
+                setRemoteCase(null)
+                if (Number.isFinite(numericCaseId)) {
+                  void (async () => {
+                    try {
+                      const detail = await fetchCaseDetail(numericCaseId)
+                      setRemoteCase(detail)
+                      setPageLoadState("ready")
+                    } catch {
+                      setPageLoadState("error")
+                      toast.error("案例详情加载失败")
+                    }
+                  })()
+                }
+              }}>
+                重试
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/cases">返回案例库</Link>
+              </Button>
+            </div>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  if (pageLoadState === "loading" || !remoteCase) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <main className="app-main app-main-wide">
+          <div className="app-card flex min-h-[320px] items-center justify-center p-8 text-sm text-muted-foreground">
+            正在加载案例审阅信息...
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
 
-      <div className="app-main app-main-wide">
+      <div className="app-main app-main-wide space-y-6">
         <section className="app-page-head">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-4">
-              <Link
-                href="/cases"
-                className="inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">返回案例库</span>
-              </Link>
-              <span className="text-muted-foreground">/</span>
-              <span className="text-sm text-foreground/85">{caseId}</span>
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                  <Link
+                    href="/cases"
+                    className="inline-flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    <span>返回案例库</span>
+                  </Link>
+                  <span className="text-muted-foreground">/</span>
+                  <span className="font-mono text-foreground/85">{caseId}</span>
+                  <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${statusConfig.borderColor} ${statusConfig.bgColor}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${statusConfig.dotColor}`} />
+                    <span className={statusConfig.textColor}>{statusConfig.label}</span>
+                  </span>
+                  <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium ${levelConfig.className}`}>
+                    {levelConfig.label}
+                  </span>
+                </div>
+
+                <h1 className="mb-2 text-2xl font-semibold text-foreground sm:text-3xl">
+                  {textOrNone(remoteCase.title)}
+                </h1>
+                <p className="max-w-4xl text-sm leading-7 text-muted-foreground">
+                  {summaryText}
+                </p>
+              </div>
+
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                {mapCaseStatus(remoteCase.status) === "pending" ? (
+                  <>
+                    <Button type="button" className="gap-2 bg-emerald-600 text-white hover:bg-emerald-500" onClick={handleApprove} disabled={reviewBusy}>
+                      <Check className="h-4 w-4" />
+                      通过审核
+                    </Button>
+                    <Button type="button" variant="outline" className="gap-2 border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300" onClick={() => setRejectOpen(true)} disabled={reviewBusy}>
+                      <XCircle className="h-4 w-4" />
+                      驳回
+                    </Button>
+                  </>
+                ) : mapCaseStatus(remoteCase.status) === "verified" ? (
+                  <div className="inline-flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" />
+                    已沉淀为知识文档
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                    <ShieldAlert className="h-4 w-4" />
+                    已驳回，待修订后重提
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button className="app-btn-secondary px-3 py-1.5" onClick={shareCase}>
-                <Share2 className="w-4 h-4" />
-                <span className="hidden sm:inline">分享</span>
-              </button>
-              {mapCaseStatus(remoteCase?.status) === "pending" ? (
-                <>
-                  <button
-                    className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
-                    onClick={handleApprove}
-                    disabled={reviewBusy}
-                  >
-                    <Check className="w-4 h-4" />
-                    通过审核
-                  </button>
-                  <button
-                    className="inline-flex items-center gap-2 rounded-md border border-red-500/30 px-3 py-1.5 text-sm text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-                    onClick={() => setRejectOpen(true)}
-                    disabled={reviewBusy}
-                  >
-                    驳回
-                  </button>
-                </>
-              ) : mapCaseStatus(remoteCase?.status) === "verified" ? (
-                <span className="inline-flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-sm text-emerald-400">
-                  <CheckCircle2 className="w-4 h-4" />
-                  已通过审核
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-sm text-red-400">
-                  <XCircle className="w-4 h-4" />
-                  已驳回
-                </span>
-              )}
+
+            <div className={`rounded-xl border px-4 py-3 ${statusConfig.bannerClass}`}>
+              <div className="flex items-start gap-3">
+                {mapCaseStatus(remoteCase.status) === "rejected" ? (
+                  <MessageSquareWarning className="mt-0.5 h-4 w-4 shrink-0" />
+                ) : mapCaseStatus(remoteCase.status) === "verified" ? (
+                  <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0" />
+                ) : (
+                  <ScanSearch className="mt-0.5 h-4 w-4 shrink-0" />
+                )}
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">{statusConfig.summary}</div>
+                  {mapCaseStatus(remoteCase.status) === "rejected" && reviewNote ? (
+                    <div className="text-xs leading-6 text-red-200">
+                      驳回意见：{reviewNote}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+              {overviewItems.map((item) => (
+                <div key={item.label} className="app-subpanel px-4 py-3">
+                  <div className="mb-1 text-xs text-muted-foreground">{item.label}</div>
+                  <div className="text-sm text-foreground">{item.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto pb-1 lg:hidden">
+              {tocItems.map((item) => (
+                <Button
+                  key={item.id}
+                  type="button"
+                  variant={activeSection === item.id ? "default" : "outline"}
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => scrollToSection(item.id)}
+                >
+                  {item.label}
+                </Button>
+              ))}
             </div>
           </div>
         </section>
 
-        <div className="flex gap-6">
-          <aside className="hidden w-48 flex-shrink-0 lg:block">
-            <div className="sticky top-20">
-              <div className="max-h-[calc(100vh-8rem)] min-h-0 overflow-y-auto overscroll-y-contain pr-3 pb-6">
+        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <aside className="hidden lg:block">
+            <div className="sticky top-20 space-y-4">
+              <div className="app-card p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Activity className={`h-4 w-4 ${levelConfig.accentClass}`} />
+                  <div className="text-sm font-medium text-foreground">审阅摘要</div>
+                </div>
+                <div className="space-y-3">
+                  {summaryStats.map((item) => (
+                    <div key={item.label} className="flex items-start justify-between gap-4 text-sm">
+                      <span className="text-muted-foreground">{item.label}</span>
+                      <span className="text-right text-foreground">{item.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="app-card p-4">
+                <div className="mb-3 text-sm font-medium text-foreground">区块导航</div>
                 <nav className="space-y-1">
-                  <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">目录</p>
                   {tocItems.map((item) => (
                     <button
                       key={item.id}
+                      type="button"
                       onClick={() => scrollToSection(item.id)}
                       className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
                         activeSection === item.id
-                          ? "border-l-2 border-[#5e6ad2] bg-muted text-foreground"
-                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                          ? "bg-[#5e6ad2]/10 text-[#c7ccff]"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground"
                       }`}
                     >
                       {item.label}
@@ -328,255 +565,210 @@ export default function CaseDetailPage({ params }: PageProps) {
             </div>
           </aside>
 
-          <main className="min-w-0 flex-1">
-            <div className="app-card mb-6 p-6">
-              <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="flex-1">
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${levelConfig.className}`}>
-                      {levelConfig.label}
-                    </span>
-                    <div className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 ${statusConfig.bgColor}`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${statusConfig.dotColor}`} />
-                      <span className={`text-xs ${statusConfig.textColor}`}>{statusConfig.label}</span>
-                    </div>
-                    {(remoteCase?.fault_type ? [remoteCase.fault_type] : []).map((tag) => (
-                      <span key={tag} className="app-badge text-foreground/85">{tag}</span>
-                    ))}
-                  </div>
-                  <h1 className="mb-2 text-xl font-semibold text-foreground sm:text-2xl">
-                    {textOrNone(remoteCase?.title)}
-                  </h1>
-                  <p className="text-sm leading-relaxed text-muted-foreground">{summaryText}</p>
+          <main className="min-w-0 space-y-6 pb-24">
+            <section id="symptoms" className="app-card scroll-mt-24 p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-400" />
+                <div className="text-lg font-semibold text-foreground">故障现象</div>
+                <div className="ml-auto">
+                  <SectionActionButton label="修正" onClick={() => openCorrection("model_output", remoteCase.symptom_description || "")} />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-6">
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">设备名称</p>
-                  <p className="text-sm text-foreground/85">{textOrNone(remoteCase?.equipment_type)}</p>
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">设备型号</p>
-                  <p className="font-mono text-sm text-foreground/85">{textOrNone(remoteCase?.equipment_model)}</p>
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">故障等级</p>
-                  <p className="text-sm text-foreground/85">{levelConfig.label}</p>
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">更新时间</p>
-                  <p className="text-sm text-foreground/85">{textOrNone(formatDateTimeLocal(remoteCase?.updated_at || null))}</p>
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">负责人</p>
-                  <p className="text-sm text-foreground/85">无</p>
-                </div>
-                <div>
-                  <p className="mb-1 text-xs text-muted-foreground">审核人</p>
-                  <p className="text-sm text-foreground/85">{textOrNone(remoteCase?.reviewer_name)}</p>
-                </div>
-              </div>
-            </div>
-
-            <section id="symptoms" className="app-card mb-6 scroll-mt-20 p-6">
-              <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
-                <AlertTriangle className="w-5 h-5 text-amber-400" />
-                故障现象
-                <button
-                  className="ml-auto flex items-center gap-1 text-xs text-[#5e6ad2] transition-colors hover:text-[#7170ff]"
-                  onClick={() => openCorrection("model_output", remoteCase?.symptom_description || "")}
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  修正
-                </button>
-              </h2>
-              <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-4">
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-red-400" />
-                  <h3 className="text-sm font-medium text-red-400">故障描述</h3>
-                </div>
-                <p className="text-sm leading-relaxed text-foreground/85">{summaryText}</p>
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
+                <div className="mb-2 text-xs uppercase tracking-wide text-amber-300/80">现场描述</div>
+                <p className="text-sm leading-7 text-foreground/90">{summaryText}</p>
               </div>
             </section>
 
-            <section id="root-cause" className="app-card mb-6 scroll-mt-20 p-6">
-              <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
-                <FileText className="w-5 h-5 text-emerald-400" />
-                根因分析
-                <button
-                  className="ml-auto flex items-center gap-1 text-xs text-[#5e6ad2] transition-colors hover:text-[#7170ff]"
-                  onClick={() => openCorrection("summary", remoteCase?.resolution_summary || "")}
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  修正
-                </button>
-              </h2>
+            <section id="root-cause" className="app-card scroll-mt-24 p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <FileText className="h-5 w-5 text-emerald-400" />
+                <div className="text-lg font-semibold text-foreground">根因判断</div>
+                <div className="ml-auto">
+                  <SectionActionButton label="修正" onClick={() => openCorrection("summary", remoteCase.resolution_summary || "")} />
+                </div>
+              </div>
+
               {rootCauseLines.length > 0 ? (
-                <div className="space-y-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
-                  <h3 className="text-sm font-medium text-emerald-400">诊断结论</h3>
+                <div className="space-y-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-5">
                   {rootCauseLines.map((line, index) => (
-                    <p key={`${line}-${index}`} className="text-sm leading-7 text-foreground">{line}</p>
+                    <div key={`${line}-${index}`} className="flex gap-3">
+                      <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+                      <p className="text-sm leading-7 text-foreground">{line}</p>
+                    </div>
                   ))}
                 </div>
               ) : (
-                <SectionEmpty />
+                <SectionEmpty message="尚未形成根因总结，请结合证据与处理记录补充判断。" />
               )}
             </section>
 
-            <section id="action-plan" className="app-card mb-6 scroll-mt-20 p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
-                  <Wrench className="w-5 h-5 text-blue-400" />
-                  处理方案
-                  <button
-                    className="ml-2 flex items-center gap-1 text-xs text-[#5e6ad2] transition-colors hover:text-[#7170ff]"
-                    onClick={() => openCorrection("procedure", processingSteps.join("\n"))}
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    修正
-                  </button>
-                </h2>
-                <button onClick={copyActionSteps} className="app-btn-secondary px-3 py-1.5">
-                  {copiedSteps ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      已复制
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4" />
-                      复制处理步骤
-                    </>
-                  )}
-                </button>
+            <section id="action-plan" className="app-card scroll-mt-24 p-6">
+              <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <Wrench className="h-5 w-5 text-blue-400" />
+                  <div className="text-lg font-semibold text-foreground">处理步骤</div>
+                  <SectionActionButton label="修正" onClick={() => openCorrection("procedure", processingSteps.join("\n"))} />
+                </div>
+                <Button type="button" variant="outline" className="gap-2 self-start" onClick={copyActionSteps}>
+                  {copiedSteps ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+                  {copiedSteps ? "已复制" : "复制处理步骤"}
+                </Button>
               </div>
 
               {processingSteps.length > 0 ? (
-                <div className="overflow-hidden rounded-lg border border-border bg-muted/20">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted-foreground">步骤</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium uppercase text-muted-foreground">操作内容</th>
-                        <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase text-muted-foreground sm:table-cell">负责人</th>
-                        <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase text-muted-foreground sm:table-cell">预计时长</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {processingSteps.map((item, index) => (
-                        <tr key={`${item}-${index}`} className="border-b border-border last:border-0">
-                          <td className="px-4 py-3">
-                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#5e6ad2]/20 text-xs font-medium text-[#5e6ad2]">
-                              {index + 1}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-foreground/85">{item}</td>
-                          <td className="hidden px-4 py-3 text-sm text-muted-foreground sm:table-cell">无</td>
-                          <td className="hidden px-4 py-3 text-sm font-mono text-muted-foreground sm:table-cell">无</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="space-y-4">
+                  {processingSteps.map((item, index) => (
+                    <div key={`${item}-${index}`} className="flex gap-4 rounded-xl border border-border bg-muted/20 p-4">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#5e6ad2]/15 text-sm font-semibold text-[#c7ccff]">
+                        {index + 1}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">步骤 {index + 1}</div>
+                        <p className="text-sm leading-7 text-foreground/90">{item}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : (
-                <SectionEmpty />
+                <SectionEmpty message="当前案例未记录处理步骤，请补充后再提交审核。" />
               )}
             </section>
 
-            <section id="evidence" className="app-card mb-6 scroll-mt-20 p-6">
-              <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
-                <Activity className="w-5 h-5 text-[#5e6ad2]" />
-                证据数据
-              </h2>
-              <SectionEmpty />
+            <section id="evidence" className="app-card scroll-mt-24 p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <Link2 className="h-5 w-5 text-indigo-400" />
+                <div className="text-lg font-semibold text-foreground">证据与出处</div>
+              </div>
+
+              {knowledgeRefs.length > 0 ? (
+                <div className="space-y-3">
+                  {knowledgeRefs.map((ref, index) => {
+                    const title = getKnowledgeRefTitle(ref)
+                    const source = getKnowledgeRefSource(ref)
+                    const excerpt = textOrNone(ref.excerpt, "暂无引用摘录。")
+                    const hasLink = typeof ref.document_id === "number"
+                    return hasLink ? (
+                      <Link
+                        key={`${ref.document_id}-${index}`}
+                        href={`/knowledge/${ref.document_id}`}
+                        className="group block rounded-xl border border-border bg-muted/20 p-4 transition-colors hover:bg-muted/35"
+                      >
+                        <div className="mb-2 flex items-start justify-between gap-4">
+                          <div>
+                            <div className="text-sm font-medium text-foreground group-hover:text-[#c7ccff]">{title}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{source}</div>
+                          </div>
+                          <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-[#c7ccff]" />
+                        </div>
+                        <p className="text-sm leading-6 text-foreground/80">{excerpt}</p>
+                      </Link>
+                    ) : (
+                      <div key={`${title}-${index}`} className="rounded-xl border border-border bg-muted/20 p-4">
+                        <div className="mb-2 flex items-start justify-between gap-4">
+                          <div>
+                            <div className="text-sm font-medium text-foreground">{title}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{source}</div>
+                          </div>
+                          <span className="text-xs text-muted-foreground">无跳转</span>
+                        </div>
+                        <p className="text-sm leading-6 text-foreground/80">{excerpt}</p>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <SectionEmpty message="当前案例暂无关联知识引用，可在审核前补充相关手册或案例出处。" />
+              )}
             </section>
 
-            <section id="related" className="app-card scroll-mt-20 p-6">
-              <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-foreground">
-                <Link2 className="w-5 h-5 text-muted-foreground" />
-                关联知识
-              </h2>
+            <section id="audit" className="app-card scroll-mt-24 p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <BookOpen className="h-5 w-5 text-violet-400" />
+                <div className="text-lg font-semibold text-foreground">修正与审核记录</div>
+              </div>
 
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <div>
-                  <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground/85">
-                    <BookOpen className="w-4 h-4 text-muted-foreground" />
-                    关联文档
-                  </h3>
-                  <div className="space-y-2">
-                    {knowledgeRefs.length > 0 ? (
-                      knowledgeRefs.map((doc, index) => {
-                        const href = doc.document_id ? `/knowledge/${doc.document_id}` : "#"
-                        const title = doc.title || doc.source_name || "无"
-                        return doc.document_id ? (
-                          <Link
-                            key={`${doc.document_id}-${index}`}
-                            href={href}
-                            className="group flex items-center justify-between rounded-lg border border-border bg-muted/20 p-3 transition-colors hover:bg-muted/40"
-                          >
-                            <span className="text-sm text-foreground/85 group-hover:text-foreground">{title}</span>
-                            <ExternalLink className="w-4 h-4 text-muted-foreground group-hover:text-[#5e6ad2]" />
-                          </Link>
-                        ) : (
-                          <div
-                            key={`${title}-${index}`}
-                            className="flex items-center justify-between rounded-lg border border-border bg-muted/20 p-3"
-                          >
-                            <span className="text-sm text-foreground/85">{title}</span>
-                            <span className="text-xs text-muted-foreground">无链接</span>
-                          </div>
-                        )
-                      })
-                    ) : (
-                      <SectionEmpty />
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground/85">
-                    <FileText className="w-4 h-4 text-muted-foreground" />
-                    修正记录
-                  </h3>
-                  <div className="space-y-2">
-                    {correctionRecords.length > 0 ? (
-                      correctionRecords.map((item) => (
-                        <div key={item.id} className="rounded-lg border border-border bg-muted/20 p-3">
-                          <div className="mb-1 text-xs text-muted-foreground">{item.correction_target}</div>
-                          <div className="text-sm text-foreground">{textOrNone(item.corrected_content)}</div>
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            {textOrNone(formatDateTimeLocal(item.created_at))}
-                          </div>
+              <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                <div className="space-y-3">
+                  <div className="text-sm font-medium text-foreground">修正记录</div>
+                  {correctionRecords.length > 0 ? (
+                    correctionRecords.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-border bg-muted/20 p-4">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <span className="inline-flex items-center rounded-md border border-border bg-background/60 px-2 py-1 text-xs text-muted-foreground">
+                            {correctionTargetLabelMap[item.correction_target] || item.correction_target}
+                          </span>
+                          <span className="text-xs text-muted-foreground">{textOrNone(formatDateTimeLocal(item.created_at))}</span>
                         </div>
-                      ))
-                    ) : (
-                      <SectionEmpty />
-                    )}
-                  </div>
+                        <div className="space-y-2">
+                          <div>
+                            <div className="mb-1 text-xs text-muted-foreground">修正后内容</div>
+                            <div className="text-sm leading-6 text-foreground">{textOrNone(item.corrected_content)}</div>
+                          </div>
+                          {item.note ? (
+                            <div>
+                              <div className="mb-1 text-xs text-muted-foreground">备注</div>
+                              <div className="text-sm leading-6 text-foreground/85">{item.note}</div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <SectionEmpty message="当前还没有修正记录。" />
+                  )}
                 </div>
 
-                <div>
-                  <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground/85">
-                    <Tag className="w-4 h-4 text-muted-foreground" />
-                    案例附加信息
-                  </h3>
-                  <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-4 text-sm">
-                    <div className="flex items-start justify-between gap-4">
-                      <span className="text-muted-foreground">故障类型</span>
-                      <span className="text-right text-foreground">{textOrNone(remoteCase?.fault_type)}</span>
+                <div className="space-y-3">
+                  <div className="text-sm font-medium text-foreground">审核信息</div>
+                  <div className="rounded-xl border border-border bg-muted/20 p-4">
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">审核状态</span>
+                        <span className={statusConfig.textColor}>{statusConfig.label}</span>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">审核人</span>
+                        <span className="text-right text-foreground">{textOrNone(remoteCase.reviewer_name)}</span>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">审核时间</span>
+                        <span className="text-right text-foreground">{textOrNone(formatDateTimeLocal(remoteCase.reviewed_at || null))}</span>
+                      </div>
                     </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <span className="text-muted-foreground">报修来源</span>
-                      <span className="text-right text-foreground">{textOrNone(remoteCase?.report_source)}</span>
+                  </div>
+
+                  {reviewNote ? (
+                    <div className="rounded-xl border border-border bg-muted/20 p-4">
+                      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+                        <MessageSquareWarning className="h-4 w-4 text-amber-400" />
+                        审核意见
+                      </div>
+                      <p className="text-sm leading-6 text-foreground/85">{reviewNote}</p>
                     </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <span className="text-muted-foreground">工单编号</span>
-                      <span className="text-right text-foreground">{textOrNone(remoteCase?.work_order_id)}</span>
+                  ) : (
+                    <SectionEmpty message="当前暂无审核意见记录。" />
+                  )}
+
+                  <div className="rounded-xl border border-border bg-muted/20 p-4">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+                      <Tag className="h-4 w-4 text-muted-foreground" />
+                      案例附加信息
                     </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <span className="text-muted-foreground">审核时间</span>
-                      <span className="text-right text-foreground">{textOrNone(formatDateTimeLocal(remoteCase?.reviewed_at || null))}</span>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">报修来源</span>
+                        <span className="text-right text-foreground">{textOrNone(remoteCase.report_source)}</span>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">故障类型</span>
+                        <span className="text-right text-foreground">{textOrNone(remoteCase.fault_type)}</span>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-muted-foreground">设备型号</span>
+                        <span className="text-right text-foreground">{textOrNone(remoteCase.equipment_model)}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -591,15 +783,20 @@ export default function CaseDetailPage({ params }: PageProps) {
           <DialogHeader>
             <DialogTitle>驳回案例</DialogTitle>
           </DialogHeader>
+          <p className="text-sm leading-6 text-muted-foreground">
+            填写驳回意见后，该案例不会进入知识库。请明确指出需补充的证据、步骤或判断问题。
+          </p>
           <textarea
-            className="h-24 w-full resize-none rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground"
+            className="h-28 w-full resize-none rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground"
             placeholder="请填写驳回理由..."
             value={rejectNote}
             onChange={(e) => setRejectNote(e.target.value)}
           />
           <div className="mt-4 flex justify-end gap-3">
-            <button className="px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground" onClick={() => setRejectOpen(false)}>取消</button>
-            <button className="rounded-md bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-500 disabled:opacity-50" onClick={handleReject} disabled={reviewBusy}>确认驳回</button>
+            <Button type="button" variant="ghost" onClick={() => setRejectOpen(false)}>取消</Button>
+            <Button type="button" className="bg-red-600 text-white hover:bg-red-500" onClick={handleReject} disabled={reviewBusy || !rejectNote.trim()}>
+              确认驳回
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -610,22 +807,27 @@ export default function CaseDetailPage({ params }: PageProps) {
             <DialogTitle>修正内容</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+              修正目标：{correctionTargetLabelMap[correctionTarget] || correctionTarget}
+            </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">原始内容</label>
-              <textarea className="h-20 w-full resize-none rounded-lg border border-input bg-muted/35 p-3 text-sm text-muted-foreground" readOnly value={correctionOriginal} />
+              <textarea className="h-24 w-full resize-none rounded-lg border border-input bg-muted/35 p-3 text-sm text-muted-foreground" readOnly value={correctionOriginal} />
             </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">修正后内容</label>
-              <textarea className="h-20 w-full resize-none rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground" placeholder="请输入修正后的内容..." value={correctionContent} onChange={(e) => setCorrectionContent(e.target.value)} />
+              <textarea className="h-24 w-full resize-none rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground" placeholder="请输入修正后的内容..." value={correctionContent} onChange={(e) => setCorrectionContent(e.target.value)} />
             </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">备注（可选）</label>
-              <input className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground" placeholder="修正原因..." value={correctionNote} onChange={(e) => setCorrectionNote(e.target.value)} />
+              <input className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground" placeholder="补充修正原因..." value={correctionNote} onChange={(e) => setCorrectionNote(e.target.value)} />
             </div>
           </div>
           <div className="mt-4 flex justify-end gap-3">
-            <button className="px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground" onClick={() => setCorrectionOpen(false)}>取消</button>
-            <button className="rounded-md bg-[#5e6ad2] px-4 py-2 text-sm text-white transition-colors hover:bg-[#7170ff] disabled:opacity-50" onClick={submitCorrection} disabled={!correctionContent.trim()}>提交修正</button>
+            <Button type="button" variant="ghost" onClick={() => setCorrectionOpen(false)} disabled={correctionBusy}>取消</Button>
+            <Button type="button" onClick={submitCorrection} disabled={correctionBusy || !correctionContent.trim()}>
+              {correctionBusy ? "提交中..." : "提交修正"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

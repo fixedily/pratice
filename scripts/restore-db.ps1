@@ -1,4 +1,4 @@
-# 恢复数据库（支持 SQLite / PostgreSQL）
+﻿# 恢复数据库（支持 SQLite / PostgreSQL）
 # 用法：
 #   .\scripts\restore-db.ps1 -BackupFile ".\deploy\backups\sqlite-backup-20260413-120000.db"
 #   .\scripts\restore-db.ps1 -BackupFile ".\deploy\backups\postgres-backup-20260413-120000.sql" -DatabaseUrl "postgresql+asyncpg://user:pass@127.0.0.1:5432/dbname"

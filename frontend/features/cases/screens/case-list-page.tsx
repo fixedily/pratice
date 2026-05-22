@@ -1,6 +1,6 @@
-"use client"
+﻿"use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -29,7 +29,6 @@ import {
   UploadCloud,
 } from "lucide-react"
 import { Header } from "@/shared/components/brand/app-header"
-import { DEMO_MODE_CHANGED_EVENT } from "@/shared/lib/demo-mode"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,6 +51,13 @@ import { Button } from "@/shared/components/ui/button"
 import { Checkbox } from "@/shared/components/ui/checkbox"
 import { Input } from "@/shared/components/ui/input"
 import { Label } from "@/shared/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/shared/components/ui/select"
 import { Textarea } from "@/shared/components/ui/textarea"
 
 // 类型定义
@@ -132,6 +138,40 @@ function FaultTag({ label }: { label: string }) {
     <span className="app-chip-muted">
       {label}
     </span>
+  )
+}
+
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+  color,
+  active,
+  onClick,
+}: {
+  label: string
+  value: number
+  icon: React.ElementType
+  color: string
+  active?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`app-kpi-card flex items-center gap-3 px-4 py-3 text-left transition-all duration-200 ${
+        active ? "border-[#5e6ad2]/35 bg-[#5e6ad2]/8" : "hover:bg-muted/75"
+      }`}
+    >
+      <div className={`rounded-md p-2 ${color}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div>
+        <div className="text-xl font-semibold text-foreground">{value}</div>
+        <div className="text-xs text-muted-foreground">{label}</div>
+      </div>
+    </button>
   )
 }
 
@@ -639,16 +679,6 @@ export default function CasesPage() {
     }
   }, [deleteTarget, loadCases])
 
-  useEffect(() => {
-    const handleModeChanged = () => {
-      void loadCases()
-    }
-    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener)
-    return () => {
-      window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener)
-    }
-  }, [loadCases])
-
   const submitCreateCase = useCallback(async () => {
     setCreateError(null)
     const title = newTitle.trim()
@@ -757,6 +787,15 @@ export default function CasesPage() {
   ]
 
   const sourceCases = apiCases
+  const caseStats = useMemo(
+    () => ({
+      total: sourceCases.length,
+      verified: sourceCases.filter((c) => c.verifyStatus === "verified").length,
+      pending: sourceCases.filter((c) => c.verifyStatus === "pending").length,
+      rejected: sourceCases.filter((c) => c.verifyStatus === "rejected").length,
+    }),
+    [sourceCases],
+  )
 
   const filterLabelMap = {
     level: levelOptions.find((o) => o.value === levelFilter)?.label ?? "全部",
@@ -766,6 +805,7 @@ export default function CasesPage() {
   }
 
   const selectedFilterChips = [
+    searchQuery.trim() ? { key: "search", label: `关键词：${searchQuery.trim()}` } : null,
     levelFilter !== "all" ? { key: "level", label: `故障等级：${filterLabelMap.level}` } : null,
     verifyFilter !== "all" ? { key: "verify", label: `验证状态：${filterLabelMap.verify}` } : null,
     knowledgeTypeFilter !== "all" ? { key: "knowledgeType", label: `知识类型：${filterLabelMap.knowledgeType}` } : null,
@@ -833,10 +873,44 @@ export default function CasesPage() {
           <div>
             <h1 className="text-2xl font-semibold text-foreground mb-1">知识案例库</h1>
             <p className="text-sm text-muted-foreground">
-              沉淀历史故障案例、检修经验与标准作业知识 · 共 {sourceCases.length} 条 · 已验证{" "}
-              {sourceCases.filter((c) => c.verifyStatus === "verified").length} 条
+              沉淀历史故障案例、检修经验与标准作业知识 · 共 {caseStats.total} 条 · 已验证 {caseStats.verified} 条
             </p>
           </div>
+        </div>
+
+        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard
+            label="全部案例"
+            value={caseStats.total}
+            icon={BookOpen}
+            color="bg-muted text-foreground"
+            active={verifyFilter === "all"}
+            onClick={() => setVerifyFilter("all")}
+          />
+          <StatCard
+            label="已验证"
+            value={caseStats.verified}
+            icon={RefreshCw}
+            color="bg-emerald-500/20 text-emerald-400"
+            active={verifyFilter === "verified"}
+            onClick={() => setVerifyFilter("verified")}
+          />
+          <StatCard
+            label="待验证"
+            value={caseStats.pending}
+            icon={Clock}
+            color="bg-amber-500/20 text-amber-400"
+            active={verifyFilter === "pending"}
+            onClick={() => setVerifyFilter("pending")}
+          />
+          <StatCard
+            label="已驳回"
+            value={caseStats.rejected}
+            icon={XCircle}
+            color="bg-red-500/20 text-red-400"
+            active={verifyFilter === "rejected"}
+            onClick={() => setVerifyFilter("rejected")}
+          />
         </div>
 
         {/* 操作栏 */}
@@ -951,6 +1025,7 @@ export default function CasesPage() {
                           type="button"
                           className="text-muted-foreground hover:text-foreground"
                           onClick={() => {
+                            if (chip.key === "search") setSearchQuery("")
                             if (chip.key === "level") setLevelFilter("all")
                             if (chip.key === "verify") setVerifyFilter("all")
                             if (chip.key === "knowledgeType") setKnowledgeTypeFilter("all")
@@ -1199,16 +1274,20 @@ export default function CasesPage() {
                 </div>
                 <div className="grid gap-2">
                   <Label className="text-foreground">知识类型 *</Label>
-                  <select
+                  <Select
                     value={uploadKnowledgeType}
-                    onChange={(e) => setUploadKnowledgeType(e.target.value as KnowledgeType)}
-                    className="app-select w-full"
+                    onValueChange={(value) => setUploadKnowledgeType(value as KnowledgeType)}
                   >
-                    <option value="manual">设备手册</option>
-                    <option value="sop">SOP流程</option>
-                    <option value="case">故障案例</option>
-                    <option value="expert">专家经验</option>
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="知识类型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">设备手册</SelectItem>
+                      <SelectItem value="sop">SOP流程</SelectItem>
+                      <SelectItem value="case">故障案例</SelectItem>
+                      <SelectItem value="expert">专家经验</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
@@ -1370,18 +1449,19 @@ export default function CasesPage() {
                 <Label htmlFor="case-priority" className="text-foreground">
                   处置等级
                 </Label>
-                <select
-                  id="case-priority"
+                <Select
                   value={newPriority}
-                  onChange={(e) =>
-                    setNewPriority(e.target.value as "low" | "medium" | "urgent")
-                  }
-                  className="app-select h-9 w-full"
+                  onValueChange={(value) => setNewPriority(value as "low" | "medium" | "urgent")}
                 >
-                  <option value="low">例行</option>
-                  <option value="medium">标准</option>
-                  <option value="urgent">紧急</option>
-                </select>
+                  <SelectTrigger id="case-priority" className="h-9 w-full">
+                    <SelectValue placeholder="处置等级" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">例行</SelectItem>
+                    <SelectItem value="medium">标准</SelectItem>
+                    <SelectItem value="urgent">紧急</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1504,4 +1584,3 @@ export default function CasesPage() {
     </div>
   )
 }
-

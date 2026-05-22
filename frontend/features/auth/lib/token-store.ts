@@ -1,4 +1,4 @@
-/** 检修域 JWT；统一保持在当前会话内，避免长期持久化登录状态。 */
+﻿/** 检修域 JWT；统一保持在当前会话内，避免长期持久化登录状态。 */
 const KEY = "dachuang_maintenance_token";
 export const MAINTENANCE_AUTH_EXPIRED_EVENT = "maintenance-auth-expired";
 export const MAINTENANCE_AUTH_CHANGED_EVENT = "maintenance-auth-changed";

@@ -1,8 +1,13 @@
-"""Knowledge search schema compatibility exports."""
+﻿"""Knowledge search schema compatibility exports."""
 from app.schemas.knowledge import (
     KnowledgeDocumentCreate,
     KnowledgeDocumentResponse,
+    KnowledgeGraphContext,
+    KnowledgeGraphEntityContext,
+    KnowledgeGraphRelationContext,
     KnowledgeImageAnalysis,
+    KnowledgeReasoningChain,
+    KnowledgeReasoningEvidenceChunk,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
@@ -11,7 +16,12 @@ from app.schemas.knowledge import (
 __all__ = [
     "KnowledgeDocumentCreate",
     "KnowledgeDocumentResponse",
+    "KnowledgeGraphContext",
+    "KnowledgeGraphEntityContext",
+    "KnowledgeGraphRelationContext",
     "KnowledgeImageAnalysis",
+    "KnowledgeReasoningChain",
+    "KnowledgeReasoningEvidenceChunk",
     "KnowledgeSearchHit",
     "KnowledgeSearchRequest",
     "KnowledgeSearchResponse",

@@ -1,4 +1,4 @@
-# File: app/core/database.py
+﻿# File: app/core/database.py
 """Asynchronous SQLAlchemy 2.0 database engine and session factory.
 
 Design decisions:
@@ -68,7 +68,6 @@ def _get_async_engine() -> AsyncEngine:
         return create_async_engine(
             settings.database_url,
             echo=settings.debug,
-            pool_pre_ping=True,  # Verify connections before use
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
             pool_timeout=settings.db_pool_timeout,

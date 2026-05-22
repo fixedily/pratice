@@ -1,10 +1,12 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, Menu, X } from "lucide-react";
 import { createPortal } from "react-dom";
 
+import { useMaintenanceAuth } from "@/features/auth/maintenance-auth";
+import { ROUTES, protectedEntryHref } from "@/shared/lib/routes";
 import { cn } from "@/shared/lib/utils";
 
 type NavLeaf = {
@@ -29,22 +31,22 @@ const navItems: NavItem[] = [
       {
         label: "核心能力",
         href: "#capabilities",
-        description: "全链路智能诊断能力",
+        description: "围绕检修主线的四项能力",
       },
       {
-        label: "诊断闭环",
+        label: "检修闭环",
         href: "#workflow",
-        description: "5 步完成智能检修闭环",
+        description: "5 步走通知识检索与作业闭环",
       },
       {
         label: "业务价值",
         href: "#value",
-        description: "围绕赛题要求构建三项核心能力",
+        description: "围绕场景主线构建三项核心能力",
       },
     ],
   },
   { label: "应用场景", href: "#scenarios" },
-  { label: "数据成效", href: "#metrics" },
+  { label: "演示验证", href: "#metrics" },
 ];
 
 const capabilitySectionIds = ["capabilities", "workflow", "value"];
@@ -55,6 +57,7 @@ function isLeaf(item: NavItem): item is NavLeaf {
 }
 
 export function Navbar() {
+  const { isLoggedIn } = useMaintenanceAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<string>("home");
   const [mounted, setMounted] = useState(false);
@@ -95,7 +98,7 @@ export function Navbar() {
     if (activeSection === "overview") return "平台概览";
     if (capabilitySectionIds.includes(activeSection)) return "产品能力";
     if (activeSection === "scenarios") return "应用场景";
-    if (activeSection === "metrics") return "数据成效";
+    if (activeSection === "metrics") return "演示验证";
     return "";
   }, [activeSection]);
 
@@ -243,17 +246,19 @@ export function Navbar() {
           </div>
 
           <div className="hidden md:flex items-center gap-3">
+            {!isLoggedIn ? (
+              <Link
+                href="/login"
+                className="py-2 text-sm text-text-secondary transition-colors hover:text-text-primary dark:text-[#aab6c3] dark:hover:text-[#f5f7fa]"
+              >
+                登录
+              </Link>
+            ) : null}
             <Link
-              href="/login"
-              className="py-2 text-sm text-text-secondary transition-colors hover:text-text-primary dark:text-[#aab6c3] dark:hover:text-[#f5f7fa]"
-            >
-              登录
-            </Link>
-            <Link
-              href="/dashboard"
+              href={isLoggedIn ? ROUTES.dashboard : protectedEntryHref(ROUTES.dashboard)}
               className="rounded-md border border-[#0f172a] bg-[#111827] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#0f172a] dark:border-white/[0.10] dark:bg-white/[0.06] dark:text-[#f5f7fa] dark:hover:bg-white/[0.10]"
             >
-              进入演示
+              {isLoggedIn ? "进入工作台" : "进入演示"}
             </Link>
           </div>
 
@@ -322,19 +327,21 @@ export function Navbar() {
               })}
 
               <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4 dark:border-white/[0.06]">
+                {!isLoggedIn ? (
+                  <Link
+                    href="/login"
+                    className="rounded-xl px-4 py-3 text-left text-sm text-text-secondary transition-colors hover:bg-muted hover:text-text-primary dark:text-[#aab6c3] dark:hover:bg-white/[0.05] dark:hover:text-[#f5f7fa]"
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    登录
+                  </Link>
+                ) : null}
                 <Link
-                  href="/login"
-                  className="rounded-xl px-4 py-3 text-left text-sm text-text-secondary transition-colors hover:bg-muted hover:text-text-primary dark:text-[#aab6c3] dark:hover:bg-white/[0.05] dark:hover:text-[#f5f7fa]"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  登录
-                </Link>
-                <Link
-                  href="/dashboard"
+                  href={isLoggedIn ? ROUTES.dashboard : protectedEntryHref(ROUTES.dashboard)}
                   className="mx-1 rounded-xl border border-[#0f172a] bg-[#111827] py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[#0f172a] dark:border-white/[0.10] dark:bg-white/[0.06] dark:text-[#f5f7fa] dark:hover:bg-white/[0.10]"
                   onClick={() => setMobileMenuOpen(false)}
                 >
-                  进入演示
+                  {isLoggedIn ? "进入工作台" : "进入演示"}
                 </Link>
               </div>
             </div>
@@ -345,4 +352,3 @@ export function Navbar() {
     document.body,
   );
 }
-

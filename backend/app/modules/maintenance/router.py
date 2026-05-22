@@ -1,4 +1,4 @@
-"""检修域 HTTP 路由：`/api/v1/maintenance`。"""
+﻿"""检修域 HTTP 路由：`/api/v1/maintenance`。"""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.db.session import get_session
 from app.modules.maintenance.deps import CurrentUserCtx, get_current_user_ctx, require_roles
 from app.modules.maintenance.errors import MaintenanceAPIError
+from app.modules.maintenance.application.captcha_service import issue_captcha
 from app.modules.maintenance.service import ATTACHMENT_UPLOAD_MAX_BYTES, MaintenanceService
 
 PREFIX = "/api/v1/maintenance"
@@ -47,15 +48,74 @@ def _err(
     return JSONResponse(status_code=status_code, content=body)
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+@router.get("/auth/captcha")
+async def auth_captcha():
+    return _ok(await issue_captcha())
+
+
 @router.post("/auth/login")
 async def auth_login(
+    body: dict[str, Any],
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        data = await _svc(session, settings).login(
+            body.get("username", ""),
+            body.get("password", ""),
+            captcha_id=body.get("captchaId") or body.get("captcha_id"),
+            captcha_code=body.get("captchaCode") or body.get("captcha_code"),
+            client_ip=_client_ip(request),
+        )
+        return _ok(data)
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
+@router.post("/auth/register")
+async def auth_register(
     body: dict[str, Any],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
     try:
-        data = await _svc(session, settings).login(body.get("username", ""), body.get("password", ""))
-        return _ok(data)
+        data = await _svc(session, settings).register(body)
+        return _ok(data, message="注册成功")
+    except MaintenanceAPIError as e:
+        return _err(
+            status_code=e.status_code,
+            business_code=e.business_code,
+            message=e.message,
+            errors=e.errors,
+            data=e.data,
+        )
+
+
+@router.post("/auth/forgot-password")
+async def auth_forgot_password(
+    body: dict[str, Any],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        data = await _svc(session, settings).forgot_password(body)
+        return _ok(data, message="密码已重置")
     except MaintenanceAPIError as e:
         return _err(
             status_code=e.status_code,
@@ -128,81 +188,6 @@ async def maintenance_health(
     return _ok(data)
 
 
-# ---------- 管理员用户 ----------
-@router.get("/admin/users")
-async def admin_users(
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-):
-    data = await _svc(session, settings).admin_list_users(page, page_size)
-    return _ok(data)
-
-
-@router.post("/admin/users")
-async def admin_users_create(
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    body: dict[str, Any],
-):
-    try:
-        data = await _svc(session, settings).admin_create_user(body)
-        return _ok(data)
-    except MaintenanceAPIError as e:
-        return _err(
-            status_code=e.status_code,
-            business_code=e.business_code,
-            message=e.message,
-        )
-
-
-@router.post("/admin/users/{user_id}/roles")
-async def admin_users_roles(
-    user_id: int,
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    body: dict[str, Any],
-):
-    await _svc(session, settings).admin_assign_roles(user_id, body)
-    return _ok({})
-
-
-@router.get("/admin/roles")
-async def admin_roles(
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-):
-    from sqlalchemy import select
-
-    from app.db.models.maintenance import Role
-
-    rows = (await session.execute(select(Role))).scalars().all()
-    return _ok([{"id": r.id, "code": r.code, "name": r.name} for r in rows])
-
-
-@router.get("/admin/audit-logs")
-async def admin_audit(
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    resource_type: str | None = None,
-    resource_id: str | None = None,
-):
-    try:
-        data = await _svc(session, settings).list_audit_logs(
-            ctx, page=page, page_size=page_size, resource_type=resource_type, resource_id=resource_id
-        )
-        return _ok(data)
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
 @router.get("/admin/system-configs")
 async def admin_cfgs(
     ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
@@ -227,6 +212,19 @@ async def admin_cfg_patch(
         return _ok(await _svc(session, settings).patch_system_config(key, body, ctx))
     except MaintenanceAPIError as e:
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/admin/checks/model-connectivity")
+async def admin_model_connectivity_check(
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: dict[str, Any],
+):
+    try:
+        return _ok(await _svc(session, settings).check_model_connectivity(body, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message, errors=e.errors)
 
 
 # ---------- 设备 ----------
@@ -437,6 +435,18 @@ async def wo_get(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
+@router.get("/admin/settings-overview")
+async def admin_settings_overview(
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).get_settings_overview(ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
 @router.patch("/work-orders/{work_order_id}/assignment")
 async def wo_update_assignment(
     work_order_id: int,
@@ -620,6 +630,47 @@ async def wo_enter_maint(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
+@router.post("/work-orders/{work_order_id}/actions/accept")
+async def wo_accept(
+    work_order_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("worker", "admin", "expert"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).action_accept_work_order(work_order_id, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/work-orders/{work_order_id}/actions/suspend")
+async def wo_suspend(
+    work_order_id: int,
+    request: Request,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("worker", "admin", "expert"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        body = await request.json()
+        return _ok(await _svc(session, settings).action_suspend_work_order(work_order_id, body, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/work-orders/{work_order_id}/actions/resume")
+async def wo_resume(
+    work_order_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("worker", "admin", "expert"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).action_resume_work_order(work_order_id, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
 @router.post("/work-orders/{work_order_id}/actions/complete-maintenance")
 async def wo_complete_maint(
     work_order_id: int,
@@ -728,65 +779,6 @@ async def wo_ann(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
-# ---------- 审批 ----------
-@router.get("/approval-tasks/{approval_task_id}")
-async def appr_get(
-    approval_task_id: int,
-    _ctx: Annotated[CurrentUserCtx, Depends(require_roles("safety", "admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-):
-    from sqlalchemy import select
-
-    from app.db.models.maintenance import ApprovalTask
-
-    t = await session.get(ApprovalTask, approval_task_id)
-    if t is None:
-        return _err(status_code=404, business_code="NOT_FOUND", message="审批任务不存在")
-    return _ok(
-        {
-            "id": t.id,
-            "work_order_id": t.work_order_id,
-            "step_no": t.step_no,
-            "status": t.status,
-            "comment": t.comment,
-            "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
-        }
-    )
-
-
-@router.get("/approval-tasks")
-async def appr_list(
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("safety", "admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-):
-    try:
-        return _ok(await _svc(session, settings).list_approval_tasks(ctx))
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
-@router.post("/approval-tasks/{approval_task_id}/resolve")
-async def appr_resolve(
-    approval_task_id: int,
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("safety", "admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    body: dict[str, Any],
-):
-    try:
-        out = await _svc(session, settings).resolve_approval(approval_task_id, body, ctx)
-        bc = out.pop("business_code", None)
-        if bc == "ALREADY_PROCESSED":
-            return JSONResponse(
-                status_code=200,
-                content={"success": True, "data": out, "business_code": "ALREADY_PROCESSED", "message": None},
-            )
-        return _ok(out)
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
 # ---------- 升级 ----------
 @router.get("/escalations/{escalation_id}")
 async def esc_get(
@@ -870,18 +862,6 @@ async def kb_list(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
-@router.get("/knowledge-articles/publish-console")
-async def kb_publish_console(
-    ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-):
-    try:
-        return _ok(await _svc(session, settings).get_kb_publish_console(ctx))
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
 @router.get("/knowledge-articles/{article_id}/versions")
 async def kb_versions(
     article_id: int,
@@ -905,33 +885,6 @@ async def kb_review(
 ):
     try:
         return _ok(await _svc(session, settings).review_kb(article_id, body, ctx))
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
-@router.post("/knowledge-articles/{article_id}/publish")
-async def kb_publish(
-    article_id: int,
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    body: dict[str, Any] | None = None,
-):
-    try:
-        return _ok(await _svc(session, settings).publish_kb(article_id, body or {}, ctx))
-    except MaintenanceAPIError as e:
-        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
-
-
-@router.post("/knowledge-articles/{article_id}/withdraw")
-async def kb_withdraw(
-    article_id: int,
-    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-):
-    try:
-        return _ok(await _svc(session, settings).withdraw_kb(article_id, ctx))
     except MaintenanceAPIError as e:
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 

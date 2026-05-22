@@ -1,4 +1,4 @@
-"""pytest 配置：测试环境初始化
+﻿"""pytest 配置：测试环境初始化
 
 解决两个环境问题：
 1. aiosqlite 不在 conda 环境中：通过 patch DATABASE_URL 使用 sqlite3（同步）占位

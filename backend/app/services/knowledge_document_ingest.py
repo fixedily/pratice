@@ -1,4 +1,4 @@
-"""Document-to-chunk normalization helpers for knowledge ingestion."""
+﻿"""Document-to-chunk normalization helpers for knowledge ingestion."""
 from __future__ import annotations
 
 from app.modules.knowledge.schemas.search import KnowledgeDocumentCreate

@@ -1,4 +1,4 @@
-from app.services.diagnosis_formatting import build_structured_diagnosis
+﻿from app.services.diagnosis_formatting import build_structured_diagnosis
 
 
 def test_build_structured_diagnosis_returns_procedure_mode_for_step_queries():
@@ -64,6 +64,31 @@ def test_build_structured_diagnosis_auto_infers_procedure_mode():
 
     assert payload.answer_mode == "procedure"
     assert payload.most_likely_fault == "拆下发动机"
+
+
+def test_build_structured_diagnosis_enriches_step_semantics():
+    payload = build_structured_diagnosis(
+        diagnosis_report=None,
+        advice_card=None,
+        retrieval_results=[
+            {
+                "title": "摩托车发动机维修手册",
+                "chunk_id": 103,
+                "citation_label": "C1",
+                "section_reference": "火花塞拆卸",
+                "section_path": "点火系统 > 火花塞 > 火花塞拆卸",
+                "expanded_content": "3. 拆卸火花塞 使用火花塞专用套筒逆时针转动拆下火花塞。",
+            }
+        ],
+        symptom_description="拆卸火花塞步骤",
+        answer_mode="procedure",
+    )
+
+    step = payload.next_steps[0]
+    assert step.action == "拆卸"
+    assert step.object == "火花塞"
+    assert step.headline == "专用套筒逆时针转动拆下"
+    assert step.detail == "使用火花塞专用套筒逆时针转动拆下火花塞"
 
 
 def test_build_structured_diagnosis_ignores_parts_catalog_lines_for_procedure_steps():

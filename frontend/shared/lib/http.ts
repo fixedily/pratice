@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 后端 API 客户端：统一读取 NEXT_PUBLIC_API_BASE_URL，供页面按钮与数据加载使用。
  */
 
@@ -7,16 +7,6 @@ import {
   getMaintenanceToken,
   notifyMaintenanceAuthExpired,
 } from "@/features/auth/lib/token-store";
-import { isDemoMode } from "@/shared/lib/demo-mode";
-import {
-  demoWorkbenchOverview,
-  demoSystemMetrics,
-  demoHealth,
-  demoMaintenanceHistory,
-  demoCasesList,
-  demoCaseDetail,
-  demoTaskDetail,
-} from "@/features/dashboard/mock/workbench";
 
 export function getApiBase(): string {
   const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -25,6 +15,18 @@ export function getApiBase(): string {
 
 const MAINTENANCE_AUTH_EXPIRED_MESSAGE = "登录已失效，请重新登录";
 const MAINTENANCE_NETWORK_ERROR_MESSAGE = "无法连接检修后端，请确认服务已启动且地址可访问";
+
+export type MaintenanceLevelOption = "routine" | "standard" | "emergency";
+
+export function normalizeMaintenanceLevelOption(
+  value: string | null | undefined,
+): MaintenanceLevelOption {
+  const normalized = String(value || "standard").toLowerCase();
+  if (normalized === "routine" || normalized === "emergency") {
+    return normalized;
+  }
+  return "standard";
+}
 
 function normalizeMaintenanceNetworkError(error: unknown): Error {
   if (error instanceof Error) {
@@ -110,22 +112,18 @@ export function isMaintenanceAuthExpiredError(error: unknown): boolean {
 // —— 通用只读 ——
 
 export async function fetchHealth() {
-  if (isDemoMode()) return demoHealth();
   return apiJson<{ status: string; database: string }>("/health");
 }
 
 export async function fetchSystemMetrics() {
-  if (isDemoMode()) return demoSystemMetrics();
   return apiJson<Record<string, unknown>>("/api/v1/system/metrics");
 }
 
 export async function fetchWorkbenchOverview() {
-  if (isDemoMode()) return demoWorkbenchOverview();
   return apiJson<WorkbenchOverview>("/api/v1/workbench/overview");
 }
 
 export async function fetchMaintenanceHistory(params?: { limit?: number; status?: string }) {
-  if (isDemoMode()) return demoMaintenanceHistory();
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.status) sp.set("status", params.status);
@@ -134,25 +132,19 @@ export async function fetchMaintenanceHistory(params?: { limit?: number; status?
 }
 
 export async function fetchCasesList(params?: { limit?: number; status?: string }) {
-  if (isDemoMode()) return demoCasesList();
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.status) sp.set("status", params.status);
   const q = sp.toString();
-  return apiJson<MaintenanceCaseListResponse>(`/api/v1/cases${q ? `?${q}` : ""}`);
+  return maintenanceJson<MaintenanceCaseListResponse>(`/api/v1/cases${q ? `?${q}` : ""}`);
 }
 
 export async function fetchCaseDetail(caseId: number) {
-  if (isDemoMode()) return demoCaseDetail(caseId);
-  return apiJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}`);
+  return maintenanceJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}`);
 }
 
 export async function deleteMaintenanceCase(caseId: number): Promise<void> {
-  const res = await rawFetch(`/api/v1/cases/${caseId}`, { method: "DELETE" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text.slice(0, 200) || String(res.status));
-  }
+  await maintenanceJson<null>(`/api/v1/cases/${caseId}`, { method: "DELETE" });
 }
 
 /** 与后端 `MaintenanceCaseCreate` 对齐；须至少填写「处理步骤」或「处理结果总结」之一 */
@@ -175,14 +167,13 @@ export interface MaintenanceCaseCreatePayload {
 }
 
 export async function createMaintenanceCase(body: MaintenanceCaseCreatePayload) {
-  return apiJson<MaintenanceCaseDetail>(`/api/v1/cases`, {
+  return maintenanceJson<MaintenanceCaseDetail>(`/api/v1/cases`, {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
 export async function fetchTaskDetail(taskId: number) {
-  if (isDemoMode()) return demoTaskDetail(taskId);
   return apiJson<MaintenanceTaskDetail>(`/api/v1/tasks/${taskId}`);
 }
 
@@ -242,6 +233,48 @@ export async function deleteMaintenanceTask(taskId: number): Promise<void> {
 }
 
 /** Agent 协作同步接口返回（前端仅强类型消费常用字段） */
+export interface AgentGraphTraceEvent {
+  event_type: string;
+  stage_name: string;
+  status?: string | null;
+  summary: string;
+  iteration?: number | null;
+  payload?: Record<string, unknown>;
+  verdict?: string | null;
+  target_stage?: string | null;
+  issues?: string[];
+  action?: string | null;
+  reason?: string | null;
+}
+
+export interface AgentCritiqueItem {
+  stage_name: string;
+  verdict: string;
+  target_stage?: string | null;
+  summary: string;
+  issues: string[];
+}
+
+export interface AgentReplanItem {
+  action: string;
+  target_stage?: string | null;
+  reason: string;
+}
+
+export interface AgentCurrentPlanItem {
+  stage_name: string;
+  iteration: number;
+  reason: string;
+  status: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentFinalResolution {
+  status: string;
+  reason: string;
+  manual_review_required?: boolean;
+}
+
 export interface AgentAssistResponse {
   run_id: string;
   status: string;
@@ -256,7 +289,7 @@ export interface AgentAssistResponse {
     preliminary_conclusion: string;
     next_steps: Array<
       | string
-      | {
+        | {
           step_no?: number | null;
           title: string;
           summary?: string;
@@ -266,6 +299,10 @@ export interface AgentAssistResponse {
           }>;
           meta?: string[];
           raw_text?: string | null;
+          action?: string | null;
+          object?: string | null;
+          headline?: string | null;
+          detail?: string | null;
         }
     >;
     root_causes: Array<{ name: string; confidence: number; evidence: string }>;
@@ -282,13 +319,77 @@ export interface AgentAssistResponse {
   } | null;
   effective_query?: string | null;
   effective_keywords?: string[];
+  image_analysis?: {
+    summary: string;
+    keywords: string[];
+    source: string;
+    warning?: string | null;
+  } | null;
+  grounded?: boolean;
+  coverage_warnings?: string[];
   knowledge_results?: Array<{
     chunk_id: number;
     document_id: number;
     title: string;
     source_name: string;
     excerpt: string;
+    section_reference?: string | null;
+    section_path?: string | null;
+    page_reference?: string | null;
+    source_modality?: string | null;
+    ocr_text?: string | null;
+    image_caption?: string | null;
+    evidence_summary?: string | null;
   }>;
+  graph_trace?: AgentGraphTraceEvent[];
+  critiques?: AgentCritiqueItem[];
+  replans?: AgentReplanItem[];
+  current_plan?: AgentCurrentPlanItem[];
+  revision_rounds?: number;
+  termination_reason?: string | null;
+  final_resolution?: AgentFinalResolution | null;
+}
+
+export interface KnowledgeReasoningEntity {
+  id: number;
+  entity_type: string;
+  canonical_name: string;
+  match_type?: string | null;
+  match_score?: number | null;
+}
+
+export interface KnowledgeReasoningRelation {
+  id: number;
+  relation_type: string;
+  source_entity_id: number;
+  source_name: string;
+  target_entity_id: number;
+  target_name: string;
+  confidence?: number | null;
+  evidence_chunk_ids: number[];
+}
+
+export interface KnowledgeReasoningEvidenceChunk {
+  chunk_id: number;
+  document_id: number;
+  title: string;
+  source_name: string;
+  citation_label?: string | null;
+  section_reference?: string | null;
+  page_reference?: string | null;
+  excerpt: string;
+  score?: number | null;
+}
+
+export interface KnowledgeReasoningChain {
+  question?: string | null;
+  matched_entities: KnowledgeReasoningEntity[];
+  expanded_relations: KnowledgeReasoningRelation[];
+  evidence_chunks: KnowledgeReasoningEvidenceChunk[];
+  selected_answer_claims: string[];
+  confidence: number;
+  warnings: string[];
+  explanation_text?: string | null;
 }
 
 export async function postAgentAssist(body: Record<string, unknown>) {
@@ -353,16 +454,64 @@ export async function importKnowledgeDocument(payload: KnowledgeImportUploadPayl
   });
 }
 
-/** 登录：返回 data 中的 access_token */
-export async function maintenanceLogin(username: string, password: string) {
-  const res = await rawFetch("/api/v1/maintenance/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
+export type MaintenanceCaptcha = {
+  captchaId: string;
+  image: string;
+};
+
+/** 获取图形验证码 */
+export async function maintenanceFetchCaptcha(): Promise<MaintenanceCaptcha> {
+  const res = await rawFetch("/api/auth/captcha");
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) {
     throw new Error(json?.message || text.slice(0, 200) || String(res.status));
+  }
+  const data = json?.data ?? json;
+  if (!data?.captchaId || !data?.image) {
+    throw new Error("验证码响应不完整");
+  }
+  return data as MaintenanceCaptcha;
+}
+
+export class MaintenanceAuthError extends Error {
+  businessCode?: string;
+  retryAfterSeconds?: number;
+
+  constructor(message: string, businessCode?: string, retryAfterSeconds?: number) {
+    super(message);
+    this.name = "MaintenanceAuthError";
+    this.businessCode = businessCode;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/** 登录：返回 data 中的 access_token */
+export async function maintenanceLogin(
+  username: string,
+  password: string,
+  captcha: { captchaId: string; captchaCode: string },
+) {
+  const res = await rawFetch("/api/v1/maintenance/auth/login", {
+    method: "POST",
+    body: JSON.stringify({
+      username,
+      password,
+      captchaId: captcha.captchaId,
+      captchaCode: captcha.captchaCode,
+    }),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    const message = (typeof json?.message === "string" ? json.message : null) || text.slice(0, 200) || String(res.status);
+    const businessCode = typeof json?.business_code === "string" ? json.business_code : undefined;
+    const retryRaw = json?.data?.retry_after_seconds;
+    const retryAfterSeconds = typeof retryRaw === "number" ? retryRaw : undefined;
+    if (businessCode === "ACCOUNT_LOCKED") {
+      throw new MaintenanceAuthError(message, businessCode, retryAfterSeconds ?? 60);
+    }
+    throw new Error(message);
   }
   const data = json?.data ?? json;
   if (!data?.access_token) throw new Error("登录响应缺少 access_token");
@@ -370,6 +519,60 @@ export async function maintenanceLogin(username: string, password: string) {
     access_token: string;
     token_type: string;
     user: MaintenanceUser;
+  };
+}
+
+export async function maintenanceRegister(
+  username: string,
+  password: string,
+  captcha: { captchaId: string; captchaCode: string },
+) {
+  const res = await rawFetch("/api/v1/maintenance/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      username,
+      password,
+      captchaId: captcha.captchaId,
+      captchaCode: captcha.captchaCode,
+    }),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(json?.message || text.slice(0, 200) || String(res.status));
+  }
+  return (json?.data ?? json) as {
+    id: number;
+    username: string;
+    display_name: string;
+    roles: MaintenanceRole[];
+  };
+}
+
+export async function maintenanceForgotPassword(
+  username: string,
+  newPassword: string,
+  confirmPassword: string,
+  captcha: { captchaId: string; captchaCode: string },
+) {
+  const res = await rawFetch("/api/v1/maintenance/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({
+      username,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+      captchaId: captcha.captchaId,
+      captchaCode: captcha.captchaCode,
+    }),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(json?.message || text.slice(0, 200) || String(res.status));
+  }
+  return (json?.data ?? json) as {
+    username: string;
+    updated: boolean;
   };
 }
 
@@ -382,7 +585,7 @@ export interface MaintenanceUser {
   roles: MaintenanceRole[];
 }
 
-export interface WorkOrderAssignee extends MaintenanceUser {}
+export type WorkOrderAssignee = MaintenanceUser;
 
 export interface MaintenanceNotificationItem {
   id: number;
@@ -397,27 +600,6 @@ export interface MaintenanceNotificationItem {
 
 export async function fetchMaintenanceMe(token: string | null) {
   return maintenanceJson<MaintenanceUser>("/api/v1/maintenance/auth/me", {}, token);
-}
-
-export async function fetchKnowledgePublishConsole(token: string | null) {
-  return maintenanceJson<KnowledgePublishConsolePayload>("/api/v1/maintenance/knowledge-articles/publish-console", {}, token);
-}
-
-export async function fetchKnowledgeArticleVersions(token: string | null, articleId: number) {
-  return maintenanceJson<KnowledgeVersionListPayload>(`/api/v1/maintenance/knowledge-articles/${articleId}/versions`, {}, token);
-}
-
-export async function publishKnowledgeArticle(token: string | null, articleId: number) {
-  return maintenanceJson<KnowledgePublishListItem>(`/api/v1/maintenance/knowledge-articles/${articleId}/publish`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  }, token);
-}
-
-export async function withdrawKnowledgeArticle(token: string | null, articleId: number) {
-  return maintenanceJson<KnowledgePublishListItem>(`/api/v1/maintenance/knowledge-articles/${articleId}/withdraw`, {
-    method: "POST",
-  }, token);
 }
 
 export async function listMaintenanceNotifications(token: string | null, limit = 20) {
@@ -462,7 +644,7 @@ export async function listWorkOrders(
 
 export interface MaintenanceWorkOrderCreatePayload {
   device_id: number;
-  maintenance_level?: string;
+  maintenance_level?: MaintenanceLevelOption;
   source_task_id?: number;
 }
 
@@ -470,7 +652,7 @@ export async function createWorkOrder(
   token: string | null,
   body: MaintenanceWorkOrderCreatePayload,
 ) {
-  return maintenanceJson<Record<string, unknown>>(
+  return maintenanceJson<{ id: number; [key: string]: unknown }>(
     "/api/v1/maintenance/work-orders",
     {
       method: "POST",
@@ -517,6 +699,7 @@ export interface WorkOrderMessageItem {
   role: string;
   content: string;
   retrieval_snapshot_id?: number | null;
+  attachment_ids?: number[] | null;
   created_at: string;
 }
 
@@ -579,7 +762,7 @@ export async function fetchWorkOrderMessages(token: string | null, workOrderId: 
 export async function postWorkOrderMessage(
   token: string | null,
   workOrderId: number,
-  body: { content: string },
+  body: { content: string; attachment_ids?: number[] },
 ) {
   return maintenanceJson<{ id: number; created_at: string }>(
     `/api/v1/maintenance/work-orders/${workOrderId}/messages`,
@@ -599,6 +782,14 @@ export async function enterWorkOrderMaintenance(token: string | null, workOrderI
   );
 }
 
+export async function acceptWorkOrder(token: string | null, workOrderId: number) {
+  return maintenanceJson<Record<string, unknown>>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/actions/accept`,
+    { method: "POST" },
+    token,
+  );
+}
+
 export async function completeWorkOrderMaintenance(token: string | null, workOrderId: number) {
   return maintenanceJson<Record<string, unknown>>(
     `/api/v1/maintenance/work-orders/${workOrderId}/actions/complete-maintenance`,
@@ -611,6 +802,40 @@ export async function acceptWorkOrderFillReview(token: string | null, workOrderI
   return maintenanceJson<Record<string, unknown>>(
     `/api/v1/maintenance/work-orders/${workOrderId}/actions/accept-fill-review`,
     { method: "POST" },
+    token,
+  );
+}
+
+export async function suspendWorkOrder(token: string | null, workOrderId: number, reason: string) {
+  return maintenanceJson<Record<string, unknown>>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/actions/suspend`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+    token,
+  );
+}
+
+export async function resumeWorkOrder(token: string | null, workOrderId: number) {
+  return maintenanceJson<Record<string, unknown>>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/actions/resume`,
+    { method: "POST" },
+    token,
+  );
+}
+
+export interface WorkOrderEscalationPayload {
+  escalation_note: string;
+  related_message_id?: number | null;
+  attachment_ids?: number[] | null;
+}
+
+export async function createWorkOrderEscalation(
+  token: string | null,
+  workOrderId: number,
+  body: WorkOrderEscalationPayload,
+) {
+  return maintenanceJson<Record<string, unknown>>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/escalations`,
+    { method: "POST", body: JSON.stringify(body) },
     token,
   );
 }
@@ -677,7 +902,7 @@ export async function submitWorkOrderFilling(
 export async function confirmWorkOrderStep(
   token: string | null,
   workOrderId: number,
-  body: { step_no: number; mark_done: true },
+  body: { step_no: number; mark_done: true; note?: string },
 ) {
   return maintenanceJson<Record<string, unknown>>(
     `/api/v1/maintenance/work-orders/${workOrderId}/steps/confirm`,
@@ -692,12 +917,14 @@ export async function confirmWorkOrderStep(
 export async function runWorkOrderRetrieval(
   token: string | null,
   workOrderId: number,
-  body: { query_text?: string; maintenance_level?: string | null },
+  body: { query_text?: string; maintenance_level?: string | null; attachment_ids?: number[] },
 ) {
   return maintenanceJson<{
     retrieval_snapshot_id: number;
     message_id: number;
     suggested_reply: string;
+    grounded?: boolean;
+    coverage_warnings?: string[];
     citations: Array<{
       citation_label: string;
       chunk_id: number;
@@ -709,37 +936,6 @@ export async function runWorkOrderRetrieval(
     work_order: WorkOrderItem;
   }>(
     `/api/v1/maintenance/work-orders/${workOrderId}/retrieval`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-    token,
-  );
-}
-
-export interface ApprovalTaskItem {
-  id: number;
-  work_order_id: number;
-  step_no: number;
-  status: string;
-  created_at: string;
-}
-
-export async function listApprovalTasks(token: string | null) {
-  return maintenanceJson<{ items: ApprovalTaskItem[]; total: number; page: number; page_size: number }>(
-    "/api/v1/maintenance/approval-tasks",
-    {},
-    token,
-  );
-}
-
-export async function resolveApprovalTask(
-  token: string | null,
-  approvalTaskId: number,
-  body: { status: "approved" | "rejected" | "need_more_info"; comment?: string },
-) {
-  return maintenanceJson<Record<string, unknown>>(
-    `/api/v1/maintenance/approval-tasks/${approvalTaskId}/resolve`,
     {
       method: "POST",
       body: JSON.stringify(body),
@@ -824,6 +1020,143 @@ export async function fetchMaintenanceHealth() {
   return maintenanceJson<Record<string, unknown>>("/api/v1/maintenance/health", {}, null);
 }
 
+export interface MaintenanceSystemConfigItem {
+  key: string;
+  value_type: string;
+  reload_policy: string;
+  is_sensitive: boolean;
+  updated_at: string;
+  value?: string;
+  value_masked?: string;
+}
+
+export async function listMaintenanceSystemConfigs(token: string | null) {
+  return maintenanceJson<{ items: MaintenanceSystemConfigItem[]; total: number; page: number; page_size: number }>(
+    "/api/v1/maintenance/admin/system-configs",
+    {},
+    token,
+  );
+}
+
+export async function patchMaintenanceSystemConfig(token: string | null, key: string, value: string) {
+  return maintenanceJson<MaintenanceSystemConfigItem>(
+    `/api/v1/maintenance/admin/system-configs/${encodeURIComponent(key)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ value }),
+    },
+    token,
+  );
+}
+
+export interface MaintenanceModelConnectivityDraft {
+  provider: string;
+  chat_model: string;
+  vision_model: string;
+  embedding_model: string;
+  reranker_model: string;
+  api_base: string;
+  temperature: number;
+  max_tokens: number;
+}
+
+export interface MaintenanceModelConnectivityLane {
+  status: "success" | "failure";
+  detail: string;
+  tested_model: string;
+  timestamp: string;
+}
+
+export interface MaintenanceModelConnectivityResult {
+  overall_status: "success" | "failure";
+  provider: string;
+  api_base: string;
+  credential_status: string;
+  tested_at: string;
+  results: {
+    chat: MaintenanceModelConnectivityLane;
+    vision: MaintenanceModelConnectivityLane;
+    embedding: MaintenanceModelConnectivityLane;
+    reranker: MaintenanceModelConnectivityLane;
+  };
+}
+
+export async function runMaintenanceModelConnectivityCheck(
+  token: string | null,
+  body: MaintenanceModelConnectivityDraft,
+) {
+  return maintenanceJson<MaintenanceModelConnectivityResult>(
+    "/api/v1/maintenance/admin/checks/model-connectivity",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+}
+
+export interface SettingsOverviewResponse {
+  knowledge_summary: {
+    document_count: number;
+    import_job_count: number;
+    published_article_count: number;
+    retrieval_enabled_count: number;
+    last_updated_at: string | null;
+  };
+  rag_summary: {
+    vector_store_backend: string;
+    embedding_model: string;
+    enable_reranker: boolean;
+    reranker_model: string;
+    reranker_top_k: number;
+    enable_search_cache: boolean;
+  };
+  workflow_summary: {
+    published_flow_template_count: number;
+    device_type_count: number;
+    default_stages: string[];
+  };
+  agent_summary?: {
+    pipeline_mode: string;
+    default_order: string[];
+    fail_strategy: string;
+    review_gate: boolean;
+    knowledge_writeback: string;
+    last_run_id: string | null;
+    last_run_status: string | null;
+    last_run_at: string | null;
+    degradation_count: number;
+    agents: Array<{
+      agent_name: string;
+      enabled: boolean;
+      model_provider: string;
+      model_name: string;
+      timeout_ms: number;
+      max_retries: number;
+      toolset: string[];
+      fallback_agent: string | null;
+      last_status: string | null;
+      last_summary: string | null;
+      last_run_at: string | null;
+    }>;
+  } | null;
+  audit_summary: {
+    recent_count: number;
+    latest_items: Array<{
+      id: number;
+      action: string;
+      resource_type: string;
+      resource_id: string;
+      actor_user_id: number | null;
+      created_at: string;
+    }>;
+  };
+}
+
+export async function fetchMaintenanceSettingsOverview(token: string | null) {
+  return maintenanceJson<SettingsOverviewResponse>("/api/v1/maintenance/admin/settings-overview", {}, token);
+}
+
 /** 顶栏图标等：轻量确认后端可达 */
 export async function pingBackendReadiness() {
   await fetchSystemMetrics();
@@ -836,8 +1169,20 @@ export interface WorkbenchOverview {
   stats: { key: string; label: string; value: number; accent: string }[];
   featured_queries: string[];
   agent_capabilities: string[];
+  recommended_knowledge_count: number;
+  recommended_knowledge: WorkbenchRecommendedKnowledge[];
   recent_tasks: WorkbenchTaskSummary[];
   recent_cases: WorkbenchCaseSummary[];
+}
+
+export interface WorkbenchRecommendedKnowledge {
+  chunk_id: number | null;
+  document_id: number | null;
+  title: string;
+  source_name: string | null;
+  section_reference: string | null;
+  page_reference: string | null;
+  excerpt: string | null;
 }
 
 export interface WorkbenchTaskSummary {
@@ -875,6 +1220,8 @@ export interface MaintenanceTaskHistoryItem {
   equipment_model: string | null;
   status: string;
   maintenance_level: string;
+  workflow_total: number;
+  workflow_completed: number;
   total_steps: number;
   completed_steps: number;
   created_at: string | null;
@@ -902,7 +1249,17 @@ export interface MaintenanceTaskDetail {
     title: string;
     description: string;
     time: string;
+    detail?: string | null;
   }>;
+  workflow_stages?: Array<{
+    key: string;
+    title: string;
+    done: boolean;
+    active: boolean;
+    helper: string;
+  }>;
+  workflow_total: number;
+  workflow_completed: number;
   total_steps: number;
   completed_steps: number;
   advice_card: string | null;
@@ -916,7 +1273,7 @@ export interface MaintenanceTaskDetail {
     preliminary_conclusion: string;
     next_steps: Array<
       | string
-      | {
+        | {
           step_no?: number | null;
           title: string;
           summary?: string;
@@ -926,6 +1283,10 @@ export interface MaintenanceTaskDetail {
           }>;
           meta?: string[];
           raw_text?: string | null;
+          action?: string | null;
+          object?: string | null;
+          headline?: string | null;
+          detail?: string | null;
         }
     >;
     root_causes: Array<{ name: string; confidence: number; evidence: string }>;
@@ -940,24 +1301,48 @@ export interface MaintenanceTaskDetail {
     top_similarity?: number | null;
     work_order_ready: boolean;
   } | null;
+  reasoning_chain?: KnowledgeReasoningChain | null;
   source_refs?: Array<{
     chunk_id: number;
     document_id: number;
     title: string;
     source_name: string;
+    source_type?: string | null;
     equipment_type?: string;
+    equipment_model?: string | null;
+    fault_type?: string | null;
     section_reference?: string;
     section_path?: string;
+    step_anchor?: string;
     page_reference?: string;
+    image_anchor?: string;
     citation_label?: string;
+    source_modality?: string | null;
+    ocr_text?: string | null;
+    image_caption?: string | null;
+    evidence_summary?: string | null;
+    expanded_content?: string | null;
+    recommendation_reason?: string | null;
+    graph_relation_type?: string | null;
     excerpt?: string;
+    score?: number | null;
     retrieval_score?: number | null;
     rerank_score?: number | null;
+    retrieval_path?: string[];
   }>;
   created_at: string | null;
   updated_at: string | null;
   run_started_at?: string | null;
   run_finished_at?: string | null;
+  linked_work_order_id?: number | null;
+  linked_case_id?: number | null;
+  graph_trace?: AgentGraphTraceEvent[];
+  critiques?: AgentCritiqueItem[];
+  replans?: AgentReplanItem[];
+  current_plan?: AgentCurrentPlanItem[];
+  revision_rounds?: number;
+  termination_reason?: string | null;
+  final_resolution?: AgentFinalResolution | null;
   steps: Array<{
     id: number;
     step_order?: number;
@@ -1044,9 +1429,9 @@ export interface MaintenanceCaseDetail {
 
 export async function reviewMaintenanceCase(
   caseId: number,
-  body: { action: "approve" | "reject"; reviewer_name?: string; review_note?: string },
+  body: { action: "approve" | "reject"; review_note?: string },
 ) {
-  return apiJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}/review`, {
+  return maintenanceJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}/review`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -1056,7 +1441,7 @@ export async function addCaseCorrection(
   caseId: number,
   body: { correction_target: string; original_content?: string; corrected_content: string; note?: string },
 ) {
-  return apiJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}/corrections`, {
+  return maintenanceJson<MaintenanceCaseDetail>(`/api/v1/cases/${caseId}/corrections`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -1084,6 +1469,78 @@ export interface GraphStatsResponse {
   edges_by_type: Record<string, number>;
 }
 
+export interface SemanticGraphEntity {
+  id: number;
+  entity_type: string;
+  canonical_name: string;
+  display_name?: string | null;
+  description?: string | null;
+  status: string;
+  source_type?: string | null;
+  confidence?: number | null;
+  attributes: Record<string, unknown>;
+  primary_chunk_id?: number | null;
+  primary_document_id?: number | null;
+}
+
+export interface SemanticGraphRelation {
+  id: number;
+  source_entity_id: number;
+  target_entity_id: number;
+  relation_type: string;
+  directional: boolean;
+  weight?: number | null;
+  confidence?: number | null;
+  status: string;
+  source_type?: string | null;
+  evidence_summary?: string | null;
+  notes?: string | null;
+  attributes: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SemanticGraphRelationEvidence {
+  id: number;
+  relation_id: number;
+  chunk_id?: number | null;
+  document_id?: number | null;
+  excerpt?: string | null;
+  page_reference?: string | null;
+  section_reference?: string | null;
+  evidence_type?: string | null;
+  confidence?: number | null;
+  created_at: string;
+}
+
+export interface SemanticGraphResponse {
+  entities: SemanticGraphEntity[];
+  relations: SemanticGraphRelation[];
+}
+
+export interface SemanticGraphRelationDetail {
+  relation: SemanticGraphRelation;
+  evidence: SemanticGraphRelationEvidence[];
+}
+
+export interface SemanticGraphStatsResponse {
+  total_entities: number;
+  total_relations: number;
+  entities_by_type: Record<string, number>;
+  relations_by_type: Record<string, number>;
+  relations_by_status: Record<string, number>;
+}
+
+export interface SemanticEntitySearchItem {
+  entity: SemanticGraphEntity;
+  relation_count: number;
+}
+
+export interface SemanticEntitySearchResponse {
+  total: number;
+  items: SemanticEntitySearchItem[];
+}
+
 export async function fetchKnowledgeGraph(params?: { relation_type?: string; kind?: string; limit?: number }) {
   const sp = new URLSearchParams();
   if (params?.relation_type) sp.set("relation_type", params.relation_type);
@@ -1097,50 +1554,63 @@ export async function fetchKnowledgeGraphStats() {
   return apiJson<GraphStatsResponse>("/api/v1/knowledge/graph/stats");
 }
 
+export async function fetchSemanticKnowledgeGraph(params?: {
+  relation_type?: string;
+  entity_type?: string;
+  status?: string;
+  limit?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.relation_type) sp.set("relation_type", params.relation_type);
+  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const q = sp.toString();
+  return apiJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph${q ? `?${q}` : ""}`);
+}
+
+export async function searchSemanticKnowledgeEntities(params?: {
+  query?: string;
+  entity_type?: string;
+  status?: string;
+  limit?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (params?.query) sp.set("query", params.query);
+  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const q = sp.toString();
+  return apiJson<SemanticEntitySearchResponse>(`/api/v1/knowledge/semantic-graph/entities${q ? `?${q}` : ""}`);
+}
+
+export async function fetchSemanticKnowledgeNeighbors(params: {
+  entity_id: number;
+  depth?: number;
+  relation_type?: string;
+  status?: string;
+}) {
+  const sp = new URLSearchParams();
+  sp.set("entity_id", String(params.entity_id));
+  if (params.depth) sp.set("depth", String(params.depth));
+  if (params.relation_type) sp.set("relation_type", params.relation_type);
+  if (params.status) sp.set("status", params.status);
+  return apiJson<SemanticGraphResponse>(`/api/v1/knowledge/semantic-graph/neighbors?${sp.toString()}`);
+}
+
+export async function fetchSemanticKnowledgeRelationDetail(relationId: number) {
+  return apiJson<SemanticGraphRelationDetail>(`/api/v1/knowledge/semantic-graph/relations/${relationId}`);
+}
+
+export async function fetchSemanticKnowledgeGraphStats() {
+  return apiJson<SemanticGraphStatsResponse>("/api/v1/knowledge/semantic-graph/stats");
+}
+
 export interface KnowledgeDocumentListResponse {
   total: number;
   documents: KnowledgeDocumentListItem[];
 }
 
-export interface KnowledgePublishListItem {
-  id: number;
-  series_id: number;
-  title: string;
-  body?: string | null;
-  body_excerpt?: string | null;
-  status: string;
-  version: number;
-  source_work_order_id?: number | null;
-  reviewer_expert_user_id?: number | null;
-  reviewed_by_name?: string | null;
-  publisher_admin_user_id?: number | null;
-  published_by_name?: string | null;
-  published_at?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  retrieval_indexed: boolean;
-  retrieval_status_label: string;
-  retrieval_document_id?: number | null;
-  retrieval_document_status?: string | null;
-}
-
-export interface KnowledgePublishConsolePayload {
-  summary: {
-    pending_publish_count: number;
-    current_effective_count: number;
-    withdrawn_count: number;
-    retrieval_enabled_count: number;
-  };
-  pending_publish_items: KnowledgePublishListItem[];
-  current_effective_items: KnowledgePublishListItem[];
-  recent_version_records: KnowledgePublishListItem[];
-}
-
-export interface KnowledgeVersionListPayload {
-  article_id: number;
-  series_id: number;
-  items: KnowledgePublishListItem[];
-}
 
 export interface KnowledgeDocumentListItem {
   id: number;
@@ -1224,6 +1694,9 @@ export interface WorkOrderItem {
   sla_hours?: number | null;
   sla_deadline?: string | null;
   is_overdue?: boolean;
+  is_suspended?: boolean;
+  suspended_reason?: string | null;
+  suspended_at?: string | null;
   assignees: {
     worker: WorkOrderAssignee | null;
     expert: WorkOrderAssignee | null;

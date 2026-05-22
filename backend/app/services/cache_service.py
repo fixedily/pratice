@@ -1,4 +1,4 @@
-"""Lightweight in-memory TTL cache for knowledge search results.
+﻿"""Lightweight in-memory TTL cache for knowledge search results.
 
 Uses ``cachetools.TTLCache`` (LRU eviction + time-to-live).  The cache is
 process-local and intentionally simple — no Redis, no persistence.  It is
@@ -105,6 +105,7 @@ def make_cache_key(
     equipment_model: str | None = None,
     fault_type: str | None = None,
     limit: int = 10,
+    graph_relation_types: list[str] | None = None,
 ) -> str:
     """Deterministic cache key from search parameters."""
     raw = json.dumps(
@@ -114,6 +115,7 @@ def make_cache_key(
             "em": equipment_model or "",
             "ft": fault_type or "",
             "lim": limit,
+            "grt": sorted(graph_relation_types or []),
         },
         ensure_ascii=False,
         sort_keys=True,

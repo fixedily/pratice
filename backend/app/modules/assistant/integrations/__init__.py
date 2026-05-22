@@ -1,1 +1,1 @@
-"""Assistant integrations layer."""
+﻿"""Assistant integrations layer."""

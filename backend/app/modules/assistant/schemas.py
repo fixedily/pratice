@@ -1,11 +1,18 @@
-"""Assistant schema compatibility exports."""
+﻿"""Assistant schema compatibility exports."""
 from app.schemas.agents import (
     AgentAssistRequest,
     AgentAssistResponse,
+    AgentCritiqueItem,
+    AgentDegradationTraceItem,
     AgentExecutionBrief,
+    AgentGraphTraceEvent,
+    AgentCurrentPlanItem,
+    AgentReplanItem,
     AgentRelatedCase,
     AgentRequestContext,
+    AgentResolvedRunStep,
     AgentRunStep,
+    AgentRuntimeStatusItem,
     AgentTaskPreviewStep,
     AgentToolCall,
 )
@@ -13,6 +20,13 @@ from app.schemas.agents import (
 __all__ = [
     "AgentAssistRequest",
     "AgentAssistResponse",
+    "AgentGraphTraceEvent",
+    "AgentCritiqueItem",
+    "AgentReplanItem",
+    "AgentCurrentPlanItem",
+    "AgentResolvedRunStep",
+    "AgentDegradationTraceItem",
+    "AgentRuntimeStatusItem",
     "AgentRequestContext",
     "AgentExecutionBrief",
     "AgentTaskPreviewStep",

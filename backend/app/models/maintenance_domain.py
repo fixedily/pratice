@@ -1,4 +1,4 @@
-"""检修域 数据模型（对齐《数据字典与数据库设计文档》V1.1）。"""
+﻿"""检修域 数据模型（对齐《数据字典与数据库设计文档》V1.1）。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -132,6 +132,10 @@ class WorkOrder(Base):
     step_progress_json: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True
     )  # 工步完成标记等，首版 JSON 即可
+    is_suspended: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    suspended_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    pre_suspend_status: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_naive, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utc_naive, onupdate=_utc_naive, nullable=False
@@ -212,6 +216,7 @@ class WorkOrderMessage(Base):
     retrieval_snapshot_id: Mapped[int | None] = mapped_column(
         ForeignKey("retrieval_snapshots.id", ondelete="SET NULL"), nullable=True
     )
+    attachment_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_naive, nullable=False)
 
 

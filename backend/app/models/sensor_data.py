@@ -1,4 +1,4 @@
-# File: app/models/sensor_data.py
+﻿# File: app/models/sensor_data.py
 """SQLAlchemy ORM models for sensor data.
 
 Storage Strategy: Hybrid Approach

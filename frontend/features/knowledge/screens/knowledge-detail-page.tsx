@@ -1,8 +1,8 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { useParams } from "next/navigation"
+import { useParams, useSearchParams } from "next/navigation"
 import { ArrowLeft, BookOpen, Clock3, FileText, Layers3, Loader2, Tag } from "lucide-react"
 import { Header } from "@/shared/components/brand/app-header"
 import { fetchKnowledgeDocumentChunks, fetchKnowledgeDocumentDetail, type KnowledgeChunkPreview, type KnowledgeDocumentDetail } from "@/features/knowledge/api"
@@ -64,7 +64,7 @@ function buildStructuredSummaryItems(excerpt: string | null | undefined) {
     .filter((item): item is { title: string; content: string } => Boolean(item))
 }
 
-function samplePreviewChunks(items: KnowledgeChunkPreview[], count: number) {
+function samplePreviewChunks(items: KnowledgeChunkPreview[], count: number, focusChunkId?: number | null) {
   if (items.length <= count) {
     return [...items].sort((left, right) => left.chunk_index - right.chunk_index)
   }
@@ -73,14 +73,22 @@ function samplePreviewChunks(items: KnowledgeChunkPreview[], count: number) {
     const swapIndex = Math.floor(Math.random() * (index + 1))
     ;[pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]]
   }
-  return pool
-    .slice(0, count)
-    .sort((left, right) => left.chunk_index - right.chunk_index)
+  let selected = pool.slice(0, count)
+  if (focusChunkId != null) {
+    const focusedChunk = items.find((item) => item.chunk_id === focusChunkId)
+    const alreadyIncluded = selected.some((item) => item.chunk_id === focusChunkId)
+    if (focusedChunk && !alreadyIncluded) {
+      selected = [focusedChunk, ...selected.slice(0, Math.max(0, count - 1))]
+    }
+  }
+  return selected.sort((left, right) => left.chunk_index - right.chunk_index)
 }
 
 export default function KnowledgeDocumentDetailPage() {
   const params = useParams<{ id: string }>()
+  const searchParams = useSearchParams()
   const documentId = Number(params?.id)
+  const focusChunkId = Number(searchParams?.get("focusChunk") || "")
   const [detail, setDetail] = useState<KnowledgeDocumentDetail | null>(null)
   const [chunks, setChunks] = useState<KnowledgeChunkPreview[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -130,9 +138,18 @@ export default function KnowledgeDocumentDetailPage() {
     [detail?.content_excerpt],
   )
   const previewChunks = useMemo(
-    () => samplePreviewChunks(chunks, RANDOM_PREVIEW_COUNT),
-    [chunks],
+    () => samplePreviewChunks(chunks, RANDOM_PREVIEW_COUNT, Number.isFinite(focusChunkId) ? focusChunkId : null),
+    [chunks, focusChunkId],
   )
+
+  useEffect(() => {
+    if (!Number.isFinite(focusChunkId) || isLoading) return
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById(`chunk-${focusChunkId}`)
+      target?.scrollIntoView({ behavior: "smooth", block: "center" })
+    }, 120)
+    return () => window.clearTimeout(timer)
+  }, [focusChunkId, isLoading, previewChunks])
 
   return (
     <div className="min-h-screen bg-background">
@@ -235,7 +252,15 @@ export default function KnowledgeDocumentDetailPage() {
                 <div className="space-y-3">
                   {previewChunks.length > 0 ? (
                     previewChunks.map((chunk) => (
-                      <div key={chunk.chunk_id} className="rounded-xl border border-border bg-card p-4">
+                      <div
+                        key={chunk.chunk_id}
+                        id={`chunk-${chunk.chunk_id}`}
+                        className={`rounded-xl border bg-card p-4 ${
+                          Number.isFinite(focusChunkId) && chunk.chunk_id === focusChunkId
+                            ? "border-sky-300 dark:border-sky-500/40"
+                            : "border-border"
+                        }`}
+                      >
                         <div className="mb-2 flex flex-wrap items-center gap-2">
                           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                             Chunk {chunk.chunk_index}
@@ -297,4 +322,3 @@ export default function KnowledgeDocumentDetailPage() {
     </div>
   )
 }
-

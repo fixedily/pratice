@@ -1,4 +1,4 @@
-# 本地开发一键启动：自动拉起后端（18000）与前端（3000）。
+﻿# 本地开发一键启动：自动拉起后端（18000）与前端（3000）。
 # 用法：
 #   .\scripts\start-dev.ps1
 #   .\scripts\start-dev.ps1 -EnableFrontendTunnel

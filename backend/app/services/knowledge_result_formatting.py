@@ -1,4 +1,4 @@
-"""Formatting helpers for knowledge search results."""
+﻿"""Formatting helpers for knowledge search results."""
 from __future__ import annotations
 
 from typing import Any

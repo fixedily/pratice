@@ -1,4 +1,4 @@
-"""LLM-based query rewriting for improved retrieval coverage.
+﻿"""LLM-based query rewriting for improved retrieval coverage.
 
 Generates multiple query variants from a single user query, preserving
 temporal constraints and domain-specific terms.
@@ -46,7 +46,19 @@ async def generate_multi_queries(
     try:
         from app.agents.diagnosis_agent import create_llm
 
-        llm = create_llm("openai")
+        provider = (
+            getattr(settings, "query_rewrite_provider", None)
+            or getattr(settings, "default_llm_provider", None)
+            or "openai"
+        )
+        model_name = None
+        normalized_provider = str(provider).strip().lower()
+        if normalized_provider == "zhipu":
+            model_name = getattr(settings, "zhipu_text_model", None) or getattr(settings, "default_text_model", None)
+        elif normalized_provider in {"openai", "deepseek"}:
+            model_name = getattr(settings, "default_text_model", None)
+
+        llm = create_llm(str(provider), model_name)
         if llm is None:
             return [query]
 

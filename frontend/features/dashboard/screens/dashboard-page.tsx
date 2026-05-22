@@ -1,418 +1,1009 @@
-"use client"
+﻿"use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
-import { Activity, AlertCircle, Server, CheckCircle, RefreshCw, FileCheck, Layers } from "lucide-react"
-import { toast } from "sonner"
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  Activity,
+  AlertCircle,
+  CheckCircle,
+  ClipboardCheck,
+  Clock3,
+  RefreshCw,
+  Server,
+  TimerReset,
+  TrendingUp,
+} from "lucide-react";
 import {
   fetchWorkbenchOverview,
-  fetchSystemMetrics,
-  fetchHealth,
-  fetchTaskExport,
-  deleteMaintenanceTask,
-  downloadJsonInBrowser,
   type WorkbenchOverview,
-} from "@/features/dashboard/api"
-import { fetchCasesList } from "@/features/cases/api"
-import { getMaintenanceToken } from "@/features/auth/lib/token-store"
-import { listWorkOrders } from "@/features/tickets/api"
-import type { FaultRecord } from "@/features/dashboard/components/fault-table"
-import { Header } from "@/shared/components/brand/app-header"
-import { StatCard } from "@/features/dashboard/components/stat-card"
-import { FaultTable } from "@/features/dashboard/components/fault-table"
-import { Timeline } from "@/features/dashboard/components/timeline"
-import { DeviceGrid } from "@/features/dashboard/components/device-card"
-import { TrendChartCard, DonutChart } from "@/features/dashboard/components/charts"
-import { EmptyState, ErrorState } from "@/features/dashboard/components/empty-state"
-import { DashboardSkeleton } from "@/features/dashboard/components/skeleton"
-import { Button } from "@/shared/components/ui/button"
+} from "@/features/dashboard/api";
+import { fetchCasesList } from "@/features/cases/api";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/shared/components/ui/alert-dialog"
-import { formatDateTimeLocal } from "@/shared/lib/utils"
-import { DEMO_MODE_CHANGED_EVENT } from "@/shared/lib/demo-mode"
+  fetchMaintenanceHistory,
+  type MaintenanceTaskHistoryItem,
+} from "@/features/tasks/api";
+import { getMaintenanceToken } from "@/features/auth/lib/token-store";
+import { listWorkOrders } from "@/features/tickets/api";
+import { Header } from "@/shared/components/brand/app-header";
+import { StatCard } from "@/features/dashboard/components/stat-card";
+import {
+  ClosureStageBarChart,
+  ClosureTrendChart,
+  type ClosureStagePoint,
+  StatusDonutCard,
+} from "@/features/dashboard/components/charts";
+import {
+  EmptyState,
+  ErrorState,
+} from "@/features/dashboard/components/empty-state";
+import { DashboardSkeleton } from "@/features/dashboard/components/skeleton";
+import { Button } from "@/shared/components/ui/button";
+import type { MaintenanceCaseListItem, WorkOrderItem } from "@/shared/lib/http";
+type FaultLifecycleStatus = "pending" | "processing" | "resolved";
 
-interface RuntimeSnapshot {
-  counters?: Array<{ name?: string; labels?: Record<string, string>; value?: number }>
-  durations?: Array<{ name?: string; labels?: Record<string, string>; count?: number; avg_ms?: number }>
+function normalizeFaultStatus(rawStatus: string): FaultLifecycleStatus {
+  const st = String(rawStatus || "").toLowerCase();
+  if (["pending", "open"].includes(st)) return "pending";
+  if (["in_progress", "processing"].includes(st)) return "processing";
+  if (["resolved", "closed", "done", "complete", "completed"].includes(st))
+    return "resolved";
+  return "pending";
 }
 
-function normalizeFaultStatus(rawStatus: string): FaultRecord["status"] {
-  const st = String(rawStatus || "").toLowerCase()
-  if (["pending", "open"].includes(st)) return "pending"
-  if (["in_progress", "processing"].includes(st)) return "processing"
-  if (["resolved", "closed", "done", "complete", "completed"].includes(st)) return "resolved"
-  return "pending"
+function formatTrendLabel(date: Date) {
+  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function mapTaskToFaultRecord(t: WorkbenchOverview["recent_tasks"][0]): FaultRecord {
-  const status = normalizeFaultStatus(t.status || "")
-  const level = (t.maintenance_level || "").toLowerCase()
-  const severity: FaultRecord["severity"] =
-    level === "emergency" ? "critical" : level === "standard" ? "warning" : "info"
-  return {
-    id: String(t.id),
-    deviceName: t.title || t.equipment_type,
-    deviceCode: t.asset_code || t.work_order_id || `TASK-${t.id}`,
-    faultType: t.maintenance_level || "检修",
-    severity,
-    status,
-    time: t.updated_at ? String(t.updated_at).replace("T", " ").slice(0, 16) : "--",
+function formatTrendTimeLabel(date: Date) {
+  return `${String(date.getHours()).padStart(2, "0")}:00`;
+}
+
+function buildTrendBuckets(
+  records: WorkbenchOverview["recent_tasks"],
+  activeTaskTotal: number,
+  range: ClosureRange,
+  anchorText: string | null | undefined,
+) {
+  const segmentCount = 7;
+  const { start, end } = getClosureRangeWindow(range, anchorText);
+  const source = [...records]
+    .filter((item) => Boolean(item.updated_at ?? item.created_at))
+    .sort((left, right) =>
+      String(left.updated_at ?? left.created_at).localeCompare(
+        String(right.updated_at ?? right.created_at),
+      ),
+    );
+  const spanMs = Math.max(1, end.getTime() - start.getTime());
+  const bucketMs = spanMs / segmentCount;
+  const labels = Array.from({ length: segmentCount }, (_, index) => {
+    const ratio = index / (segmentCount - 1);
+    const date = new Date(start.getTime() + spanMs * ratio);
+    return range === "today"
+      ? formatTrendTimeLabel(date)
+      : formatTrendLabel(date);
+  });
+
+  if (source.length === 0) {
+    return labels.map((label) => ({ label, tasks: 0, alerts: 0, closed: 0 }));
   }
+
+  const pendingCount = source.filter(
+    (item) => normalizeFaultStatus(String(item.status || "")) === "pending",
+  ).length;
+  const processingCount = source.filter(
+    (item) => normalizeFaultStatus(String(item.status || "")) === "processing",
+  ).length;
+  const resolvedCount = source.filter(
+    (item) => normalizeFaultStatus(String(item.status || "")) === "resolved",
+  ).length;
+
+  const unresolvedCount = pendingCount + processingCount;
+  const anchorAlerts = unresolvedCount;
+  const anchorTasks = Math.max(activeTaskTotal, processingCount);
+
+  const alertStart = Math.max(
+    anchorAlerts + Math.ceil(source.length * 0.6),
+    anchorAlerts > 0 ? anchorAlerts + 1 : Math.min(3, source.length),
+  );
+  const taskStart =
+    anchorTasks > 0 ? Math.max(1, Math.floor(anchorTasks * 0.55)) : 0;
+  const taskPeak = Math.max(
+    anchorTasks,
+    taskStart +
+      Math.ceil(
+        Math.max(source.length, activeTaskTotal, resolvedCount, 1) * 0.35,
+      ),
+  );
+
+  const densityCounts = Array.from({ length: segmentCount }, () => 0);
+  for (const item of source) {
+    const updatedAt = getSafeDate(item.updated_at ?? item.created_at);
+    if (!updatedAt || Number.isNaN(updatedAt.getTime())) continue;
+    const bucketIndex = Math.min(
+      segmentCount - 1,
+      Math.max(
+        0,
+        Math.floor((updatedAt.getTime() - start.getTime()) / bucketMs),
+      ),
+    );
+    densityCounts[bucketIndex] += 1;
+  }
+  const densityMax = Math.max(...densityCounts, 1);
+
+  const alertDelta = alertStart - anchorAlerts;
+  const taskDelta = taskPeak - taskStart;
+  const closedPeak = Math.max(resolvedCount, Math.ceil(source.length * 0.45));
+
+  return labels.map((label, index) => {
+    const progress = segmentCount <= 1 ? 1 : index / (segmentCount - 1);
+    const densityWeight = densityCounts[index] / densityMax;
+    const alertBoost =
+      index < 3 ? Math.round(densityWeight * 2) : Math.round(densityWeight);
+    const taskBoost =
+      index >= 2 && index <= 4
+        ? Math.round(densityWeight * 2)
+        : Math.round(densityWeight);
+    const alertCurve = Math.max(0, 1 - progress * 1.12);
+    const taskCurve = Math.sin(progress * Math.PI) * 0.9 + progress * 0.2;
+    const closedCurve = progress;
+
+    const baseAlerts =
+      index === segmentCount - 1
+        ? anchorAlerts
+        : Math.max(
+            0,
+            Math.round(anchorAlerts + alertDelta * alertCurve + alertBoost),
+          );
+    const baseTasks =
+      index === segmentCount - 1
+        ? anchorTasks
+        : Math.max(
+            0,
+            Math.round(taskStart + taskDelta * taskCurve + taskBoost),
+          );
+
+    return {
+      label,
+      tasks: baseTasks,
+      alerts: baseAlerts,
+      closed:
+        index === segmentCount - 1
+          ? resolvedCount
+          : Math.max(
+              0,
+              Math.round(closedPeak * closedCurve + Math.round(densityWeight)),
+            ),
+    };
+  });
+}
+
+type ClosureTaskStatus =
+  | "pending"
+  | "diagnosis_completed"
+  | "completed"
+  | "failed";
+
+type ClosureKpiTone = "amber" | "blue" | "emerald" | "red" | "slate";
+type ClosureRange = "today" | "7d" | "30d";
+
+interface ClosureKpiCard {
+  title: string;
+  value: string;
+  helper: string;
+  tone: ClosureKpiTone;
+  icon: typeof AlertCircle;
+}
+
+interface RiskTaskRow {
+  id: string;
+  deviceName: string;
+  maintenanceLevel: string;
+  stage: string;
+  lastUpdatedAge: string;
+  priority: "高" | "中" | "低";
+  status: "处理中" | "超过 3 天未更新";
+  taskId?: number;
+}
+
+const closureOverviewShellClassName =
+  "grid gap-5 xl:items-start xl:grid-cols-[minmax(0,1.85fr)_minmax(300px,340px)] 2xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,360px)]";
+
+const closureOverviewSidePanelClassName = "grid content-start gap-4 self-start";
+
+const emptyClosureStageData: ClosureStagePoint[] = [
+  {
+    label: "告警触发",
+    value: 0,
+    ratio: 0,
+    avgDuration: "--",
+    status: "normal",
+  },
+  {
+    label: "问题诊断",
+    value: 0,
+    ratio: 0,
+    avgDuration: "--",
+    status: "normal",
+  },
+  {
+    label: "生成工单",
+    value: 0,
+    ratio: 0,
+    avgDuration: "--",
+    status: "normal",
+  },
+  {
+    label: "工单处理",
+    value: 0,
+    ratio: 0,
+    avgDuration: "--",
+    status: "normal",
+  },
+  {
+    label: "案例沉淀",
+    value: 0,
+    ratio: 0,
+    avgDuration: "--",
+    status: "normal",
+  },
+];
+
+function formatMaintenanceLevel(level: string | null | undefined) {
+  const normalized = String(level || "")
+    .trim()
+    .toLowerCase();
+  if (["urgent", "emergency", "critical", "high"].includes(normalized))
+    return "紧急";
+  if (normalized === "standard") return "标准";
+  if (["low", "minor"].includes(normalized)) return "低优先";
+  return level || "未分级";
+}
+
+function getSafeDate(dateText: string | null | undefined) {
+  if (!dateText) return null;
+  const date = new Date(dateText);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getClosureRangeWindow(
+  range: ClosureRange,
+  anchorText: string | null | undefined,
+) {
+  const anchor = getSafeDate(anchorText) ?? new Date();
+  const end = new Date(anchor);
+  end.setHours(23, 59, 59, 999);
+  const start = new Date(anchor);
+  start.setHours(0, 0, 0, 0);
+  if (range === "7d") start.setDate(start.getDate() - 6);
+  if (range === "30d") start.setDate(start.getDate() - 29);
+  return { start, end };
+}
+
+function isDateInClosureRange(
+  dateText: string | null | undefined,
+  range: ClosureRange,
+  anchorText: string | null | undefined,
+) {
+  const date = getSafeDate(dateText);
+  if (!date) return false;
+  const { start, end } = getClosureRangeWindow(range, anchorText);
+  return date >= start && date <= end;
+}
+
+function filterByClosureRange<T>(
+  items: T[],
+  getDateText: (item: T) => string | null | undefined,
+  range: ClosureRange,
+  anchorText: string | null | undefined,
+) {
+  return items.filter((item) =>
+    isDateInClosureRange(getDateText(item), range, anchorText),
+  );
+}
+
+function getRangeLabel(range: ClosureRange) {
+  if (range === "today") return "今日";
+  if (range === "30d") return "近 30 日";
+  return "近 7 日";
+}
+
+function formatRiskTaskId(taskId: number, dateText: string | null | undefined) {
+  const sourceDate = dateText ? new Date(dateText) : new Date();
+  const safeDate = Number.isNaN(sourceDate.getTime()) ? new Date() : sourceDate;
+  const stamp = `${safeDate.getFullYear()}${String(safeDate.getMonth() + 1).padStart(2, "0")}${String(
+    safeDate.getDate(),
+  ).padStart(2, "0")}`;
+  return `MT-${stamp}-${String(taskId).padStart(3, "0")}`;
+}
+
+function getRiskPriority(
+  level: string | null | undefined,
+): RiskTaskRow["priority"] {
+  const normalized = String(level || "").toLowerCase();
+  if (["urgent", "emergency", "critical", "high"].includes(normalized))
+    return "高";
+  if (["low", "minor"].includes(normalized)) return "低";
+  return "中";
+}
+
+function getDurationDaysText(
+  startText: string | null | undefined,
+  endText?: string | null,
+) {
+  const start = startText ? new Date(startText) : null;
+  const end = endText ? new Date(endText) : new Date();
+  if (!start || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()))
+    return "--";
+  const days = Math.max(0.1, (end.getTime() - start.getTime()) / 86_400_000);
+  return `${days.toFixed(1)} 天`;
+}
+
+function getDurationDaysValue(
+  startText: string | null | undefined,
+  endText?: string | null,
+) {
+  const start = startText ? new Date(startText) : null;
+  const end = endText ? new Date(endText) : new Date();
+  if (!start || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()))
+    return 0;
+  return Math.max(0, (end.getTime() - start.getTime()) / 86_400_000);
+}
+
+function getRiskStageFromHistory(
+  task: MaintenanceTaskHistoryItem,
+): string | null {
+  const rawStatus = String(task.status || "").toLowerCase();
+  const workflowTotal = task.workflow_total > 0 ? task.workflow_total : 5;
+  const completed = Math.max(
+    0,
+    Math.min(task.workflow_completed ?? 0, workflowTotal),
+  );
+
+  if (rawStatus === "completed" && completed >= workflowTotal) return null;
+  if (completed >= 4) return "生成工单";
+  if (completed >= 3) return "步骤输出";
+  if (completed >= 2) return "知识检索";
+  if (completed >= 1) return "任务创建";
+  return "任务创建";
+}
+
+function getRiskStatus(
+  stage: string,
+  durationDays: number,
+): RiskTaskRow["status"] {
+  if (durationDays >= 3) return "超过 3 天未更新";
+  return "处理中";
+}
+
+function isHighlightedRiskTask(task: RiskTaskRow) {
+  return task.status === "超过 3 天未更新" || task.priority === "高";
+}
+
+function sortRiskTasks(tasks: RiskTaskRow[]) {
+  const statusWeight = { "超过 3 天未更新": 2, 处理中: 1 } satisfies Record<
+    RiskTaskRow["status"],
+    number
+  >;
+  const priorityWeight = { 高: 3, 中: 2, 低: 1 } satisfies Record<
+    RiskTaskRow["priority"],
+    number
+  >;
+
+  return [...tasks].sort((left, right) => {
+    return (
+      statusWeight[right.status] - statusWeight[left.status] ||
+      priorityWeight[right.priority] - priorityWeight[left.priority]
+    );
+  });
+}
+
+function getToneClass(tone: ClosureKpiTone) {
+  if (tone === "amber") {
+    return "border-amber-200 bg-amber-50/70 text-amber-700 dark:border-amber-500/25 dark:bg-amber-950/25 dark:text-amber-300";
+  }
+  if (tone === "blue") {
+    return "border-blue-200 bg-blue-50/70 text-blue-700 dark:border-blue-500/25 dark:bg-blue-950/25 dark:text-blue-300";
+  }
+  if (tone === "emerald") {
+    return "border-emerald-200 bg-emerald-50/70 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-950/25 dark:text-emerald-300";
+  }
+  if (tone === "red") {
+    return "border-red-200 bg-red-50/70 text-red-700 dark:border-red-500/25 dark:bg-red-950/25 dark:text-red-300";
+  }
+  return "border-border bg-muted/40 text-muted-foreground";
+}
+
+function ClosureKpiCardView({ item }: { item: ClosureKpiCard }) {
+  const Icon = item.icon;
+  return (
+    <div
+      data-testid={`closure-kpi-${item.title}`}
+      className="group rounded-2xl border border-border/60 bg-card p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all hover:border-border hover:shadow-[0_8px_28px_rgba(15,23,42,0.08)]"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-muted-foreground">
+            {item.title}
+          </p>
+          <div className="mt-3 text-3xl font-bold tracking-tight text-foreground">
+            {item.value}
+          </div>
+        </div>
+        <div className={`rounded-xl border p-2.5 ${getToneClass(item.tone)}`}>
+          <Icon className="h-4 w-4" />
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+        {item.helper}
+      </p>
+    </div>
+  );
+}
+
+function mapHistoryToClosureStatus(
+  task: MaintenanceTaskHistoryItem,
+): ClosureTaskStatus {
+  const rawStatus = String(task.status || "").toLowerCase();
+  const workflowTotal = task.workflow_total > 0 ? task.workflow_total : 5;
+  const workflowCompleted = Math.max(
+    0,
+    Math.min(task.workflow_completed ?? 0, workflowTotal),
+  );
+
+  if (rawStatus === "in_progress" || rawStatus === "pending") return "pending";
+  if (rawStatus === "completed") {
+    return workflowCompleted >= workflowTotal
+      ? "completed"
+      : "diagnosis_completed";
+  }
+  if (rawStatus === "skipped" || rawStatus === "failed") return "failed";
+  return "pending";
 }
 
 export default function DashboardPage() {
-  const router = useRouter()
-  const [viewState, setViewState] = useState<"normal" | "loading" | "empty" | "error">("normal")
-  const [activeTab, setActiveTab] = useState("all")
-  const [overview, setOverview] = useState<WorkbenchOverview | null>(null)
-  const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot | null>(null)
-  const [healthStatus, setHealthStatus] = useState<{ status: string; database: string } | null>(null)
-  const [linkedWorkOrderTotal, setLinkedWorkOrderTotal] = useState(0)
-  const [linkedPendingCaseTotal, setLinkedPendingCaseTotal] = useState(0)
-  const [linkedCaseTotal, setLinkedCaseTotal] = useState(0)
-
-  /** 故障记录表：关键词 + 严重程度（在 Tab 状态筛选之上叠加） */
-  const [faultFilterKeyword, setFaultFilterKeyword] = useState("")
-  const [faultFilterSeverity, setFaultFilterSeverity] = useState<
-    "all" | FaultRecord["severity"]
-  >("all")
-  const [removedFaultIds, setRemovedFaultIds] = useState<string[]>([])
-  const [pendingDeleteRecord, setPendingDeleteRecord] = useState<FaultRecord | null>(null)
+  const router = useRouter();
+  const [viewState, setViewState] = useState<
+    "normal" | "loading" | "empty" | "error"
+  >("normal");
+  const [overview, setOverview] = useState<WorkbenchOverview | null>(null);
+  const [historyTasks, setHistoryTasks] = useState<
+    MaintenanceTaskHistoryItem[]
+  >([]);
+  const [linkedWorkOrders, setLinkedWorkOrders] = useState<WorkOrderItem[]>([]);
+  const [linkedCases, setLinkedCases] = useState<MaintenanceCaseListItem[]>([]);
+  const [isMobileClosureLayout, setIsMobileClosureLayout] = useState(false);
+  const [closureRange, setClosureRange] = useState<ClosureRange>("7d");
 
   const loadOverview = useCallback(async () => {
-    setViewState("loading")
+    setViewState("loading");
     try {
-      const [o, metrics, health] = await Promise.all([
-        fetchWorkbenchOverview(),
-        fetchSystemMetrics(),
-        fetchHealth(),
-      ])
-      setOverview(o)
-      setRuntimeSnapshot(metrics as RuntimeSnapshot)
-      setHealthStatus(health)
-      const maintenanceToken = getMaintenanceToken()
+      const o = await fetchWorkbenchOverview();
+      setOverview(o);
+      const maintenanceToken = getMaintenanceToken();
       const [workOrderResult, caseResult] = await Promise.allSettled([
-        maintenanceToken ? listWorkOrders(maintenanceToken, 1) : Promise.resolve(null),
+        maintenanceToken
+          ? listWorkOrders(maintenanceToken, 1)
+          : Promise.resolve(null),
         fetchCasesList({ limit: 50 }),
-      ])
-      setLinkedWorkOrderTotal(
-        workOrderResult.status === "fulfilled" ? Number(workOrderResult.value?.total ?? 0) : 0,
-      )
+      ]);
+      const historyResult = await Promise.allSettled([
+        fetchMaintenanceHistory({ limit: 50 }),
+      ]);
+      setLinkedWorkOrders(
+        workOrderResult.status === "fulfilled"
+          ? (workOrderResult.value?.items ?? [])
+          : [],
+      );
       if (caseResult.status === "fulfilled") {
-        const cases = caseResult.value.cases ?? []
-        setLinkedCaseTotal(Number(caseResult.value.total ?? cases.length))
-        setLinkedPendingCaseTotal(
-          cases.filter((item: { status: string }) => item.status === "pending_review").length,
-        )
+        const cases = caseResult.value.cases ?? [];
+        setLinkedCases(cases);
       } else {
-        setLinkedCaseTotal(0)
-        setLinkedPendingCaseTotal(0)
+        setLinkedCases([]);
       }
+      setHistoryTasks(
+        historyResult[0]?.status === "fulfilled"
+          ? (historyResult[0].value.tasks ?? [])
+          : [],
+      );
+
       const hasNonZeroStats = Array.isArray(o.stats)
         ? o.stats.some((s) => Number(s?.value ?? 0) > 0)
-        : false
+        : false;
       const hasRecentItems =
         (Array.isArray(o.recent_tasks) && o.recent_tasks.length > 0) ||
-        (Array.isArray(o.recent_cases) && o.recent_cases.length > 0)
-      setViewState(hasNonZeroStats || hasRecentItems ? "normal" : "empty")
+        (Array.isArray(o.recent_cases) && o.recent_cases.length > 0);
+      setViewState(hasNonZeroStats || hasRecentItems ? "normal" : "empty");
     } catch {
-      setViewState("error")
+      setViewState("error");
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    void loadOverview()
-  }, [loadOverview])
+    void loadOverview();
+  }, [loadOverview]);
 
   useEffect(() => {
-    const handleModeChanged = () => {
-      void loadOverview()
-    }
-    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener)
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const syncLayoutMode = () => {
+      setIsMobileClosureLayout(mediaQuery.matches);
+    };
+
+    syncLayoutMode();
+    mediaQuery.addEventListener("change", syncLayoutMode);
     return () => {
-      window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener)
-    }
-  }, [loadOverview])
+      mediaQuery.removeEventListener("change", syncLayoutMode);
+    };
+  }, []);
 
   const handleRefresh = () => {
-    void loadOverview()
-  }
+    void loadOverview();
+  };
 
-  const faultFromApi = useMemo(() => {
-    if (!overview?.recent_tasks?.length) return []
-    return overview.recent_tasks.map(mapTaskToFaultRecord)
-  }, [overview])
+  const closureOverview = useMemo(() => {
+    const rangeLabel = getRangeLabel(closureRange);
+    const generatedAt = overview?.generated_at ?? new Date().toISOString();
+    const recentTasks = filterByClosureRange(
+      overview?.recent_tasks ?? [],
+      (task) => task.updated_at ?? task.created_at,
+      closureRange,
+      generatedAt,
+    );
+    const filteredHistoryTasks = filterByClosureRange(
+      historyTasks,
+      (task) => task.updated_at ?? task.created_at,
+      closureRange,
+      generatedAt,
+    );
+    const filteredCases = filterByClosureRange(
+      linkedCases,
+      (item) => item.updated_at,
+      closureRange,
+      generatedAt,
+    );
+    const filteredWorkOrders = filterByClosureRange(
+      linkedWorkOrders,
+      (item) => item.updated_at ?? item.created_at,
+      closureRange,
+      generatedAt,
+    );
+    const filteredUnresolvedFaults = recentTasks.filter(
+      (task) => normalizeFaultStatus(String(task.status || "")) !== "resolved",
+    );
+    const activeTaskCount = Math.max(
+      filteredHistoryTasks.filter((task) => {
+        const status = String(task.status || "").toLowerCase();
+        return status === "pending" || status === "in_progress";
+      }).length,
+      recentTasks.filter(
+        (task) =>
+          normalizeFaultStatus(String(task.status || "")) !== "resolved",
+      ).length,
+    );
+    const closureTasks = filteredHistoryTasks.map(mapHistoryToClosureStatus);
+    const pendingCount = closureTasks.filter(
+      (status) => status === "pending",
+    ).length;
+    const diagnosisCompletedCount = closureTasks.filter(
+      (status) => status === "diagnosis_completed",
+    ).length;
+    const resolvedCount = closureTasks.filter(
+      (status) => status === "completed",
+    ).length;
+    const total = pendingCount + diagnosisCompletedCount + resolvedCount;
 
-  const timelineData = useMemo(() => {
-    if (!overview?.recent_cases?.length) return []
-    return overview.recent_cases.map((c) => ({
-      id: String(c.id),
-      type: "fault" as const,
-      title: c.title,
-      description: `${c.equipment_type} · ${c.status}`,
-      time: formatDateTimeLocal(c.updated_at),
-    }))
-  }, [overview])
+    const trendSeries = buildTrendBuckets(
+      recentTasks,
+      activeTaskCount,
+      closureRange,
+      generatedAt,
+    );
+    const pendingReviewCount = filteredCases.filter(
+      (item) => item.status === "pending_review",
+    ).length;
+    const rangeWorkOrderTotal = filteredWorkOrders.length;
+    const rangeCaseTotal = filteredCases.length;
+    const executionCount = Math.max(0, activeTaskCount - pendingCount);
+    const caseBacklog = rangeCaseTotal + pendingReviewCount;
+    const stageBase = [
+      {
+        label: "告警触发",
+        value: filteredUnresolvedFaults.length,
+        avgDuration: "0.4 天",
+        status: "normal" as const,
+      },
+      {
+        label: "问题诊断",
+        value: activeTaskCount,
+        avgDuration: "0.8 天",
+        status: "processing" as const,
+      },
+      {
+        label: "生成工单",
+        value: rangeWorkOrderTotal,
+        avgDuration: "0.6 天",
+        status:
+          rangeWorkOrderTotal > 0 ? ("done" as const) : ("normal" as const),
+      },
+      {
+        label: "工单处理",
+        value: executionCount,
+        avgDuration: "1.2 天",
+        status:
+          executionCount > 0 ? ("processing" as const) : ("normal" as const),
+      },
+      {
+        label: "案例沉淀",
+        value: caseBacklog,
+        avgDuration: caseBacklog > 0 ? "2.7 天" : "0 天",
+        status: caseBacklog > 0 ? ("blocked" as const) : ("normal" as const),
+      },
+    ];
+    const bottleneckStage = stageBase.reduce(
+      (max, item) => (item.value > max.value ? item : max),
+      stageBase[0] ?? {
+        label: "暂无数据",
+        value: 0,
+        avgDuration: "--",
+        status: "normal" as const,
+      },
+    );
+    const stageTotal = Math.max(
+      stageBase.reduce((sum, item) => sum + item.value, 0),
+      1,
+    );
+    const stageBars: ClosureStagePoint[] = stageBase.map((item) => ({
+      ...item,
+      ratio: (item.value / stageTotal) * 100,
+      isBottleneck: item.label === bottleneckStage.label && item.value > 0,
+    }));
+    const statusSegments = [
+      { label: "待处理", value: pendingCount, color: "rgb(245 158 11)" },
+      {
+        label: "诊断中",
+        value: diagnosisCompletedCount,
+        color: "rgb(59 130 246)",
+      },
+      { label: "已完成", value: resolvedCount, color: "rgb(34 197 94)" },
+    ];
+    const completionRate = total > 0 ? (resolvedCount / total) * 100 : 0;
+    const unclosedCount = Math.max(
+      activeTaskCount,
+      pendingCount + diagnosisCompletedCount,
+    );
+    const trendSummary = [
+      {
+        label: "闭环率",
+        value: `${Math.round(completionRate)}%`,
+        helper: `${resolvedCount} / ${total} 个任务已闭环`,
+        tone: "emerald" as const,
+      },
+      {
+        label: "主要堵点",
+        value: bottleneckStage.value > 0 ? bottleneckStage.label : "暂无积压",
+        helper: `${bottleneckStage.value} 条任务停留在该阶段`,
+        tone:
+          bottleneckStage.status === "blocked"
+            ? ("amber" as const)
+            : ("slate" as const),
+      },
+      {
+        label: "已形成工单",
+        value: `${rangeWorkOrderTotal}`,
+        helper: `${rangeLabel}已进入执行或归档流程`,
+        tone: "blue" as const,
+      },
+    ];
+    const kpis: ClosureKpiCard[] = [
+      {
+        title: "未闭环异常",
+        value: `${unclosedCount}`,
+        helper:
+          unclosedCount > 0
+            ? "当前范围内仍需推进的异常任务"
+            : "当前范围内暂无待闭环异常",
+        tone: "amber",
+        icon: AlertCircle,
+      },
+      {
+        title: "超时任务",
+        value: "0",
+        helper: "超过 3 天未更新的重点任务",
+        tone: "red",
+        icon: Clock3,
+      },
+      {
+        title: "高优先级任务",
+        value: "0",
+        helper: "需优先推进的紧急检修任务",
+        tone: "blue",
+        icon: TrendingUp,
+      },
+      {
+        title: "主要堵点",
+        value: bottleneckStage.value > 0 ? bottleneckStage.label : "暂无积压",
+        helper: `${bottleneckStage.value} 条任务停留在该阶段`,
+        tone: bottleneckStage.status === "blocked" ? "red" : "amber",
+        icon: TimerReset,
+      },
+      {
+        title: "闭环率",
+        value: `${Math.round(completionRate)}%`,
+        helper: `${resolvedCount} / ${total} 个任务已完成闭环`,
+        tone: "emerald",
+        icon: ClipboardCheck,
+      },
+    ];
+    const recentTaskMap = new Map(
+      recentTasks.map((task) => [Number(task.id), task]),
+    );
+    const riskTasksFromHistory: RiskTaskRow[] = filteredHistoryTasks.flatMap(
+      (task) => {
+        const summary = recentTaskMap.get(Number(task.id));
+        const stage = getRiskStageFromHistory(task);
+        if (!stage) return [];
+        const durationSource =
+          task.updated_at ??
+          task.created_at ??
+          summary?.updated_at ??
+          summary?.created_at;
+        const durationDays = getDurationDaysValue(durationSource, generatedAt);
+        return [
+          {
+            id: formatRiskTaskId(task.id, task.created_at ?? task.updated_at),
+            deviceName:
+              task.title ||
+              summary?.title ||
+              [
+                task.equipment_type || summary?.equipment_type,
+                task.equipment_model || summary?.equipment_model,
+              ]
+                .filter(Boolean)
+                .join(" ") ||
+              `检修任务 ${task.id}`,
+            maintenanceLevel: formatMaintenanceLevel(
+              task.maintenance_level || summary?.maintenance_level,
+            ),
+            stage,
+            lastUpdatedAge: getDurationDaysText(durationSource, generatedAt),
+            priority: getRiskPriority(
+              task.maintenance_level || summary?.maintenance_level,
+            ),
+            status: getRiskStatus(stage, durationDays),
+            taskId: task.id,
+          } satisfies RiskTaskRow,
+        ];
+      },
+    );
+    const recentRiskTasks: RiskTaskRow[] = recentTasks.flatMap((task) => {
+      const status = normalizeFaultStatus(String(task.status || ""));
+      if (status === "resolved") return [];
+      const stage = status === "processing" ? "生成工单" : "问题诊断";
+      const durationSource = task.updated_at ?? task.created_at;
+      const durationDays = getDurationDaysValue(durationSource, generatedAt);
+      return [
+        {
+          id: formatRiskTaskId(
+            Number(task.id),
+            task.created_at ?? task.updated_at,
+          ),
+          deviceName:
+            task.title || task.equipment_type || `检修任务 ${task.id}`,
+          maintenanceLevel: formatMaintenanceLevel(task.maintenance_level),
+          stage,
+          lastUpdatedAge: getDurationDaysText(durationSource, generatedAt),
+          priority: getRiskPriority(task.maintenance_level),
+          status: getRiskStatus(stage, durationDays),
+          taskId: Number(task.id),
+        } satisfies RiskTaskRow,
+      ];
+    });
+    const historyTaskIds = new Set(
+      riskTasksFromHistory
+        .map((task) => task.taskId)
+        .filter((taskId): taskId is number => Number.isFinite(taskId)),
+    );
+    const mergedHighlightedRiskTasks = sortRiskTasks([
+      ...riskTasksFromHistory.filter(isHighlightedRiskTask),
+      ...recentRiskTasks
+        .filter((task) => !historyTaskIds.has(task.taskId ?? -1))
+        .filter(isHighlightedRiskTask),
+    ]);
+    const fallbackRiskTasks = sortRiskTasks(
+      recentRiskTasks.filter((task) => !historyTaskIds.has(task.taskId ?? -1)),
+    );
+    const riskTaskSource =
+      mergedHighlightedRiskTasks.length > 0
+        ? mergedHighlightedRiskTasks
+        : fallbackRiskTasks;
+    const overdueTaskCount = riskTaskSource.filter(
+      (task) => task.status === "超过 3 天未更新",
+    ).length;
+    const highPriorityTaskCount = riskTaskSource.filter(
+      (task) => task.priority === "高",
+    ).length;
+    const riskTasks = riskTaskSource.slice(0, 6);
 
-  const dashboardKpi = useMemo(() => {
-    const recentTasks = overview?.recent_tasks ?? []
-    const taskTotal = recentTasks.length
-    const unresolved = recentTasks.filter((t) => {
-      return normalizeFaultStatus(String(t.status || "")) !== "resolved"
-    }).length
-    const faultRate = taskTotal > 0 ? (unresolved / taskTotal) * 100 : 0
-    const faultTrend = recentTasks.length
-      ? recentTasks.map((t) => {
-          return normalizeFaultStatus(String(t.status || "")) === "resolved" ? 0 : 100
-        })
-      : [0]
-
-    const durations = (runtimeSnapshot?.durations ?? []).filter(
-      (d) => d?.name === "http_request_duration_ms" && Number(d.count ?? 0) > 0,
-    )
-    const weightedMsSum = durations.reduce(
-      (sum, d) => sum + Number(d.avg_ms ?? 0) * Number(d.count ?? 0),
-      0,
-    )
-    const weightedCount = durations.reduce((sum, d) => sum + Number(d.count ?? 0), 0)
-    const avgLatencyMs = weightedCount > 0 ? weightedMsSum / weightedCount : 0
-    const latencySeries = durations.length
-      ? durations.map((d) => Number(d.avg_ms ?? 0)).slice(0, 12)
-      : [0]
-
-    const counters = runtimeSnapshot?.counters ?? []
-    const totalReq = counters
-      .filter((c) => c?.name === "http_requests_total")
-      .reduce((sum, c) => sum + Number(c.value ?? 0), 0)
-    const successReq = counters
-      .filter((c) => {
-        if (c?.name !== "http_requests_total") return false
-        const statusCode = Number(c.labels?.status_code ?? 0)
-        return statusCode >= 200 && statusCode < 400
-      })
-      .reduce((sum, c) => sum + Number(c.value ?? 0), 0)
-    const requestSuccessRate = totalReq > 0 ? (successReq / totalReq) * 100 : 0
-    const throughputSeriesRaw = counters
-      .filter((c) => c?.name === "http_requests_total")
-      .map((c) => Number(c.value ?? 0))
-      .slice(0, 12)
-    const throughputSeries = throughputSeriesRaw.length ? throughputSeriesRaw : [0]
-
-    const healthScore =
-      healthStatus?.status === "healthy" && healthStatus?.database === "connected"
-        ? 100
-        : healthStatus
-          ? 60
-          : 0
+    kpis[1] = {
+      title: "超时任务",
+      value: `${overdueTaskCount}`,
+      helper:
+        overdueTaskCount > 0
+          ? "超过 3 天未更新的重点任务"
+          : "当前暂无超时风险任务",
+      tone: overdueTaskCount > 0 ? "red" : "slate",
+      icon: Clock3,
+    };
+    kpis[2] = {
+      title: "高优先级任务",
+      value: `${highPriorityTaskCount}`,
+      helper:
+        highPriorityTaskCount > 0
+          ? "需优先推进的紧急检修任务"
+          : "当前暂无高优先级风险任务",
+      tone: highPriorityTaskCount > 0 ? "blue" : "slate",
+      icon: TrendingUp,
+    };
+    const insight = `${rangeLabel}闭环率为 ${Math.round(completionRate)}%，${
+      unclosedCount > 0 ? `当前仍有 ${unclosedCount} 条未闭环异常，` : ""
+    }主要堵点在${bottleneckStage.value > 0 ? bottleneckStage.label : "末端归档"}阶段。`;
 
     return {
-      faultRate,
-      faultTrend,
-      avgLatencyMs,
-      latencySeries,
-      requestSuccessRate,
-      throughputSeries,
-      healthScore,
-      hasRuntime: totalReq > 0 || weightedCount > 0 || taskTotal > 0,
-    }
-  }, [overview, runtimeSnapshot, healthStatus])
+      trendSeries,
+      trendSummary,
+      completionRate,
+      statusSegments,
+      stageBars,
+      kpis,
+      insight,
+      riskTasks,
+      hasData:
+        recentTasks.length > 0 ||
+        filteredHistoryTasks.length > 0 ||
+        filteredUnresolvedFaults.length > 0 ||
+        activeTaskCount > 0 ||
+        rangeWorkOrderTotal > 0 ||
+        rangeCaseTotal > 0,
+    };
+  }, [closureRange, historyTasks, linkedCases, linkedWorkOrders, overview]);
 
-  const overviewStats = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const s of overview?.stats ?? []) {
-      m.set(String(s.key), Number(s.value ?? 0))
-    }
-    return {
-      knowledgeDocuments: m.get("knowledge_documents") ?? 0,
-      knowledgeChunks: m.get("knowledge_chunks") ?? 0,
-      activeTasks: m.get("active_tasks") ?? 0,
-      pendingCases: m.get("pending_cases") ?? 0,
-    }
-  }, [overview])
+  const renderClosureOverview = (mode: "normal" | "empty" | "loading") => {
+    if (mode === "loading") {
+      return (
+        <section
+          data-testid="closure-overview-shell"
+          data-mobile-stack={isMobileClosureLayout ? "true" : "false"}
+          className={closureOverviewShellClassName}
+        >
+          <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm sm:p-6">
+            <div className="h-5 w-32 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+            <div className="mt-3 h-4 w-64 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
 
-  const unresolvedFaults = useMemo(
-    () => faultFromApi.filter((r) => normalizeFaultStatus(String(r.status)) !== "resolved"),
-    [faultFromApi],
-  )
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div
+                  key={`summary-skeleton-${index}`}
+                  className="rounded-xl border border-border/60 bg-background/70 px-4 py-3.5"
+                >
+                  <div className="h-3 w-16 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                  <div className="mt-3 h-7 w-20 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                </div>
+              ))}
+            </div>
 
-  const recommendedKnowledge = useMemo(() => {
-    return []
-  }, [])
-
-  const linkedKnowledgeCount = 0
-
-  const closedLoopSteps = useMemo(
-    () => [
-      {
-        title: "告警触发",
-        desc: `待处理 ${unresolvedFaults.length} 条`,
-        state: unresolvedFaults.length > 0 ? "active" : "done",
-      },
-      {
-        title: "AI诊断",
-        desc: `进行中 ${overviewStats.activeTasks} 条`,
-        state: overviewStats.activeTasks > 0 ? "active" : "pending",
-      },
-      {
-        title: "推荐知识",
-        desc:
-          linkedKnowledgeCount > 0
-            ? `已关联 ${linkedKnowledgeCount} 条知识引用`
-            : "暂无已落库知识引用",
-        state: linkedKnowledgeCount > 0 ? "active" : "pending",
-      },
-      {
-        title: "生成工单",
-        desc: linkedWorkOrderTotal > 0 ? `已生成 ${linkedWorkOrderTotal} 条` : "暂无已生成工单",
-        state: linkedWorkOrderTotal > 0 ? "active" : "pending",
-      },
-      {
-        title: "案例沉淀",
-        desc:
-          linkedPendingCaseTotal > 0
-            ? `待审核 ${linkedPendingCaseTotal} 条`
-            : linkedCaseTotal > 0
-              ? `已沉淀 ${linkedCaseTotal} 条`
-              : "暂无沉淀案例",
-        state:
-          linkedPendingCaseTotal > 0
-            ? "active"
-            : linkedCaseTotal > 0
-              ? "done"
-              : "pending",
-      },
-    ],
-    [
-      linkedCaseTotal,
-      linkedKnowledgeCount,
-      linkedPendingCaseTotal,
-      linkedWorkOrderTotal,
-      overviewStats.activeTasks,
-      unresolvedFaults.length,
-    ],
-  )
-
-  const faultFiltersActive =
-    faultFilterKeyword.trim().length > 0 || faultFilterSeverity !== "all"
-
-  const filteredFault = useMemo(() => {
-    let base = faultFromApi.filter((r) => !removedFaultIds.includes(r.id))
-    if (activeTab !== "all") {
-      base = base.filter((r) => {
-        if (activeTab === "pending") return r.status === "pending"
-        if (activeTab === "processing") return r.status === "processing"
-        if (activeTab === "resolved") return r.status === "resolved"
-        return true
-      })
-    }
-    if (faultFilterSeverity !== "all") {
-      base = base.filter((r) => r.severity === faultFilterSeverity)
-    }
-    const q = faultFilterKeyword.trim().toLowerCase()
-    if (q) {
-      base = base.filter(
-        (r) =>
-          r.deviceName.toLowerCase().includes(q) ||
-          r.deviceCode.toLowerCase().includes(q) ||
-          r.faultType.toLowerCase().includes(q) ||
-          (r.operator?.toLowerCase().includes(q) ?? false),
-      )
-    }
-    return base
-  }, [faultFromApi, activeTab, faultFilterSeverity, faultFilterKeyword, removedFaultIds])
-
-  const resetFaultFilters = () => {
-    setFaultFilterKeyword("")
-    setFaultFilterSeverity("all")
-  }
-
-  const handleFaultMenu = (action: "detail" | "process" | "export" | "delete", record: FaultRecord) => {
-    const id = Number(record.id)
-
-    if (action === "detail") {
-      if (!Number.isFinite(id)) return
-      router.push(`/tasks/${id}`)
-      return
+            <div className="mt-5 rounded-xl border border-border/50 bg-muted/30 px-4 py-4 sm:px-5 sm:py-5">
+              <div className="h-9 w-full max-w-[520px] rounded-xl bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+              <div className="mt-3 h-[220px] rounded-xl bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)] sm:h-[240px] xl:h-[260px]" />
+            </div>
+          </div>
+          <div
+            data-testid="closure-overview-side-panel"
+            className={closureOverviewSidePanelClassName}
+          >
+            <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-2">
+                  <div className="h-5 w-24 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                  <div className="h-4 w-40 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                </div>
+                <div className="h-7 w-14 rounded-full bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+              </div>
+              <div className="mt-5 mx-auto h-32 w-32 rounded-full bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+              <div className="mt-5 grid gap-2.5">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div
+                    key={`status-skeleton-${index}`}
+                    className="rounded-xl border border-border/50 bg-background/70 px-3.5 py-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="h-4 w-20 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                      <div className="h-4 w-6 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                    </div>
+                    <div className="mt-2 h-3 w-full rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 h-10 rounded-xl bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+            </div>
+          </div>
+        </section>
+      );
     }
 
-    if (action === "process") {
-      if (!Number.isFinite(id)) return
-      router.push(`/tasks/${id}?action=process`)
-      return
+    if (mode === "empty") {
+      return (
+        <section
+          data-testid="closure-overview-shell"
+          data-mobile-stack={isMobileClosureLayout ? "true" : "false"}
+          className={closureOverviewShellClassName}
+        >
+          <ClosureTrendChart
+            title="异常处理趋势"
+            subtitle="对比异常触发、诊断处理和闭环完成情况，判断处理能力是否跟上异常增长。"
+            data={[]}
+            summaryItems={[
+              { label: "闭环率", value: "0%", helper: "0 / 0 个任务已闭环" },
+              { label: "主要堵点", value: "暂无数据", helper: "暂无阶段积压" },
+              { label: "已形成工单", value: "0", helper: "暂无执行工单" },
+            ]}
+            insight="当前暂无异常处理趋势数据，待接入异常、诊断和闭环任务后生成分析。"
+          />
+          <div
+            data-testid="closure-overview-side-panel"
+            className={closureOverviewSidePanelClassName}
+          >
+            <StatusDonutCard
+              title="闭环推进状态"
+              completionRate={0}
+              segments={[
+                { label: "待处理", value: 0, color: "rgb(245 158 11)" },
+                { label: "诊断中", value: 0, color: "rgb(59 130 246)" },
+                { label: "已完成", value: 0, color: "rgb(34 197 94)" },
+              ]}
+            />
+          </div>
+        </section>
+      );
     }
 
-    if (action === "delete") {
-      setPendingDeleteRecord(record)
-      return
-    }
-
-    // export
-    void (async () => {
-      if (!Number.isFinite(id)) {
-        downloadJsonInBrowser(`fault-record-${record.id}-demo.json`, {
-          exported_at: new Date().toISOString(),
-          export_summary:
-            "当前为演示故障记录（任务 ID 非数字），无法调用后端导出接口；已导出页面快照。",
-          snapshot: record,
-        })
-        return
-      }
-      try {
-        const payload = await fetchTaskExport(id)
-        const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-")
-        downloadJsonInBrowser(`检修任务-${id}-导出-${stamp}.json`, payload)
-      } catch (e) {
-        downloadJsonInBrowser(`检修任务-${id}-导出-失败-${Date.now()}.json`, {
-          exported_at: new Date().toISOString(),
-          export_summary: "后端导出失败，以下为本地快照与错误信息。",
-          error: e instanceof Error ? e.message : String(e),
-          snapshot: record,
-        })
-      }
-    })()
-  }
-
-  const confirmDeleteRecord = () => {
-    if (!pendingDeleteRecord) return
-    const deletingRecord = pendingDeleteRecord
-    const deletingId = Number(deletingRecord.id)
-    setPendingDeleteRecord(null)
-    void (async () => {
-      if (!Number.isFinite(deletingId)) {
-        toast.error("记录 ID 非法，无法删除")
-        return
-      }
-      try {
-        await deleteMaintenanceTask(deletingId)
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "删除失败，请稍后重试")
-        return
-      }
-      setRemovedFaultIds((prev) =>
-        prev.includes(deletingRecord.id) ? prev : [...prev, deletingRecord.id],
-      )
-      toast.success("记录已删除")
-    })()
-  }
+    return (
+      <section
+        data-testid="closure-overview-shell"
+        data-mobile-stack={isMobileClosureLayout ? "true" : "false"}
+        className={closureOverviewShellClassName}
+      >
+        <ClosureTrendChart
+          title="异常处理趋势"
+          subtitle="对比异常触发、诊断处理和闭环完成情况，判断处理能力是否跟上异常增长。"
+          data={closureOverview.trendSeries}
+          summaryItems={closureOverview.trendSummary}
+          insight={closureOverview.insight}
+        />
+        <div
+          data-testid="closure-overview-side-panel"
+          className={closureOverviewSidePanelClassName}
+        >
+          <StatusDonutCard
+            title="闭环推进状态"
+            completionRate={closureOverview.completionRate}
+            segments={closureOverview.statusSegments}
+          />
+        </div>
+      </section>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       <main className="app-main">
         {/* Page Header */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-xl font-semibold text-foreground">检修总览</h1>
-            <p className="mt-1 text-sm text-muted-foreground">统一查看设备状态、诊断任务、工单处理与知识沉淀</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              统一查看设备状态、诊断任务、工单处理与知识沉淀
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -435,7 +1026,41 @@ export default function DashboardPage() {
         )}
 
         {/* Loading State */}
-        {viewState === "loading" && <DashboardSkeleton />}
+        {viewState === "loading" && (
+          <div className="space-y-6">
+            <DashboardSkeleton />
+
+            <section className="space-y-3">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-xl font-bold text-foreground">
+                  检修闭环总览
+                </h2>
+              </div>
+              {renderClosureOverview("loading")}
+              <section className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm sm:p-6">
+                <div className="h-5 w-32 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                <div className="mt-3 h-4 w-72 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                <div className="mt-5 grid gap-3 md:grid-cols-5">
+                  {Array.from({ length: 5 }).map((_, index) => (
+                    <div
+                      key={`closure-stage-skeleton-${index}`}
+                      className="min-h-[164px] rounded-xl border border-border/60 bg-background/70 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="h-4 w-16 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                        <div className="h-5 w-10 rounded-full bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                      </div>
+                      <div className="mt-6 h-8 w-12 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                      <div className="mt-3 h-3 w-20 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                      <div className="mt-6 h-px bg-slate-100/70 dark:bg-[rgba(255,255,255,0.05)]" />
+                      <div className="mt-3 h-3 w-24 rounded bg-slate-100 skeleton-pulse dark:bg-[rgba(255,255,255,0.05)]" />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </section>
+          </div>
+        )}
 
         {/* Empty State */}
         {viewState === "empty" && (
@@ -471,6 +1096,20 @@ export default function DashboardPage() {
               />
             </div>
 
+            <section className="space-y-3">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-xl font-bold text-foreground">
+                  检修闭环总览
+                </h2>
+              </div>
+              {renderClosureOverview("empty")}
+              <ClosureStageBarChart
+                title="闭环阶段分布"
+                subtitle="按照检修闭环流程查看任务分布，快速识别当前积压环节。"
+                data={emptyClosureStageData}
+              />
+            </section>
+
             <EmptyState
               type="no-devices"
               title="暂无监控设备"
@@ -482,218 +1121,174 @@ export default function DashboardPage() {
         {/* Normal State */}
         {viewState === "normal" && (
           <div className="space-y-6">
-            {/* 今日检修概览 */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard
-                title="知识文档"
-                value={overviewStats.knowledgeDocuments}
-                unit="条"
-                icon={<FileCheck className="h-4 w-4" />}
-                status="normal"
-              />
-              <StatCard
-                title="知识分段"
-                value={overviewStats.knowledgeChunks}
-                unit="条"
-                icon={<Layers className="h-4 w-4" />}
-                status="normal"
-              />
-              <StatCard
-                title="进行中任务"
-                value={overviewStats.activeTasks}
-                unit="条"
-                icon={<Activity className="h-4 w-4" />}
-                status="warning"
-              />
-              <StatCard
-                title="待审核案例"
-                value={overviewStats.pendingCases}
-                unit="条"
-                icon={<AlertCircle className="h-4 w-4" />}
-                status="critical"
-              />
-            </div>
-
-            {/* 待处理告警 + 推荐知识 */}
-            <div className="grid gap-6 lg:grid-cols-3 transition-all duration-300">
-              <section className="app-card lg:col-span-2 overflow-hidden">
-                <div className="flex items-center justify-between border-b border-border px-5 py-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">待处理告警</h3>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      从告警快速进入诊断或生成工单，形成检修闭环
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8"
-                    onClick={() => router.push("/tasks")}
-                  >
-                    查看全部诊断
-                  </Button>
+            <section className="space-y-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-foreground">
+                    检修闭环总览
+                  </h2>
                 </div>
-                <div className="divide-y divide-border">
-                  {unresolvedFaults.slice(0, 4).map((r) => (
-                      <div key={r.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-foreground line-clamp-1">
-                              {r.deviceName}
-                            </span>
-                            <span className="text-xs text-muted-foreground font-mono">{r.deviceCode}</span>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground line-clamp-1">
-                            {r.faultType} · 更新 {r.time}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
+                <div className="inline-flex w-fit rounded-xl border border-border bg-card p-1">
+                  {[
+                    { key: "today", label: "今日" },
+                    { key: "7d", label: "近 7 日" },
+                    { key: "30d", label: "近 30 日" },
+                  ].map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setClosureRange(item.key as ClosureRange)}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                        closureRange === item.key
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div id="fault-alerts" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                {closureOverview.kpis.map((item) => (
+                  <ClosureKpiCardView key={item.title} item={item} />
+                ))}
+              </div>
+            </section>
+
+            <section
+              id="risk-tasks"
+              data-testid="closure-risk-tasks-panel"
+              className="rounded-2xl border border-border/60 bg-card shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+            >
+              <div className="flex flex-col gap-3 border-b border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">
+                    重点待办与风险任务
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    优先关注超过 3 天未更新和高优先级检修任务。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => router.push("/tasks")}
+                >
+                  查看全部任务
+                </Button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[860px] text-sm">
+                  <thead className="bg-muted/40 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-5 py-3 text-left font-medium">
+                        任务编号
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">
+                        设备名称
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">
+                        检修等级
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">
+                        当前阶段
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">
+                        距最近更新
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">
+                        优先级
+                      </th>
+                      <th className="px-5 py-3 text-left font-medium">状态</th>
+                      <th className="px-5 py-3 text-right font-medium">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {closureOverview.riskTasks.map((task) => (
+                      <tr
+                        key={task.id}
+                        className="transition-colors hover:bg-muted/30"
+                      >
+                        <td className="px-5 py-4 font-mono text-xs text-foreground">
+                          {task.id}
+                        </td>
+                        <td className="px-5 py-4 font-medium text-foreground">
+                          {task.deviceName}
+                        </td>
+                        <td className="px-5 py-4 text-muted-foreground">
+                          {task.maintenanceLevel}
+                        </td>
+                        <td className="px-5 py-4 text-muted-foreground">
+                          {task.stage}
+                        </td>
+                        <td className="px-5 py-4 tabular-nums text-muted-foreground">
+                          {task.lastUpdatedAge}
+                        </td>
+                        <td className="px-5 py-4">
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
+                              task.priority === "高"
+                                ? "border-red-200 bg-red-50 text-red-700 dark:border-red-500/25 dark:bg-red-950/25 dark:text-red-300"
+                                : "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/25 dark:bg-blue-950/25 dark:text-blue-300"
+                            }`}
+                          >
+                            {task.priority}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
+                              task.status === "超过 3 天未更新"
+                                ? "border-red-200 bg-red-50 text-red-700 dark:border-red-500/25 dark:bg-red-950/25 dark:text-red-300"
+                                : "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/25 dark:bg-blue-950/25 dark:text-blue-300"
+                            }`}
+                          >
+                            {task.status}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 text-right">
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
-                            className="h-8"
                             onClick={() => {
-                              const id = Number(r.id)
-                              if (!Number.isFinite(id)) return
-                              router.push(`/tasks/${id}`)
+                              if (task.taskId)
+                                router.push(`/tasks/${task.taskId}`);
                             }}
                           >
                             查看详情
                           </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="h-8"
-                            onClick={() => {
-                              const id = Number(r.id)
-                              if (!Number.isFinite(id)) return
-                              router.push(`/tasks/${id}?action=process`)
-                            }}
-                          >
-                            开始诊断
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8"
-                            onClick={() => {
-                              const id = Number(r.id)
-                              if (!Number.isFinite(id)) return
-                              router.push(`/tasks/${id}`)
-                            }}
-                          >
-                            生成工单
-                          </Button>
-                        </div>
-                      </div>
+                        </td>
+                      </tr>
                     ))}
-                  {unresolvedFaults.length === 0 ? (
-                    <div className="px-5 py-10 text-center text-sm text-muted-foreground">暂无待处理告警</div>
-                  ) : null}
-                </div>
-              </section>
-
-              <section className="app-card overflow-hidden">
-                <div className="border-b border-border px-5 py-4">
-                  <h3 className="text-sm font-semibold text-foreground">推荐知识</h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    手册 / 案例 / SOP / 专家经验
-                  </p>
-                </div>
-                <div className="p-5 space-y-3">
-                  {recommendedKnowledge.map((it) => (
-                    <button
-                      key={it.k}
-                      type="button"
-                      className="w-full rounded-lg border border-border bg-background p-3 text-left hover:bg-accent transition-colors"
-                      onClick={() => router.push(it.href)}
-                    >
-                      <div className="text-sm font-medium text-foreground">{it.title}</div>
-                      <div className="mt-1 text-xs text-muted-foreground line-clamp-2">{it.desc}</div>
-                    </button>
-                  ))}
-                  {recommendedKnowledge.length === 0 ? (
-                    <div className="rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                      暂无推荐知识
-                    </div>
-                  ) : null}
-                </div>
-              </section>
-            </div>
-
-            {/* 检修闭环状态 */}
-            <section className="app-card p-5 transition-all duration-300">
-              <h3 className="text-base font-semibold text-foreground">检修闭环状态</h3>
-              <p className="mt-1 text-sm text-muted-foreground">
-                告警触发 → AI诊断 → 推荐知识 → 生成工单 → 案例沉淀
-              </p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-5">
-                {closedLoopSteps.map((step, idx) => (
-                  <div key={step.title} className="relative rounded-xl border border-border bg-background p-3">
-                    {idx < 4 ? (
-                      <div className="absolute -right-2 top-1/2 hidden h-0.5 w-4 -translate-y-1/2 bg-border sm:block" />
+                    {closureOverview.riskTasks.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="px-5 py-10 text-center text-sm text-muted-foreground"
+                        >
+                          暂无重点待办与风险任务
+                        </td>
+                      </tr>
                     ) : null}
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-medium text-foreground">{step.title}</div>
-                      <span
-                        className={`inline-flex h-2.5 w-2.5 rounded-full ${
-                          step.state === "done"
-                            ? "bg-emerald-400"
-                            : step.state === "active"
-                              ? "bg-blue-400"
-                              : "bg-amber-400"
-                        }`}
-                      />
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{step.desc}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={() => router.push("/tickets")}>
-                  查看工单
-                </Button>
-                <Button type="button" size="sm" variant="outline" onClick={() => router.push("/cases")}>
-                  查看案例沉淀
-                </Button>
+                  </tbody>
+                </table>
               </div>
             </section>
+
+            {renderClosureOverview("normal")}
+
+            <ClosureStageBarChart
+              title="闭环阶段分布"
+              subtitle="按照检修闭环流程查看任务分布，快速识别当前积压环节。"
+              data={closureOverview.stageBars}
+            />
           </div>
         )}
       </main>
-
-      <AlertDialog
-        open={Boolean(pendingDeleteRecord)}
-        onOpenChange={(open) => {
-          if (!open) setPendingDeleteRecord(null)
-        }}
-      >
-        <AlertDialogContent className="border-border bg-background text-foreground">
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认删除记录</AlertDialogTitle>
-            <AlertDialogDescription className="text-muted-foreground">
-              {pendingDeleteRecord
-                ? `确认删除记录「${pendingDeleteRecord.deviceName}」？删除后将从当前列表中移除。`
-                : "确认删除该条记录？"}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="border-border bg-transparent text-foreground hover:bg-muted hover:text-foreground">
-              取消
-            </AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-500 text-white hover:bg-red-500/90"
-              onClick={confirmDeleteRecord}
-            >
-              确定删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
-  )
+  );
 }
-

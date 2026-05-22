@@ -1,9 +1,9 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Search, Settings, HelpCircle, ChevronDown, Menu, LogIn, LogOut, ShieldCheck, Server, Wrench } from "lucide-react"
+import { Search, HelpCircle, ChevronDown, Menu, LogIn, LogOut, ShieldCheck, Server, Wrench } from "lucide-react"
 import { pingBackendReadiness, fetchHealth, fetchMaintenanceHealth, getApiBase } from "@/features/dashboard/api"
 import { AppLogoLink } from "@/shared/components/brand/app-logo-link"
 import { NotificationMenu } from "@/shared/components/brand/notification-menu"
@@ -55,7 +55,6 @@ export function Header() {
   const headerRef = useRef<HTMLElement | null>(null)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [searchKeyword, setSearchKeyword] = useState("")
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [healthStatus, setHealthStatus] = useState<string>("未检查")
@@ -85,14 +84,12 @@ export function Header() {
   const handleLogout = () => {
     clearMaintenanceToken()
     setIsLoggedIn(false)
-    setSettingsOpen(false)
     toast.success("已退出登录")
     router.push(ROUTES.login)
     router.refresh()
   }
 
   const handleOpenLogin = () => {
-    setSettingsOpen(false)
     router.push(ROUTES.login)
   }
 
@@ -376,6 +373,14 @@ export function Header() {
               <DropdownMenuContent align="end" className="w-44 border-border bg-popover text-popover-foreground">
                 <DropdownMenuItem
                   className="text-foreground focus:bg-accent focus:text-accent-foreground"
+                  onClick={() => {
+                    router.push(ROUTES.settings)
+                  }}
+                >
+                  系统设置
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-foreground focus:bg-accent focus:text-accent-foreground"
                   onClick={handleLogout}
                 >
                   <LogOut className="mr-2 h-4 w-4" />
@@ -395,18 +400,6 @@ export function Header() {
             </Button>
           )}
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-foreground/80 hover:bg-accent hover:text-foreground"
-            onClick={() => {
-              setSettingsOpen(true)
-            }}
-            aria-label="系统设置"
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
         </div>
         </div>
       </header>
@@ -448,102 +441,6 @@ export function Header() {
           </div>
         </DialogContent>
       </Dialog>
-
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>系统设置</DialogTitle>
-            <DialogDescription>
-              这里提供当前登录状态、接口地址和系统连通检查，先把管理台常用设置入口接实。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-border bg-background p-4">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                  <ShieldCheck className="h-4 w-4 text-emerald-500" />
-                  登录状态
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {isLoggedIn ? "当前已登录检修域后台，可访问受控能力。" : "当前未登录，建议先进入登录页获取检修域令牌。"}
-                </div>
-              </div>
-              <div className="rounded-lg border border-border bg-background p-4">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                  <Server className="h-4 w-4 text-primary" />
-                  API 地址
-                </div>
-                <div className="break-all text-sm text-muted-foreground">{getApiBase()}</div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
-                <Wrench className="h-4 w-4 text-primary" />
-                系统检查
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runHealthCheck()}
-                >
-                  <div className="text-sm text-foreground">系统健康检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{healthStatus}</div>
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runMaintenanceCheck()}
-                >
-                  <div className="text-sm text-foreground">检修域连通检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{maintenanceStatus}</div>
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runReadinessCheck()}
-                >
-                  <div className="text-sm text-foreground">后端就绪检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{readinessStatus}</div>
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="mb-3 text-sm font-medium text-foreground">账户操作</div>
-              <div className="flex flex-wrap gap-2">
-                {isLoggedIn ? (
-                  <Button type="button" variant="outline" className="border-border" onClick={handleLogout}>
-                    <LogOut className="mr-2 h-4 w-4" />
-                    退出登录
-                  </Button>
-                ) : (
-                  <Button type="button" variant="outline" className="border-border" onClick={handleOpenLogin}>
-                    <LogIn className="mr-2 h-4 w-4" />
-                    前往登录
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-border"
-                  onClick={() => {
-                    window.open(`${getApiBase()}/docs`, "_blank", "noopener,noreferrer")
-                  }}
-                >
-                  查看接口文档
-                </Button>
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" className="border-border" onClick={() => setSettingsOpen(false)}>
-              关闭
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }
@@ -562,4 +459,3 @@ function NavItem({ children, active = false, href }: { children: React.ReactNode
     </Link>
   )
 }
-

@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "my-project",
   "version": "0.1.0",
   "private": true,
@@ -8,9 +8,11 @@
     "share": "next build && next start -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@antv/g6": "^5.1.1",
     "@hookform/resolvers": "^3.9.1",
     "@radix-ui/react-accordion": "1.2.12",
     "@radix-ui/react-alert-dialog": "1.1.15",
@@ -63,10 +65,13 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.2.0",
     "@types/node": "^22",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.0",
     "localtunnel": "^2.0.2",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",

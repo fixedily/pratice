@@ -1,4 +1,4 @@
-"""Phase 18: PDF 知识导入辅助能力测试."""
+﻿"""Phase 18: PDF 知识导入辅助能力测试."""
 from app.services.pdf_import_service import (
     ExtractedPdfPage,
     PdfKnowledgeImportService,

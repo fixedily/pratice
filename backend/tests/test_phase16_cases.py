@@ -1,4 +1,4 @@
-"""Phase 16: 案例沉淀、审核与人工修正测试."""
+﻿"""Phase 16: 案例沉淀、审核与人工修正测试."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_session
 from app.main import app
+from app.modules.maintenance.deps import CurrentUserCtx, get_current_user_ctx
 from app.schemas.cases import MaintenanceCaseCreate
 
 
@@ -22,6 +23,18 @@ def override_db_session():
         yield
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture(autouse=True)
+def override_current_user():
+    async def _override_current_user():
+        return CurrentUserCtx(user_id=2, username="tc_expert", roles=["expert"], display_name="测试专家")
+
+    app.dependency_overrides[get_current_user_ctx] = _override_current_user
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user_ctx, None)
 
 
 def build_case_payload(status: str = "pending_review", source_document_id: int | None = None) -> dict:
@@ -207,9 +220,10 @@ async def test_add_case_correction_endpoint():
 @pytest.mark.asyncio
 async def test_review_case_endpoint_approves_and_returns_source_document():
     """审核通过端点会返回已入库文档标识。"""
+    review_mock = AsyncMock(return_value=build_case_payload(status="approved", source_document_id=88))
     with patch(
         "app.routers.cases.MaintenanceCaseService.review_case",
-        new=AsyncMock(return_value=build_case_payload(status="approved", source_document_id=88)),
+        new=review_mock,
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -217,7 +231,7 @@ async def test_review_case_endpoint_approves_and_returns_source_document():
                 "/api/v1/cases/301/review",
                 json={
                     "action": "approve",
-                    "reviewer_name": "评审老师",
+                    "reviewer_name": "伪造名字",
                     "review_note": "案例描述完整，允许入库。",
                 },
             )
@@ -226,6 +240,8 @@ async def test_review_case_endpoint_approves_and_returns_source_document():
     data = response.json()
     assert data["status"] == "approved"
     assert data["source_document_id"] == 88
+    request = review_mock.await_args.args[1]
+    assert request.reviewer_name == "测试专家"
 
 
 def test_maintenance_case_requires_steps_or_summary():

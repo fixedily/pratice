@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,12 +13,21 @@ import {
   downloadJsonInBrowser,
   getApiBase,
   listMaintenanceDevices,
+  normalizeMaintenanceLevelOption,
   retryMaintenanceTask,
   saveMaintenanceTaskExecutionTimeline,
   type MaintenanceDeviceItem,
   type MaintenanceTaskDetail,
 } from "@/features/tasks/api";
+import { createMaintenanceCase } from "@/shared/lib/http";
 import { Header } from "@/shared/components/brand/app-header";
+import { ReasoningSubgraphPanel } from "@/features/tasks/components/reasoning-subgraph-panel";
+import type { ReasoningProcedureStepHint } from "@/features/tasks/components/reasoning-subgraph-view-model";
+import { AgentCollaborationPanel } from "@/features/tasks/components/agent-collaboration-panel";
+import { buildAgentCollaborationViewModel } from "@/features/tasks/components/agent-collaboration-view-model";
+import { TaskEvidencePanel, type TaskEvidencePanelItem } from "@/features/tasks/components/task-evidence-panel";
+import { formatSymptomForDisplay } from "@/features/tasks/lib/symptom-display";
+import { ROUTES } from "@/shared/lib/routes";
 import { getMaintenanceToken } from "@/features/auth/lib/token-store";
 import {
   Dialog,
@@ -32,6 +41,7 @@ import { Button } from "@/shared/components/ui/button";
 import { formatDateTimeLocal, formatDurationBetween } from "@/shared/lib/utils";
 import {
   ArrowLeft,
+  BookOpen,
   CheckCircle2,
   Clock,
   Cpu,
@@ -39,16 +49,29 @@ import {
   FileCode,
   FileText,
   Loader2,
+  Network,
   RefreshCw,
   Server,
   Share2,
+  GitBranch,
   Wrench,
   XCircle,
 } from "lucide-react";
 
-type TaskStatus = "running" | "completed" | "failed";
+type TaskStatus = "pending" | "running" | "diagnosis_completed" | "completed" | "failed";
 type DisplayStatus = TaskStatus | "loading";
-type EventType = "connected" | "node_start" | "node_finish" | "report" | "error" | "done";
+type EventType =
+  | "connected"
+  | "node_start"
+  | "node_finish"
+  | "report"
+  | "error"
+  | "done"
+  | "agent_pipeline_completed"
+  | "critique"
+  | "revision_requested"
+  | "replan"
+  | "termination";
 
 type TimelineEvent = {
   id: string;
@@ -56,8 +79,10 @@ type TimelineEvent = {
   title: string;
   description: string;
   time: string;
+  detail?: string | null;
 };
 
+// 判断任务详情中是否已经存在可用的诊断结果内容。
 function hasResolvedDiagnosisPayload(detail: MaintenanceTaskDetail | null, persistedReport?: string | null) {
   if (!detail) return false;
   if ((persistedReport || "").trim()) return true;
@@ -71,19 +96,31 @@ function hasResolvedDiagnosisPayload(detail: MaintenanceTaskDetail | null, persi
   );
 }
 
+function hasTerminalTaskTimeline(detail: MaintenanceTaskDetail | null) {
+  return Boolean(
+    detail?.execution_timeline?.some(
+      (event) => event.type === "done" || event.type === "agent_pipeline_completed" || event.type === "termination",
+    ),
+  );
+}
+
+// 根据任务详情推断当前任务在页面上展示的运行状态。
 function inferTaskRuntimeStatus(detail: MaintenanceTaskDetail | null, persistedReport?: string | null): TaskStatus {
   if (!detail) return "running";
-  if (hasResolvedDiagnosisPayload(detail, persistedReport)) return "completed";
-
-  const timeline = Array.isArray(detail.execution_timeline) ? detail.execution_timeline : [];
-  const timelineTypes = new Set(timeline.map((event) => String(event.type || "").toLowerCase()));
-  if (timelineTypes.has("done")) return "completed";
-  if (timelineTypes.has("stream_error") || timelineTypes.has("error")) return "failed";
 
   const rawStatus = String(detail.status || "").toLowerCase();
   if (rawStatus === "completed") return "completed";
   if (rawStatus === "skipped" || rawStatus === "failed") return "failed";
+  if (rawStatus === "pending") return "pending";
+  if (rawStatus === "in_progress" && (hasResolvedDiagnosisPayload(detail, persistedReport) || hasTerminalTaskTimeline(detail))) {
+    return "diagnosis_completed";
+  }
   return "running";
+}
+
+function hasPersistedDiagnosisReport(detail: MaintenanceTaskDetail | null): boolean {
+  if (!detail) return false;
+  return Boolean(detail.diagnosis_report?.trim());
 }
 
 type KnowledgeRef = NonNullable<MaintenanceTaskDetail["source_refs"]>[number];
@@ -94,7 +131,7 @@ type RootCauseCandidate = {
   evidence: string;
 };
 
-type DiagnosisWorkspaceTab = "fault" | "actions" | "evidence" | "timeline";
+type DiagnosisWorkspaceTab = "fault" | "actions" | "evidence" | "reasoning" | "agent" | "timeline";
 type StructuredDiagnosisStep = Extract<
   NonNullable<NonNullable<MaintenanceTaskDetail["diagnosis_structured"]>["next_steps"]>[number],
   {
@@ -107,6 +144,11 @@ type StructuredProcedureStep = {
   stepNo: string | null;
   title: string;
   summary: string;
+  rawText: string;
+  action?: string | null;
+  object?: string | null;
+  headline?: string | null;
+  detail?: string | null;
   sections: Array<{
     label: string;
     items: string[];
@@ -114,27 +156,40 @@ type StructuredProcedureStep = {
   meta: string[];
 };
 
+type ProcedureSemanticActionMatch = {
+  canonical: string;
+  variant: string;
+  index: number;
+};
+
+const PROCEDURE_ACTION_FAMILIES = [
+  { canonical: "拆卸", variants: ["拆卸", "拆下", "取下", "取出", "旋下"] },
+  { canonical: "拔出", variants: ["拔出", "拔下"] },
+  { canonical: "检查", variants: ["检查", "复核", "确认", "观察", "测量"] },
+  { canonical: "更换", variants: ["更换", "替换"] },
+  { canonical: "调整", variants: ["调整", "校准"] },
+  { canonical: "安装", variants: ["安装", "装上", "复装"] },
+  { canonical: "清洁", variants: ["清洁", "清理"] },
+  { canonical: "润滑", variants: ["润滑"] },
+  { canonical: "加注", variants: ["加注", "加入"] },
+  { canonical: "排放", variants: ["排放", "放出"] },
+  { canonical: "松开", variants: ["松开", "断开"] },
+  { canonical: "紧固", variants: ["紧固", "拧紧"] },
+] as const;
+
+// 判断文本是否属于作业步骤规划相关标签。
 function isPlanningLabel(text: string | null | undefined) {
   const normalized = (text || "").trim();
   if (!normalized) return false;
   return /作业步骤规划/.test(normalized);
 }
 
-function hasPlanningRuntimeEvents(
-  runtimeEvents:
-    | Array<{ title?: string | null; description?: string | null }>
-    | null
-    | undefined,
-) {
-  return (runtimeEvents || []).some(
-    (event) => isPlanningLabel(event.title) || isPlanningLabel(event.description),
-  );
-}
-
+// 判断给定值是否为结构化诊断步骤对象。
 function isStructuredDiagnosisStep(value: unknown): value is StructuredDiagnosisStep {
   return Boolean(value && typeof value === "object" && "title" in value);
 }
 
+// 从诊断报告中提取指定标题对应的内容片段。
 function extractReportSection(report: string | null | undefined, headings: string[]) {
   const text = (report || "").trim();
   if (!text) return "";
@@ -145,6 +200,7 @@ function extractReportSection(report: string | null | undefined, headings: strin
   return match?.[1]?.trim() || "";
 }
 
+// 将报告分段内容清洗为条目列表。
 function normalizeSectionItems(section: string) {
   return section
     .split("\n")
@@ -152,6 +208,7 @@ function normalizeSectionItems(section: string) {
     .filter(Boolean);
 }
 
+// 去掉报告中的 Markdown 标题标记并返回纯文本。
 function stripReportHeadingMarkdown(text: string | null | undefined) {
   return (text || "")
     .replace(/\*\*/g, "")
@@ -159,6 +216,7 @@ function stripReportHeadingMarkdown(text: string | null | undefined) {
     .trim();
 }
 
+// 按中文语义切分报告语句，便于后续摘要和推断。
 function splitReportSentences(text: string | null | undefined) {
   return stripReportHeadingMarkdown(text)
     .split(/[；;。]/)
@@ -166,6 +224,7 @@ function splitReportSentences(text: string | null | undefined) {
     .filter(Boolean);
 }
 
+// 综合证据、结论与建议动作估算诊断置信度分数。
 function deriveConfidenceScore(
   refs: KnowledgeRef[],
   reasonSection: string,
@@ -179,10 +238,12 @@ function deriveConfidenceScore(
   return Math.max(35, Math.min(92, 28 + evidenceScore + conclusionScore + reasonScore + actionScore));
 }
 
+// 判断文本是否更像流程说明而不是故障结论。
 function looksLikeProcessStatement(text: string) {
   return /(知识依据|步骤预案|风险提示|标准检修|执行准备|现场复核|先核对|可进入|建议先|已形成)/.test(text);
 }
 
+// 清洗并压缩故障标签文本，保留最核心描述。
 function compactFaultLabel(text: string | null | undefined) {
   const cleaned = (text || "").replace(/^[\-•●■\d．。、)\s]+/, "").trim();
   if (!cleaned) return "";
@@ -190,6 +251,7 @@ function compactFaultLabel(text: string | null | undefined) {
   return first.replace(/^最可能故障[:：]\s*/, "").trim();
 }
 
+// 从结构化结果、候选根因和报告文本中推导可读的最可能故障。
 function deriveReadableLikelyFault(
   structuredFault: string | null | undefined,
   rootCauseCandidates: RootCauseCandidate[],
@@ -210,6 +272,7 @@ function deriveReadableLikelyFault(
   return compactFaultLabel(headline) || "待进一步定位";
 }
 
+// 基于原因段、结论段和知识引用构造根因候选列表。
 function buildRootCauseCandidates(
   reasonSection: string,
   conclusionSection: string,
@@ -231,6 +294,7 @@ function buildRootCauseCandidates(
   });
 }
 
+// 为知识引用推断适合界面展示的章节标签。
 function getKnowledgeSectionLabel(ref: KnowledgeRef) {
   if (ref.section_path?.trim()) return ref.section_path.trim();
   if (ref.section_reference?.trim()) return ref.section_reference.trim();
@@ -240,9 +304,61 @@ function getKnowledgeSectionLabel(ref: KnowledgeRef) {
   return matched?.[0] || "命中片段";
 }
 
+function getKnowledgeModalityMeta(ref: KnowledgeRef) {
+  const modality = String(ref.source_modality || "").trim().toLowerCase();
+  if (modality === "ocr") {
+    return { label: "OCR 证据", helper: ref.image_caption?.trim() || ref.evidence_summary?.trim() || "图片文本已参与检索" };
+  }
+  if (modality === "vision" || modality === "image") {
+    return { label: "图片证据", helper: ref.image_caption?.trim() || ref.evidence_summary?.trim() || "图片线索已参与检索" };
+  }
+  return { label: "文本证据", helper: ref.evidence_summary?.trim() || "来自手册或案例文本片段" };
+}
+
+function getKnowledgeRetrievalPath(ref: KnowledgeRef) {
+  return Array.isArray(ref.retrieval_path)
+    ? ref.retrieval_path.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function hasDirectRetrievalSignal(ref: KnowledgeRef) {
+  const paths = getKnowledgeRetrievalPath(ref);
+  return paths.some((item) =>
+    ["sql", "bm25", "vector", "section_expand"].includes(item) || item.startsWith("query_profile:"),
+  );
+}
+
+function hasGraphRecommendationSignal(ref: KnowledgeRef) {
+  const paths = getKnowledgeRetrievalPath(ref);
+  const reason = String(ref.recommendation_reason || "").trim();
+  return Boolean(
+    ref.graph_relation_type ||
+      paths.some((item) => item === "graph_expand" || item === "semantic_graph_evidence") ||
+      /图谱|关联/.test(reason),
+  );
+}
+
+function resolveEvidenceGroup(ref: KnowledgeRef): TaskEvidencePanelItem["group"] {
+  if (hasDirectRetrievalSignal(ref)) return "direct";
+  if (hasGraphRecommendationSignal(ref)) return "related";
+  return "direct";
+}
+
+function buildEvidenceBadges(ref: KnowledgeRef, modalityLabel: string) {
+  const badges = [modalityLabel];
+  const paths = getKnowledgeRetrievalPath(ref);
+
+  if (paths.includes("sql") || paths.includes("bm25")) badges.push("关键词命中");
+  if (paths.includes("vector")) badges.push("语义召回");
+  if (paths.includes("section_expand")) badges.push("同章节展开");
+  if (paths.includes("semantic_graph_evidence")) badges.push("图谱证据");
+  if (paths.includes("graph_expand") || ref.graph_relation_type) badges.push("语义图谱关联");
+
+  return [...new Set(badges)];
+}
+
 function normalizeRankingScoreToPercent(score: number) {
   if (!Number.isFinite(score) || score <= 0) return 0;
-  // Saturating curve: preserve ordering while converting open-ended rerank scores to a readable 0-99% range.
   return Math.max(1, Math.min(99, Math.round((1 - Math.exp(-score / 3.2)) * 100)));
 }
 
@@ -285,6 +401,7 @@ function formatEvidenceScore(ref: KnowledgeRef, fallbackScore: number) {
   return { label: "参考相关度", value: `${fallbackScore}%` };
 }
 
+// 将秒数格式化为中文时长文本。
 function formatDurationFromSeconds(totalSeconds: number): string | null {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return null;
   const sec = Math.floor(totalSeconds);
@@ -298,6 +415,7 @@ function formatDurationFromSeconds(totalSeconds: number): string | null {
   return remainMinutes > 0 ? `${hours} 小时 ${remainMinutes} 分` : `${hours} 小时`;
 }
 
+// 根据时间线事件起止时间计算总耗时。
 function formatTimelineDuration(eventList: TimelineEvent[]): string | null {
   if (eventList.length < 2) return null;
   const parseClock = (value: string) => {
@@ -320,11 +438,24 @@ function formatTimelineDuration(eventList: TimelineEvent[]): string | null {
   return formatDurationFromSeconds(diff);
 }
 
+// 根据时间线事件类型返回对应的界面样式。
 function getTimelineEventVisual(type: EventType) {
-  if (type === "done" || type === "report") {
+  if (type === "done" || type === "report" || type === "termination") {
     return {
       badgeClass: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
       bubbleClass: "border-emerald-500/20 bg-emerald-500/8",
+    };
+  }
+  if (type === "critique" || type === "revision_requested" || type === "replan") {
+    return {
+      badgeClass: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      bubbleClass: "border-amber-500/20 bg-amber-500/8",
+    };
+  }
+  if (type === "agent_pipeline_completed") {
+    return {
+      badgeClass: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      bubbleClass: "border-amber-500/20 bg-amber-500/8",
     };
   }
   if (type === "error") {
@@ -345,6 +476,7 @@ function getTimelineEventVisual(type: EventType) {
   };
 }
 
+// 解析时间线事件时间并转换为毫秒时间戳。
 function parseTimelineEventTimeMs(value: string | null | undefined): number | null {
   const normalized = String(value || "").trim();
   if (!normalized) return null;
@@ -357,10 +489,12 @@ function parseTimelineEventTimeMs(value: string | null | undefined): number | nu
   return base.getTime();
 }
 
+// 规范化步骤文本，便于后续去重和匹配。
 function normalizeProcedureStepKey(text: string | null | undefined) {
   return (text || "").replace(/\s+/g, " ").replace(/[：:，。,；;]+$/g, "").trim();
 }
 
+// 清洗中文检修步骤文本中的多余空格和格式噪声。
 function tidyChineseProcedureText(text: string | null | undefined) {
   return (text || "")
     .replace(/\s+/g, " ")
@@ -372,6 +506,182 @@ function tidyChineseProcedureText(text: string | null | undefined) {
     .trim();
 }
 
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function trimProcedureSemanticFragment(text: string | null | undefined) {
+  return tidyChineseProcedureText(text)
+    .replace(/^[，。；;、:：\s]+/, "")
+    .replace(/[，。；;、:：\s]+$/g, "")
+    .trim();
+}
+
+function trimProcedureStopClause(text: string) {
+  return text
+    .replace(/(避免|防止|确保|确认|以免|用于).*/g, "")
+    .trim();
+}
+
+function findProcedureSemanticAction(texts: Array<string | null | undefined>): ProcedureSemanticActionMatch | null {
+  let bestMatch: ProcedureSemanticActionMatch | null = null;
+
+  for (const rawText of texts) {
+    const text = tidyChineseProcedureText(rawText);
+    if (!text) continue;
+
+    for (const family of PROCEDURE_ACTION_FAMILIES) {
+      for (const variant of family.variants) {
+        const index = text.indexOf(variant);
+        if (index < 0) continue;
+        if (
+          !bestMatch ||
+          index < bestMatch.index ||
+          (index === bestMatch.index && variant.length > bestMatch.variant.length)
+        ) {
+          bestMatch = { canonical: family.canonical, variant, index };
+        }
+      }
+    }
+
+  }
+
+  return bestMatch;
+}
+
+function deriveProcedureSemanticEntityCandidate(
+  text: string | null | undefined,
+  actionMatch: ProcedureSemanticActionMatch | null,
+) {
+  const normalized = tidyChineseProcedureText(text).split(/[。；]/)[0]?.trim() || "";
+  if (!normalized || !actionMatch) return "";
+
+  const variants = Array.from(
+    new Set(
+      PROCEDURE_ACTION_FAMILIES.find((family) => family.canonical === actionMatch.canonical)?.variants ?? [
+        actionMatch.variant,
+        actionMatch.canonical,
+      ],
+    ),
+  );
+
+  for (const variant of variants) {
+    const index = normalized.indexOf(variant);
+    if (index < 0) continue;
+
+    const trailing = normalized.slice(index + variant.length);
+    const candidate = trimProcedureSemanticFragment(
+      trimProcedureStopClause(
+        trailing
+          .replace(/^(并|再|将|把|对|于|向|往)+/, "")
+          .replace(/^(?:小心|垂直|逐一|依次|缓慢|轻轻|逆时针转动|顺时针转动|逆时针|顺时针)+/, ""),
+      )
+        .split(/(?:并|然后|再|后|前|时)/)[0],
+    );
+
+    if (candidate.length >= 2) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function deriveProcedureSemanticHeadline(
+  step: StructuredProcedureStep,
+  actionMatch: ProcedureSemanticActionMatch | null,
+  objectLabel: string,
+) {
+  const candidates = [step.summary, step.rawText, step.title];
+
+  for (const rawCandidate of candidates) {
+    const candidate = tidyChineseProcedureText(rawCandidate).split(/[。；]/)[0]?.trim() || "";
+    if (!candidate) continue;
+
+    let headline = candidate.replace(/^使用/, "").replace(/^(请|先|再|将|把)/, "").trim();
+    if (objectLabel) {
+      headline = headline.replace(new RegExp(escapeRegExp(objectLabel), "g"), "").trim();
+    }
+    headline = trimProcedureSemanticFragment(trimProcedureStopClause(headline));
+    if (!headline) continue;
+
+    if (actionMatch && headline === actionMatch.canonical) continue;
+    if (headline === step.title) continue;
+
+    return headline;
+  }
+
+  return tidyChineseProcedureText(step.title) || "按步骤执行";
+}
+
+function buildProcedurePrimaryDetail(step: StructuredProcedureStep) {
+  const summary = tidyChineseProcedureText(step.summary);
+  if (summary && summary !== "按手册原文执行该步骤。") {
+    return summary;
+  }
+
+  const rawText = tidyChineseProcedureText(step.rawText);
+  if (rawText && rawText !== step.title) {
+    return rawText;
+  }
+
+  return tidyChineseProcedureText(step.title);
+}
+
+function buildReasoningProcedureStepHint(step: StructuredProcedureStep, index: number): ReasoningProcedureStepHint {
+  const normalizedAction = tidyChineseProcedureText(step.action);
+  const actionMatch = normalizedAction
+    ? findProcedureSemanticAction([normalizedAction]) ?? { canonical: normalizedAction, variant: normalizedAction, index: 0 }
+    : findProcedureSemanticAction([step.title, step.summary, step.rawText]);
+  const objectLabel =
+    tidyChineseProcedureText(step.object) ||
+    deriveProcedureSemanticEntityCandidate(step.title, actionMatch) ||
+    deriveProcedureSemanticEntityCandidate(step.summary, actionMatch) ||
+    deriveProcedureSemanticEntityCandidate(step.rawText, actionMatch);
+  const headline = tidyChineseProcedureText(step.headline) || deriveProcedureSemanticHeadline(step, actionMatch, objectLabel);
+  const detail = tidyChineseProcedureText(step.detail) || buildProcedurePrimaryDetail(step);
+
+  return {
+    id: `reasoning-step-${step.stepNo ?? index}`,
+    stepNo: step.stepNo,
+    title: step.title || `步骤 ${index + 1}`,
+    summary: step.summary || "",
+    rawText: step.rawText,
+    actionLabel: normalizedAction || (actionMatch ? actionMatch.canonical : null),
+    objectLabel: objectLabel || null,
+    headline,
+    detail,
+    sections: step.sections,
+    meta: step.meta,
+  };
+}
+
+// 从较长的步骤文本中提取适合图谱节点展示的短标题。
+function splitProcedureHeadline(text: string | null | undefined) {
+  const normalized = tidyChineseProcedureText(text)
+    .replace(/^步骤\s*\d+[:：]?\s*/i, "")
+    .replace(/^\d+[.、]\s*/, "")
+    .trim();
+  if (!normalized) {
+    return { title: "", remainder: "" };
+  }
+
+  const noticeParts = normalized.split(/注意[:：]/);
+  const primaryText = noticeParts[0]?.trim() || normalized;
+  const noticeText = noticeParts.slice(1).join(" ").trim();
+  const matched = primaryText.match(/^([^，；。]+)[，；。]?\s*(.*)$/);
+  const title = tidyChineseProcedureText(matched?.[1] || primaryText);
+  const remainderParts = [matched?.[2] || "", noticeText ? `注意：${noticeText}` : ""]
+    .map((item) => tidyChineseProcedureText(item))
+    .filter(Boolean);
+
+  return {
+    title,
+    remainder: remainderParts.join(" "),
+  };
+}
+
+// 将步骤说明拆分为若干独立条目。
 function splitProcedureItems(text: string | null | undefined) {
   const compact = (text || "").replace(/\s+/g, " ").trim();
   if (!compact) return [];
@@ -384,6 +694,7 @@ function splitProcedureItems(text: string | null | undefined) {
   return [tidyChineseProcedureText(compact)];
 }
 
+// 将操作步骤按动作语义拆分为更细粒度条目。
 function splitProcedureActionItems(text: string | null | undefined) {
   const compact = (text || "").replace(/\s+/g, " ").trim();
   if (!compact) return [];
@@ -394,6 +705,7 @@ function splitProcedureActionItems(text: string | null | undefined) {
   return parts.length > 0 ? parts : [tidyChineseProcedureText(compact)];
 }
 
+// 对步骤列表按编号和内容进行去重。
 function dedupeProcedureSteps(items: string[]) {
   const deduped: string[] = [];
   const stepIndexByNo = new Map<string, number>();
@@ -426,90 +738,7 @@ function dedupeProcedureSteps(items: string[]) {
   return deduped;
 }
 
-/** 标准作业步骤与诊断建议步骤的弱匹配（笔画级二元组 + 字符重合），用于无同名模板时的对齐提示 */
-const DIAG_STEP_MATCH_MIN_SCORE = 6;
-
-type DiagnosisMatchCandidate = { diagIndex: number; text: string };
-
-function corpusForTaskStepMatch(step: { title?: string; instruction?: string }) {
-  return tidyChineseProcedureText(`${step.title || ""} ${(step.instruction || "").slice(0, 160)}`);
-}
-
-function overlapScoreForDiagnosisLink(a: string, b: string): number {
-  const A = (a || "").replace(/\s/g, "");
-  const B = (b || "").replace(/\s/g, "");
-  if (!A || !B) return 0;
-  let score = 0;
-  for (let i = 0; i < A.length - 1; i++) {
-    if (B.includes(A.slice(i, i + 2))) score += 3;
-  }
-  const shorter = A.length <= B.length ? A : B;
-  const longer = A.length <= B.length ? B : A;
-  for (let i = 0; i < shorter.length; i++) {
-    if (longer.includes(shorter[i]!)) score += 0.12;
-  }
-  return score;
-}
-
-function buildDiagnosisMatchCandidates(
-  isProceduralAnswer: boolean,
-  structuredProcedureSteps: StructuredProcedureStep[],
-  backendStructuredNextSteps: StructuredDiagnosisStep[],
-  displayedRecommendedSteps: string[],
-): DiagnosisMatchCandidate[] {
-  if (isProceduralAnswer && structuredProcedureSteps.length > 0) {
-    return structuredProcedureSteps.map((item, diagIndex) => ({
-      diagIndex,
-      text: tidyChineseProcedureText(
-        [item.title, item.summary, ...(item.meta ?? [])].filter(Boolean).join(" "),
-      ),
-    })).filter((c) => c.text.length > 0);
-  }
-  if (backendStructuredNextSteps.length > 0) {
-    return backendStructuredNextSteps
-      .map((item, diagIndex) => ({
-        diagIndex,
-        text: tidyChineseProcedureText(item.raw_text || item.title || item.summary || ""),
-      }))
-      .filter((c) => c.text.length > 0);
-  }
-  return displayedRecommendedSteps
-    .map((text, diagIndex) => ({
-      diagIndex,
-      text: tidyChineseProcedureText(text),
-    }))
-    .filter((c) => c.text.length > 0);
-}
-
-/** 诊断工作区每一行建议 → 对应的标准作业步骤标题（便于反向跳转心智模型） */
-function computeDiagnosisToStandardStepTitles(
-  steps: Array<{ title?: string; instruction?: string; step_order?: number }> | undefined,
-  candidates: DiagnosisMatchCandidate[],
-): (string | null)[] {
-  const list = steps ?? [];
-  if (list.length === 0 || candidates.length === 0) return candidates.map(() => null);
-
-  const sameLengthPairing = candidates.length === list.length;
-  if (sameLengthPairing) {
-    return candidates.map((_, candIdx) => list[candIdx]?.title?.trim() || null);
-  }
-
-  return candidates.map((c) => {
-    let best: { title: string; score: number } | null = null;
-    for (const step of list) {
-      const corpus = corpusForTaskStepMatch(step);
-      const score = overlapScoreForDiagnosisLink(corpus, c.text);
-      const title = step.title?.trim();
-      if (!title) continue;
-      if (!best || score > best.score) {
-        best = { title, score };
-      }
-    }
-    if (best && best.score >= DIAG_STEP_MATCH_MIN_SCORE) return best.title;
-    return null;
-  });
-}
-
+// 将原始步骤文本解析为结构化的工序步骤对象。
 function parseStructuredProcedureStep(rawItem: string, index: number): StructuredProcedureStep {
   const compact = normalizeProcedureStepKey(rawItem);
   const matched = compact.match(/^(\d+)\.\s*(.*)$/);
@@ -531,13 +760,9 @@ function parseStructuredProcedureStep(rawItem: string, index: number): Structure
     cleanedBody = cleanedBody.replace(torqueMatch[1], "").trim();
   }
 
-  let title = cleanedBody;
-  let remainder = "";
-  const firstSentence = cleanedBody.match(/^([^。；]+)[。；]?\s*(.*)$/);
-  if (firstSentence) {
-    title = firstSentence[1].trim();
-    remainder = firstSentence[2].trim();
-  }
+  const headline = splitProcedureHeadline(cleanedBody);
+  let title = headline.title || cleanedBody;
+  let remainder = headline.remainder;
 
   const actionSplit = title.match(/^([^\s]+)\s+(.+)$/);
   if (actionSplit && actionSplit[1].length <= 12 && actionSplit[2].length >= 4) {
@@ -589,18 +814,25 @@ function parseStructuredProcedureStep(rawItem: string, index: number): Structure
     stepNo,
     title: tidyChineseProcedureText(title) || `步骤 ${index + 1}`,
     summary,
+    rawText: tidyChineseProcedureText(body) || tidyChineseProcedureText(compact),
+    action: null,
+    object: null,
+    headline: null,
+    detail: null,
     sections,
     meta,
   };
 }
 
+// 将结构化诊断步骤标准化为统一的工序步骤格式。
 function normalizeStructuredProcedureStep(
   step: StructuredDiagnosisStep,
   index: number,
 ): StructuredProcedureStep {
   const stepNo = step.step_no != null ? String(step.step_no) : null;
-  const title = tidyChineseProcedureText(step.title) || `步骤 ${index + 1}`;
-  const summary = tidyChineseProcedureText(step.summary || "");
+  const headline = splitProcedureHeadline(step.title || step.raw_text || "");
+  const title = headline.title || tidyChineseProcedureText(step.title) || `步骤 ${index + 1}`;
+  const summary = tidyChineseProcedureText(step.summary || headline.remainder || "");
   const sections = Array.isArray(step.sections)
     ? step.sections
         .map((section) => ({
@@ -618,11 +850,17 @@ function normalizeStructuredProcedureStep(
     stepNo,
     title,
     summary,
+    rawText: tidyChineseProcedureText(step.raw_text || `${step.title}${summary ? ` ${summary}` : ""}`),
+    action: tidyChineseProcedureText(step.action),
+    object: tidyChineseProcedureText(step.object),
+    headline: tidyChineseProcedureText(step.headline),
+    detail: tidyChineseProcedureText(step.detail),
     sections,
     meta,
   };
 }
 
+// 按步骤编号对结构化工序步骤进行排序。
 function sortStructuredProcedureSteps(items: StructuredProcedureStep[]) {
   return [...items].sort((left, right) => {
     const leftStepNo = left.stepNo ? Number(left.stepNo) : Number.NaN;
@@ -655,12 +893,26 @@ const statusMeta = {
     summary: "结论与建议已同步，可直接复核并导出。",
     icon: CheckCircle2,
   },
+  diagnosis_completed: {
+    label: "待收口",
+    badgeClass: "border-amber-500/25 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    panelClass: "border-amber-500/20 bg-amber-500/6",
+    summary: "诊断结果已生成，但任务仍待规划、审核或人工确认后收口。",
+    icon: Clock,
+  },
   running: {
     label: "诊断中",
     badgeClass: "border-blue-500/25 bg-blue-500/10 text-blue-600 dark:text-blue-400",
     panelClass: "border-blue-500/20 bg-blue-500/6",
     summary: "协作诊断流已建立，结论和时间线会持续更新。",
     icon: Loader2,
+  },
+  pending: {
+    label: "待处理",
+    badgeClass: "border-amber-500/25 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    panelClass: "border-amber-500/20 bg-amber-500/6",
+    summary: "任务记录已创建，正在等待正式启动诊断流程。",
+    icon: Clock,
   },
   failed: {
     label: "诊断失败",
@@ -671,6 +923,56 @@ const statusMeta = {
   },
 } as const;
 
+// 渲染骨架屏占位块。
+function SkeletonBlock({ className }: { className?: string }) {
+  return <div className={`animate-pulse rounded-lg bg-muted/50 ${className ?? ""}`} />;
+}
+
+// 渲染任务详情页的加载骨架屏。
+function TaskDetailSkeleton() {
+  return (
+    <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
+      <aside className="space-y-4">
+        <div className="app-card p-5 space-y-4">
+          <SkeletonBlock className="h-4 w-24" />
+          <SkeletonBlock className="h-16" />
+          <SkeletonBlock className="h-10" />
+          <SkeletonBlock className="h-10" />
+          <div className="space-y-3 pt-1">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="flex items-start gap-3">
+                <SkeletonBlock className="h-6 w-6 shrink-0 rounded-full" />
+                <div className="flex-1 space-y-1.5">
+                  <SkeletonBlock className="h-3.5 w-28" />
+                  <SkeletonBlock className="h-3 w-40" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+      <section className="space-y-4">
+        <div className="app-card p-5 space-y-4">
+          <div className="flex items-center justify-between pb-4 border-b border-border">
+            <div className="space-y-2">
+              <SkeletonBlock className="h-5 w-32" />
+              <SkeletonBlock className="h-3.5 w-64" />
+            </div>
+            <SkeletonBlock className="h-6 w-20 rounded-full" />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {[1, 2, 3, 4].map((i) => (
+              <SkeletonBlock key={i} className="h-[84px] rounded-xl" />
+            ))}
+          </div>
+          <SkeletonBlock className="h-48 rounded-xl" />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// 渲染任务状态徽标。
 function StatusBadge({ status }: { status: DisplayStatus }) {
   const meta = statusMeta[status];
   const Icon = meta.icon;
@@ -682,6 +984,7 @@ function StatusBadge({ status }: { status: DisplayStatus }) {
   );
 }
 
+// 渲染任务概览区域中的单个信息项。
 function OverviewItem({
   label,
   value,
@@ -702,6 +1005,7 @@ function OverviewItem({
   );
 }
 
+// 渲染任务详情页面，并承载诊断结果与操作流程。
 export default function TaskDetailPage({ params }: { params: Promise<{ taskId: string }> }) {
   const { taskId } = use(params);
   const router = useRouter();
@@ -709,16 +1013,17 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const backHref = useMemo(() => {
     const raw = searchParams.get("from")?.trim();
     if (raw && raw.startsWith("/")) return raw;
-    return "/tasks";
+    return ROUTES.diagnosisHistory;
   }, [searchParams]);
   const numericTaskId = useMemo(() => (/^\d+$/.test(taskId) ? Number(taskId) : null), [taskId]);
   const streamRef = useRef<EventSource | null>(null);
   const eventsRef = useRef<TimelineEvent[]>([]);
   const ragConclusionRef = useRef<string | null>(null);
   const autoStartGuardRef = useRef(false);
+  const runInitiatedRef = useRef(false);
 
   const [task, setTask] = useState<MaintenanceTaskDetail | null>(null);
-  const [status, setStatus] = useState<TaskStatus>("running");
+  const [status, setStatus] = useState<TaskStatus>("pending");
   const [detailLoaded, setDetailLoaded] = useState(false);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [ragConclusion, setRagConclusion] = useState<string | null>(null);
@@ -731,22 +1036,22 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const [matchedDevice, setMatchedDevice] = useState<MaintenanceDeviceItem | null>(null);
   const [matchingDevice, setMatchingDevice] = useState(false);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<DiagnosisWorkspaceTab>("fault");
+  const [createCaseOpen, setCreateCaseOpen] = useState(false);
+  const [caseSubmitting, setCaseSubmitting] = useState(false);
+  const [caseError, setCaseError] = useState<string | null>(null);
   const hasPersistedDiagnosis = hasResolvedDiagnosisPayload(task, ragConclusionRef.current);
-  const hasTerminalTimeline = Boolean(task?.execution_timeline?.some((event) => event.type === "done"));
+  const hasTerminalTimeline = hasTerminalTaskTimeline(task);
+  const hasDiagnosisResultReady = status === "completed" || status === "diagnosis_completed";
   const shouldBackfillReport =
     task != null &&
-    status === "completed" &&
+    hasDiagnosisResultReady &&
     !ragConclusionRef.current?.trim() &&
     !task.diagnosis_structured?.preliminary_conclusion?.trim();
   const workOrderAssetCode = task?.asset_code || "";
   const workOrderDeviceType = task?.equipment_type || "";
   const workOrderDeviceModel = task?.equipment_model?.trim() || "";
 
-  const getTaskStreamGuardKey = useCallback(
-    () => (numericTaskId == null ? null : `maintenance-task-stream-started:${numericTaskId}`),
-    [numericTaskId],
-  );
-
+  // 清理地址栏中的自动处理参数，避免重复触发流程。
   const clearProcessActionParam = useCallback(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -757,6 +1062,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 
+  // 关闭当前诊断事件流并同步重置流式状态。
   const closeStream = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.close();
@@ -765,7 +1071,8 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     setStreaming(false);
   }, []);
 
-  const appendEvent = useCallback((type: EventType, title: string, description: string) => {
+  // 向本地时间线追加一条事件，并在首次事件时记录开始时间。
+  const appendEvent = useCallback((type: EventType, title: string, description: string, detail?: string | null) => {
     const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const evt = {
       id,
@@ -773,6 +1080,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
       title,
       description,
       time: new Date().toISOString(),
+      detail,
     };
     const next = [...eventsRef.current, evt];
     eventsRef.current = next;
@@ -786,27 +1094,44 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     return next;
   }, []);
 
+  // 将后端任务详情同步到页面状态，并处理报告与时间线恢复逻辑。
   const syncTaskDetailState = useCallback((detail: MaintenanceTaskDetail) => {
     setTask(detail);
+    const hasPersistedReport = hasPersistedDiagnosisReport(detail);
     const persistedReport =
       detail.diagnosis_report?.trim() ||
       detail.diagnosis_structured?.preliminary_conclusion?.trim() ||
       null;
+    const rawStatus = String(detail.status || "").toLowerCase();
+    const hasPersistedTimeline = Array.isArray(detail.execution_timeline) && detail.execution_timeline.length > 0;
+    const shouldPreserveRuntimeTimeline =
+      !hasPersistedTimeline &&
+      rawStatus === "pending" &&
+      (eventsRef.current.length > 0 || runInitiatedRef.current) &&
+      !hasPersistedReport;
     setRagConclusion(persistedReport);
     ragConclusionRef.current = persistedReport;
-    if (Array.isArray(detail.execution_timeline) && detail.execution_timeline.length > 0) {
+    if (hasPersistedTimeline || hasPersistedReport || rawStatus === "in_progress" || rawStatus === "completed" || rawStatus === "failed" || rawStatus === "skipped") {
+      runInitiatedRef.current = false;
+    }
+    if (hasPersistedTimeline) {
       const restored = detail.execution_timeline as TimelineEvent[];
       setEvents(restored);
       eventsRef.current = restored;
       setRunStartedAtMs(parseTimelineEventTimeMs(restored[0]?.time) ?? null);
+    } else if (shouldPreserveRuntimeTimeline) {
+      setEvents([...eventsRef.current]);
+      setRunStartedAtMs(parseTimelineEventTimeMs(eventsRef.current[0]?.time) ?? null);
     } else {
       setEvents([]);
       eventsRef.current = [];
       setRunStartedAtMs(parseTimelineEventTimeMs(detail.run_started_at) ?? null);
     }
-    setStatus(inferTaskRuntimeStatus(detail, persistedReport));
+    const nextStatus = inferTaskRuntimeStatus(detail, persistedReport);
+    setStatus(shouldPreserveRuntimeTimeline && nextStatus === "pending" ? "running" : nextStatus);
   }, []);
 
+  // 拉取任务详情并刷新页面展示状态。
   const loadTaskDetail = useCallback(async () => {
     if (numericTaskId == null) return null;
     try {
@@ -821,22 +1146,23 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     }
   }, [numericTaskId, syncTaskDetailState]);
 
+  // 建立诊断 SSE 流并持续接收阶段事件与报告内容。
   const startDiagnosisStream = useCallback(
     (sourceTask?: MaintenanceTaskDetail | null) => {
       if (numericTaskId == null) return;
       const currentTask = sourceTask ?? task;
       if (currentTask == null) return;
 
-      const streamGuardKey = getTaskStreamGuardKey();
-      if (streamGuardKey && typeof window !== "undefined") {
-        window.sessionStorage.setItem(streamGuardKey, "1");
-      }
-
       closeStream();
+      runInitiatedRef.current = true;
       setStreaming(true);
       setStatus("running");
 
-      const query = currentTask.symptom_description || currentTask.fault_type || currentTask.title || "";
+      const query =
+        formatSymptomForDisplay(currentTask.symptom_description) ||
+        currentTask.fault_type ||
+        currentTask.title ||
+        "";
       const params = new URLSearchParams({
         maintenance_task_id: String(numericTaskId),
         query,
@@ -880,6 +1206,76 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
           appendEvent("report", "诊断报告生成", "已生成诊断摘要");
         }
       });
+      source.addEventListener("critique_created", (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as {
+            verdict?: string;
+            target_stage?: string;
+            summary?: string;
+            issues?: string[];
+          };
+          appendEvent(
+            "critique",
+            "审核意见生成",
+            payload.summary || "已生成审核意见",
+            `verdict=${payload.verdict || "unknown"}; target_stage=${payload.target_stage || ""}; issues=${(payload.issues || []).join(" | ")}`,
+          );
+        } catch {
+          appendEvent("critique", "审核意见生成", "已生成审核意见");
+        }
+      });
+      source.addEventListener("revision_requested", (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as {
+            target_stage?: string;
+            revision_round?: number;
+            reason?: string;
+            issues?: string[];
+          };
+          appendEvent(
+            "revision_requested",
+            `${payload.target_stage || "diagnosis"} 需要修订`,
+            payload.reason || "已请求回跑修订",
+            `target_stage=${payload.target_stage || ""}; revision_round=${payload.revision_round || 0}; issues=${(payload.issues || []).join(" | ")}`,
+          );
+        } catch {
+          appendEvent("revision_requested", "诊断需要修订", "已请求回跑修订");
+        }
+      });
+      source.addEventListener("replan_applied", (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as {
+            action?: string;
+            target_stage?: string;
+            reason?: string;
+          };
+          appendEvent(
+            "replan",
+            "重规划决策已应用",
+            payload.reason || "已完成阶段重规划",
+            `action=${payload.action || ""}; target_stage=${payload.target_stage || ""}`,
+          );
+        } catch {
+          appendEvent("replan", "重规划决策已应用", "已完成阶段重规划");
+        }
+      });
+      source.addEventListener("termination_decided", (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as {
+            status?: string;
+            reason?: string;
+            manual_review_required?: boolean;
+          };
+          appendEvent(
+            "termination",
+            "图执行已收束",
+            payload.reason || "执行已结束",
+            `status=${payload.status || "completed"}; manual_review_required=${String(Boolean(payload.manual_review_required))}`,
+          );
+        } catch {
+          appendEvent("termination", "图执行已收束", "执行已结束");
+        }
+      });
       source.addEventListener("stream_error", (e) => {
         try {
           const payload = JSON.parse((e as MessageEvent).data) as { error?: string };
@@ -887,20 +1283,20 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
         } catch {
           appendEvent("error", "诊断失败", "流式执行失败");
         }
+        runInitiatedRef.current = false;
         setStatus("failed");
         closeStream();
       });
       source.addEventListener("done", () => {
-        appendEvent("done", "诊断任务完成", "已结束并回写任务状态");
-        setStatus("completed");
         closeStream();
         void loadTaskDetail();
       });
       source.onerror = () => {
+        runInitiatedRef.current = false;
         closeStream();
       };
     },
-    [appendEvent, closeStream, getTaskStreamGuardKey, loadTaskDetail, numericTaskId, task],
+    [appendEvent, closeStream, loadTaskDetail, numericTaskId, task],
   );
 
   useEffect(() => {
@@ -916,32 +1312,46 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     void (async () => {
       const detail = await loadTaskDetail();
       if (detail == null || autoStartGuardRef.current) return;
-      const streamGuardKey = getTaskStreamGuardKey();
-      const hasStartedInSession =
-        streamGuardKey && typeof window !== "undefined" ? window.sessionStorage.getItem(streamGuardKey) === "1" : false;
       const hasTimeline = Array.isArray(detail.execution_timeline) && detail.execution_timeline.length > 0;
-      const hasPersistedReport = Boolean(
-        detail.diagnosis_report?.trim() || detail.diagnosis_structured?.preliminary_conclusion?.trim(),
-      );
+      const hasPersistedReport = hasPersistedDiagnosisReport(detail);
       const rawStatus = String(detail.status || "").toLowerCase();
+      const hasProcessAction = searchParams.get("action") === "process";
       const shouldAutoStartInitialRun =
-        searchParams.get("action") === "process" &&
-        !hasStartedInSession &&
+        hasProcessAction &&
         !hasTimeline &&
         !hasPersistedReport &&
         rawStatus === "pending" &&
-        (detail.completed_steps ?? 0) === 0;
+        !streaming;
       if (shouldAutoStartInitialRun) {
         autoStartGuardRef.current = true;
         startDiagnosisStream(detail);
+        clearProcessActionParam();
+        return;
       }
-      if (searchParams.get("action") === "process") {
+      if (
+        hasProcessAction &&
+        (hasTimeline || hasPersistedReport || rawStatus === "in_progress" || rawStatus === "completed")
+      ) {
         clearProcessActionParam();
       }
     })();
-  }, [clearProcessActionParam, getTaskStreamGuardKey, loadTaskDetail, numericTaskId, searchParams, startDiagnosisStream]);
+  }, [clearProcessActionParam, loadTaskDetail, numericTaskId, searchParams, startDiagnosisStream, streaming]);
 
-  useEffect(() => () => closeStream(), []);
+  useEffect(() => () => closeStream(), [closeStream]);
+
+  const loadTaskDetailRef = useRef(loadTaskDetail);
+  useEffect(() => { loadTaskDetailRef.current = loadTaskDetail; });
+
+  useEffect(() => {
+    if (numericTaskId == null) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void loadTaskDetailRef.current();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [numericTaskId]);
 
   useEffect(() => {
     if (numericTaskId == null || streaming) return;
@@ -1023,6 +1433,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     };
   }, [createWorkOrderOpen, workOrderAssetCode, workOrderDeviceType, workOrderDeviceModel]);
 
+  // 重置当前任务状态并重新发起一次诊断流程。
   const retry = () => {
     if (numericTaskId == null) return;
     closeStream();
@@ -1049,6 +1460,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     })();
   };
 
+  // 导出当前任务的诊断结果数据。
   const exportReport = () => {
     void (async () => {
       if (numericTaskId == null) return;
@@ -1063,6 +1475,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     })();
   };
 
+  // 基于当前诊断任务创建关联检修工单。
   const createLinkedWorkOrder = () => {
     if (!task) return;
     const token = getMaintenanceToken();
@@ -1080,14 +1493,18 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
       try {
         const createdWorkOrder = await createWorkOrder(token, {
           device_id: matchedDevice.id,
-          maintenance_level: task.maintenance_level || "standard",
+          maintenance_level: normalizeMaintenanceLevelOption(task.maintenance_level),
           source_task_id: numericTaskId ?? undefined,
         });
         const workOrderId = Number(createdWorkOrder?.id);
         setCreateWorkOrderOpen(false);
-        toast.success("已基于当前诊断任务生成检修工单");
         if (Number.isFinite(workOrderId) && workOrderId > 0) {
+          setTask((prev) => (prev ? { ...prev, linked_work_order_id: workOrderId } : prev));
+          await loadTaskDetail();
+          toast.success(`已生成检修工单 #${workOrderId}`);
           router.push(`/tickets/${workOrderId}`);
+        } else {
+          toast.success("已基于当前诊断任务生成检修工单");
         }
       } catch (e) {
         setWorkOrderError(e instanceof Error ? e.message : "生成工单失败");
@@ -1100,7 +1517,49 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const deviceLabel = task
     ? `${task.equipment_type}${task.equipment_model ? ` ${task.equipment_model}` : ""}`
     : "设备";
-  const headline = task?.symptom_description || task?.title || "正在同步任务信息";
+
+  // 将当前诊断结果沉淀为知识案例。
+  const createLinkedCase = () => {
+    if (!task || numericTaskId == null) return;
+    const structured = task.diagnosis_structured;
+    const title = structured?.most_likely_fault
+      ? `${task.equipment_type} — ${structured.most_likely_fault}`
+      : formatSymptomForDisplay(task.symptom_description) || task.title || `任务 #${numericTaskId} 案例`;
+    const processingSteps = (structured?.next_steps ?? [])
+      .map((s) => (typeof s === "string" ? s : s.title ?? ""))
+      .filter(Boolean);
+    const payload = {
+      title,
+      equipment_type: task.equipment_type || "",
+      symptom_description: formatSymptomForDisplay(task.symptom_description) || headline,
+      processing_steps: processingSteps.length > 0 ? processingSteps : undefined,
+      resolution_summary: structured?.preliminary_conclusion || stripReportHeadingMarkdown(extractReportSection(ragConclusion, ["■ 诊断结论", "诊断结论", "结论"])) || undefined,
+      equipment_model: task.equipment_model || undefined,
+      fault_type: structured?.most_likely_fault || undefined,
+      work_order_id: task.linked_work_order_id != null ? String(task.linked_work_order_id) : undefined,
+      task_id: numericTaskId,
+      knowledge_refs: task.source_refs ?? [],
+    };
+    setCaseError(null);
+    setCaseSubmitting(true);
+    void (async () => {
+      try {
+        const created = await createMaintenanceCase(payload);
+        setCreateCaseOpen(false);
+        toast.success("案例已沉淀，等待审核后将进入知识库");
+        setTask((prev) => (prev ? { ...prev, linked_case_id: created.id } : prev));
+      } catch (e) {
+        setCaseError(e instanceof Error ? e.message : "沉淀案例失败");
+      } finally {
+        setCaseSubmitting(false);
+      }
+    })();
+  };
+
+  const headline = useMemo(() => {
+    const raw = task?.symptom_description || task?.title || "正在同步任务信息";
+    return formatSymptomForDisplay(raw) || raw;
+  }, [task?.symptom_description, task?.title]);
   const timelineDuration = useMemo(() => formatTimelineDuration(events), [events]);
   const runningDuration =
     status === "running" && runStartedAtMs != null
@@ -1109,14 +1568,15 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const duration =
     status === "running"
       ? runningDuration || "进行中"
-      : timelineDuration ||
-        (task && status === "completed"
+      : timelineDuration && timelineDuration !== "不足 1 秒"
+        ? timelineDuration
+        : (task && hasDiagnosisResultReady
           ? formatDurationBetween(task.run_started_at || task.created_at, task.run_finished_at || task.updated_at)
           : null) ||
-        "--";
-  const latestReportEvent = [...events].reverse().find((event) => event.type === "report" || event.type === "done");
+          "--";
+  const latestReportEvent = [...events].reverse().find((event) => event.type === "report");
   const latestErrorEvent = [...events].reverse().find((event) => event.type === "error");
-  const citedRefs = task?.source_refs ?? [];
+  const citedRefs = useMemo(() => task?.source_refs ?? [], [task?.source_refs]);
   const conclusionSection = stripReportHeadingMarkdown(
     extractReportSection(ragConclusion, ["■ 诊断结论", "诊断结论", "结论"]),
   );
@@ -1143,19 +1603,19 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   );
   const ragFallbackText =
     citedRefs.length > 0
-      ? `已基于 ${citedRefs.length} 条知识依据启动 RAG 检索，请结合引用条目继续复核当前结论。`
-      : "当前尚未拿到稳定知识引用，建议补充设备型号、故障现象或现场图片后重新触发诊断。";
+      ? `系统已结合 ${citedRefs.length} 条检修资料完成本轮诊断，请继续核对现场现象并决定是否生成工单。`
+      : "当前诊断信息仍不充分，建议补充设备型号、故障现象或现场图片后重新触发诊断。";
   const structuredDiagnosis = task?.diagnosis_structured ?? null;
   const isProceduralAnswer = structuredDiagnosis?.answer_mode === "procedure";
 
   const conclusionText =
     !detailLoaded
       ? "正在加载任务详情与诊断结果。"
-      : status === "completed"
+      : hasDiagnosisResultReady
       ? structuredDiagnosis?.preliminary_conclusion || conclusionSection || ragConclusion || latestReportEvent?.description || ragFallbackText
       : status === "failed"
         ? latestErrorEvent?.description || "协作诊断流中断，建议检查输入信息或重新运行。"
-        : structuredDiagnosis?.preliminary_conclusion || conclusionSection || ragConclusion || latestReportEvent?.description || "协作诊断已接入实时流，系统正在进行知识召回、依据汇总和处理建议生成。";
+        : structuredDiagnosis?.preliminary_conclusion || conclusionSection || ragConclusion || latestReportEvent?.description || "协作诊断已接入实时流，系统正在整理诊断结论与后续执行步骤。";
 
   const displayStatus: DisplayStatus = detailLoaded ? status : "loading";
   const statusSummaryMeta = statusMeta[displayStatus];
@@ -1164,7 +1624,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     ? structuredDiagnosis.root_causes.map((item) => ({
         title: item.name,
         confidence: item.confidence,
-        evidence: item.evidence,
+      evidence: item.evidence,
       }))
     : buildRootCauseCandidates(reasonSection, conclusionSection, citedRefs, confidenceScore);
   const evidenceCount = structuredDiagnosis?.evidence_count ?? citedRefs.length;
@@ -1173,6 +1633,9 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const backendStructuredNextSteps = rawBackendNextSteps.filter(isStructuredDiagnosisStep);
   const backendLegacyNextSteps = rawBackendNextSteps.filter((item): item is string => typeof item === "string");
   const hasStructuredBackendSteps = backendStructuredNextSteps.length > 0;
+  const normalizedBackendProcedureSteps = hasStructuredBackendSteps
+    ? backendStructuredNextSteps.map((item, index) => normalizeStructuredProcedureStep(item, index))
+    : [];
   const recommendedSteps = hasStructuredBackendSteps
     ? backendStructuredNextSteps
         .map((item) => tidyChineseProcedureText(item.raw_text || item.title || item.summary || ""))
@@ -1181,10 +1644,15 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const structuredProcedureSteps = isProceduralAnswer
     ? sortStructuredProcedureSteps(
         hasStructuredBackendSteps
-          ? backendStructuredNextSteps.map((item, index) => normalizeStructuredProcedureStep(item, index))
+          ? normalizedBackendProcedureSteps
           : recommendedSteps.map((item, index) => parseStructuredProcedureStep(item, index)),
       )
     : [];
+  const reasoningProcedureSteps = (
+    hasStructuredBackendSteps
+      ? sortStructuredProcedureSteps(normalizedBackendProcedureSteps)
+      : recommendedSteps.map((item, index) => parseStructuredProcedureStep(item, index))
+  ).map((item, index) => buildReasoningProcedureStepHint(item, index));
   const displayedRecommendedSteps = isProceduralAnswer
     ? structuredProcedureSteps.map((item) => `${item.stepNo ? `${item.stepNo}. ` : ""}${item.title}${item.summary ? ` ${item.summary}` : ""}`.trim())
     : hasStructuredBackendSteps
@@ -1196,75 +1664,160 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     reasonSection,
     headline,
   );
-  const diagnosisMatchCandidates = useMemo(
-    () =>
-      buildDiagnosisMatchCandidates(
-        Boolean(isProceduralAnswer),
-        structuredProcedureSteps,
-        backendStructuredNextSteps,
-        displayedRecommendedSteps,
-      ),
-    [
-      isProceduralAnswer,
-      structuredProcedureSteps,
-      backendStructuredNextSteps,
-      displayedRecommendedSteps,
-    ],
-  );
-  const diagnosisRowStandardTitles = useMemo(
-    () => computeDiagnosisToStandardStepTitles(task?.steps, diagnosisMatchCandidates),
-    [task?.steps, diagnosisMatchCandidates],
-  );
-  const structuredEvidenceItems = structuredDiagnosis?.evidence_items ?? [];
   const createdAtText = formatDateTimeLocal(task?.created_at);
   const updatedAtText = formatDateTimeLocal(task?.updated_at);
   const visibleTimelineEvents = useMemo(
     () => events.filter((event) => !isPlanningLabel(event.title) && !isPlanningLabel(event.description)),
     [events],
   );
-  const visibleTaskSteps = useMemo(
-    () =>
-      (task?.steps || []).filter(
-        (step) =>
-          !isPlanningLabel(step.title) &&
-          !isPlanningLabel(step.instruction) &&
-          !hasPlanningRuntimeEvents(
-            Array.isArray(step.runtime_events)
-              ? step.runtime_events.map((event) =>
-                  event && typeof event === "object"
-                    ? {
-                        title: "title" in event ? String(event.title || "") : "",
-                        description: "description" in event ? String(event.description || "") : "",
-                      }
-                    : { title: "", description: "" },
-                )
-              : [],
-          ),
-      ),
-    [task?.steps],
+  const collaborationModel = useMemo(
+    () => buildAgentCollaborationViewModel(task, events),
+    [events, task],
   );
-  const visibleCompletedSteps = useMemo(
-    () => visibleTaskSteps.filter((step) => step.status === "completed").length,
-    [visibleTaskSteps],
-  );
-  const keyEvidenceItems = sourceRefPreview.length > 0
-    ? sourceRefPreview.map((ref, index) => ({
-        id: `${ref.document_id ?? "doc"}-${ref.chunk_id ?? index}`,
-        title: ref.title || `知识条目 ${index + 1}`,
-        section: getKnowledgeSectionLabel(ref),
-        excerpt: ref.excerpt?.trim() || "当前引用仅返回来源信息，暂无可展示摘录。",
-        score: formatEvidenceScore(ref, Math.max(40, confidenceScore - index * 8)),
-      }))
+  const structuredEvidenceItems = structuredDiagnosis?.evidence_items ?? [];
+  const reasoningChain = task?.reasoning_chain ?? null;
+  const reasoningGraphCount =
+    (reasoningChain?.matched_entities?.length ?? 0) +
+    (reasoningChain?.expanded_relations?.length ?? 0) +
+    (reasoningChain?.evidence_chunks?.length ?? 0);
+  const keyEvidenceItems: TaskEvidencePanelItem[] = sourceRefPreview.length > 0
+    ? sourceRefPreview.map((ref, index) => {
+        const modalityMeta = getKnowledgeModalityMeta(ref);
+        const excerpt = ref.excerpt?.trim() || llmKnowledgeItems[index] || "当前引用仅返回来源信息，暂无可展示摘录。";
+        return {
+          id: `${ref.document_id ?? "doc"}-${ref.chunk_id ?? index}`,
+          title: ref.title || `知识条目 ${index + 1}`,
+          section: getKnowledgeSectionLabel(ref),
+          helper: modalityMeta.helper,
+          excerpt,
+          detailExcerpt: ref.expanded_content?.trim() || excerpt,
+          score: formatEvidenceScore(ref, Math.max(40, confidenceScore - index * 8)),
+          badges: buildEvidenceBadges(ref, modalityMeta.label),
+          group: resolveEvidenceGroup(ref),
+          recommendationReason: ref.recommendation_reason?.trim() || modalityMeta.helper,
+          sourceName: ref.source_name || ref.title,
+          citationLabel: ref.citation_label,
+          rawRef: ref,
+        };
+      })
     : structuredEvidenceItems.map((item, index) => ({
         id: `structured-evidence-${index}`,
         title: item.document_title,
         section: item.section || "命中片段",
+        helper: "来自结构化诊断证据摘要",
         excerpt: item.excerpt || "当前引用仅返回来源信息，暂无可展示摘录。",
+        detailExcerpt: item.excerpt || "当前引用仅返回来源信息，暂无可展示摘录。",
         score: {
           label: item.relevance_score ? "重排相关度" : "参考相关度",
           value: item.relevance_score ? `${item.relevance_score}%` : `${Math.max(40, confidenceScore - index * 8)}%`,
         },
+        badges: ["文本证据"],
+        group: "direct",
+        recommendationReason: "来自结构化诊断证据摘要",
+        sourceName: item.source_name || item.document_title,
+        citationLabel: null,
       }));
+  const getStepEvidenceItems = (index: number) => {
+    if (keyEvidenceItems.length === 0) return [];
+    const primary = keyEvidenceItems[Math.min(index, keyEvidenceItems.length - 1)];
+    const fallback = keyEvidenceItems[0];
+    return [primary, fallback]
+      .filter(Boolean)
+      .filter((item, itemIndex, list) => list.findIndex((candidate) => candidate.id === item.id) === itemIndex)
+      .slice(0, 2);
+  };
+  const hasImageEvidence = citedRefs.some((ref) => ["ocr", "vision", "image"].includes(String(ref.source_modality || "").toLowerCase()));
+  const evidenceStatusNote =
+    evidenceCount === 0
+      ? "当前未命中稳定证据，建议补充更具体的故障描述、设备型号或更清晰图片。"
+      : hasImageEvidence
+        ? "本次诊断已启用图片/OCR侧证据，并与文本知识片段联合引用。"
+        : "当前仅返回文本侧证据；若现场图片信息关键，建议补充更清晰图片后重新诊断。";
+  const workflowStages = useMemo(
+    () => {
+      const fallbackStages = [
+        {
+          key: "task_created",
+          title: "任务创建",
+          done: true,
+          active: false,
+          helper: "已接收故障描述、设备信息与输入上下文",
+        },
+        {
+          key: "knowledge_retrieval",
+          title: "知识检索",
+          done: keyEvidenceItems.length > 0 || events.length > 0,
+          active: status === "running" && keyEvidenceItems.length === 0,
+          helper: keyEvidenceItems.length > 0 ? `已命中 ${keyEvidenceItems.length} 条核心证据` : "正在召回知识依据",
+        },
+        {
+          key: "workflow_actions",
+          title: "链路完成步骤输出",
+          done: displayedRecommendedSteps.length > 0,
+          active: status === "running" && displayedRecommendedSteps.length === 0,
+          helper:
+            displayedRecommendedSteps.length > 0
+              ? `已整理 ${displayedRecommendedSteps.length} 条链路完成步骤`
+              : "等待诊断结果生成链路完成步骤",
+        },
+        {
+          key: "work_order",
+          title: "生成工单",
+          done: task?.linked_work_order_id != null,
+          active: status === "completed" && task?.linked_work_order_id == null,
+          helper: task?.linked_work_order_id != null
+            ? `工单 #${task.linked_work_order_id} 已生成`
+            : status === "completed"
+              ? "诊断已结束，可进入工单生成"
+              : status === "diagnosis_completed"
+                ? "诊断结果已生成，待流程收口后再生成工单"
+                : "需先完成诊断后再生成工单",
+        },
+        {
+          key: "knowledge_case",
+          title: "沉淀案例",
+          done: task?.linked_case_id != null,
+          active: task?.linked_work_order_id != null && task?.linked_case_id == null,
+          helper: task?.linked_case_id != null
+            ? `案例 #${task.linked_case_id} 已沉淀`
+            : "工单闭环后可继续沉淀为知识案例",
+        },
+      ];
+      const backendStages = task?.workflow_stages;
+      if (!backendStages || backendStages.length === 0) {
+        return fallbackStages;
+      }
+      return backendStages.map((stage) => {
+        if (stage.key === "work_order") {
+          return {
+            ...stage,
+            helper: stage.done && task?.linked_work_order_id != null
+              ? `工单 #${task.linked_work_order_id} 已生成`
+              : stage.helper,
+          };
+        }
+        if (stage.key === "knowledge_case") {
+          return {
+            ...stage,
+            helper: stage.done && task?.linked_case_id != null
+              ? `案例 #${task.linked_case_id} 已沉淀`
+              : stage.helper,
+          };
+        }
+        return stage;
+      });
+    },
+    [displayedRecommendedSteps.length, events.length, keyEvidenceItems.length, status, task?.linked_case_id, task?.linked_work_order_id, task?.workflow_stages],
+  );
+  const workflowTotalCount =
+    task?.workflow_total && task.workflow_total > 0
+      ? task.workflow_total
+      : workflowStages.length;
+
+  const workflowDoneCount =
+    typeof task?.workflow_completed === "number"
+      ? Math.max(0, Math.min(task.workflow_completed, workflowTotalCount))
+      : workflowStages.filter((item) => item.done).length;
   const workspaceTabs: Array<{
     key: DiagnosisWorkspaceTab;
     label: string;
@@ -1291,6 +1844,20 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
       helper: "当前诊断引用的核心证据",
       badge: `${keyEvidenceItems.length}`,
       icon: Server,
+    },
+    {
+      key: "reasoning",
+      label: "推理子图",
+      helper: "问题、实体、关系与证据路径",
+      badge: `${reasoningGraphCount}`,
+      icon: Network,
+    },
+    {
+      key: "agent",
+      label: "Agent 协作子图",
+      helper: "修订、重规划与最终收束",
+      badge: `${collaborationModel.revisionRounds}`,
+      icon: GitBranch,
     },
     {
       key: "timeline",
@@ -1353,15 +1920,38 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                 </button>
                 <button className="app-btn-primary px-3 py-1.5" onClick={retry} disabled={status === "running"}>
                   <RefreshCw className={`h-4 w-4 ${status === "running" ? "animate-spin" : ""}`} />
-                  重新运行
+                  {status === "pending" ? "开始运行" : "重新运行"}
                 </button>
                 <button
                   type="button"
                   className="app-btn-secondary px-3 py-1.5 disabled:opacity-40"
-                  disabled={status !== "completed"}
+                  disabled={status !== "completed" || task?.linked_work_order_id != null}
                   onClick={() => setCreateWorkOrderOpen(true)}
+                  title={
+                    task?.linked_work_order_id != null
+                      ? `工单 #${task.linked_work_order_id} 已生成，如删除工单后可重新生成`
+                      : status !== "completed"
+                        ? "需先完成诊断后再生成工单"
+                        : "基于当前诊断结果生成检修工单"
+                  }
                 >
                   生成工单
+                </button>
+                <button
+                  type="button"
+                  className="app-btn-secondary px-3 py-1.5 disabled:opacity-40"
+                  disabled={task?.linked_work_order_id == null || task?.linked_case_id != null}
+                  onClick={() => setCreateCaseOpen(true)}
+                  title={
+                    task?.linked_case_id != null
+                      ? `案例 #${task.linked_case_id} 已沉淀`
+                      : task?.linked_work_order_id == null
+                        ? "需先生成工单后才能沉淀案例"
+                        : "将本次诊断结果沉淀为知识案例"
+                  }
+                >
+                  <BookOpen className="h-4 w-4" />
+                  {task?.linked_case_id != null ? "已沉淀" : "沉淀案例"}
                 </button>
               </div>
             </div>
@@ -1381,14 +1971,14 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                 <div className="grid gap-2 sm:grid-cols-2 lg:max-w-[520px]">
                   <OverviewItem label="创建时间" value={createdAtText} icon={Clock} />
                   <OverviewItem label="更新时间" value={updatedAtText} icon={Clock} />
-                  <OverviewItem label="命中证据数" value={`${evidenceCount} 条`} icon={Server} />
+                  <OverviewItem label="建议动作数" value={`${displayedRecommendedSteps.length} 条`} icon={Wrench} />
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
+        {!detailLoaded ? <TaskDetailSkeleton /> : <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
           <aside className="space-y-4">
             <section className="app-card p-5">
               <div className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-foreground">
@@ -1402,11 +1992,35 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
                   <OverviewItem
-                    label="任务进度"
-                    value={`已完成 ${visibleCompletedSteps}/${visibleTaskSteps.length} 步`}
+                    label="链路环节完成数"
+                    value={`${workflowDoneCount}/${workflowTotalCount}`}
                     icon={Cpu}
                   />
                   <OverviewItem label="诊断耗时" value={duration} icon={Clock} />
+                </div>
+                <div className="rounded-lg border border-border bg-background/70 p-3">
+                  <div className="mb-2 text-xs text-muted-foreground">页面链路环节</div>
+                  <div className="space-y-2">
+                    {workflowStages.map((item, index) => (
+                      <div key={item.title} className="flex items-start gap-3">
+                        <div
+                          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium ${
+                            item.done
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : item.active
+                                ? "border-[#5e6ad2]/30 bg-[#5e6ad2]/10 text-[#5e6ad2]"
+                                : "border-border bg-muted/40 text-muted-foreground"
+                          }`}
+                        >
+                          {index + 1}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">{item.title}</div>
+                          <div className="text-xs leading-5 text-muted-foreground">{item.helper}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </section>
@@ -1424,16 +2038,16 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                         </div>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {isProceduralAnswer
-                          ? "在同一张卡片内切换查看操作主题、操作步骤、关键证据来源和诊断时间线。"
-                          : "在同一张卡片内切换查看最可能故障、建议动作、关键证据来源和诊断时间线。"}
+                          ? "在同一张卡片内切换查看操作主题、操作步骤、关键证据来源、协作子图和诊断时间线。"
+                          : "在同一张卡片内切换查看最可能故障、建议动作、关键证据来源、协作子图和诊断时间线。"}
                       </p>
                     </div>
                     <span className="app-chip-muted">
-                      {status === "running" ? "实时同步中" : status === "completed" ? "已完成回写" : "待重新运行"}
+                      {status === "running" ? "诊断执行中" : status === "completed" ? "诊断已完成" : status === "diagnosis_completed" ? "待收口" : "待重新运行"}
                     </span>
                   </div>
 
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
                     {workspaceTabs.map((tab) => {
                       const Icon = tab.icon;
                       const active = activeWorkspaceTab === tab.key;
@@ -1485,6 +2099,8 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                             <Loader2 className="h-5 w-5 animate-spin text-blue-600 dark:text-blue-400" />
                           ) : status === "completed" ? (
                             <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                          ) : status === "diagnosis_completed" ? (
+                            <Clock className="h-5 w-5 text-amber-600 dark:text-amber-400" />
                           ) : (
                             <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
                           )}
@@ -1513,7 +2129,9 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                     </div>
                     <div className="space-y-2">
                       {displayedRecommendedSteps.length > 0 ? (
-                        isProceduralAnswer ? structuredProcedureSteps.map((item, index) => (
+                        isProceduralAnswer ? structuredProcedureSteps.map((item, index) => {
+                          const stepEvidenceItems = getStepEvidenceItems(index);
+                          return (
                           <div
                             key={item.key}
                             className="rounded-lg border border-emerald-500/10 bg-background/55 px-4 py-4"
@@ -1558,29 +2176,41 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                                     ))}
                                   </div>
                                 ) : null}
-                                {diagnosisRowStandardTitles[index] ? (
-                                  <div className="mt-3 border-t border-emerald-500/15 pt-3 text-xs leading-5 text-muted-foreground">
-                                    <span className="font-medium text-foreground/90">关联标准作业步骤：</span>
-                                    {diagnosisRowStandardTitles[index]}
+                                {stepEvidenceItems.length > 0 ? (
+                                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground/80">依据</span>
+                                    {stepEvidenceItems.map((evidence) => (
+                                      <span key={`${item.key}-${evidence.id}`} className="rounded-md border border-border bg-muted/35 px-2.5 py-1">
+                                        {evidence.title} · {evidence.section}
+                                      </span>
+                                    ))}
                                   </div>
                                 ) : null}
                               </div>
                             </div>
                           </div>
-                        )) : displayedRecommendedSteps.map((item, index) => (
+                          );
+                        }) : displayedRecommendedSteps.map((item, index) => {
+                          const stepEvidenceItems = getStepEvidenceItems(index);
+                          return (
                           <div key={`${item}-${index}`} className="flex flex-col gap-2 rounded-lg border border-emerald-500/10 bg-background/45 px-3 py-3 text-sm text-foreground">
                             <div className="flex items-start gap-2">
                               <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
                               <span className="leading-6">{item}</span>
                             </div>
-                            {diagnosisRowStandardTitles[index] ? (
-                              <div className="border-t border-emerald-500/15 pt-2 text-xs leading-5 text-muted-foreground">
-                                <span className="font-medium text-foreground/90">关联标准作业步骤：</span>
-                                {diagnosisRowStandardTitles[index]}
+                            {stepEvidenceItems.length > 0 ? (
+                              <div className="flex flex-wrap gap-2 pl-3 text-xs text-muted-foreground">
+                                <span className="font-medium text-foreground/80">依据</span>
+                                {stepEvidenceItems.map((evidence) => (
+                                  <span key={`${item}-${index}-${evidence.id}`} className="rounded-md border border-border bg-muted/35 px-2.5 py-1">
+                                    {evidence.title} · {evidence.section}
+                                  </span>
+                                ))}
                               </div>
                             ) : null}
                           </div>
-                        ))
+                          );
+                        })
                       ) : (
                         <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
                           {isProceduralAnswer ? "当前尚未整理出可执行的操作步骤。" : "当前尚未生成可执行的建议动作。"}
@@ -1596,29 +2226,22 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                       <div className="text-sm font-semibold text-foreground">关键证据来源</div>
                       <span className="text-xs text-muted-foreground">当前诊断引用的核心证据</span>
                     </div>
-                    <div className="space-y-3">
-                      {keyEvidenceItems.length > 0 ? keyEvidenceItems.map((item) => (
-                        <div key={item.id} className="rounded-lg border border-border bg-muted/30 p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-foreground">{item.title}</div>
-                              <div className="mt-1 text-xs text-muted-foreground">{item.section}</div>
-                              <div className="mt-2 text-sm leading-6 text-foreground/90">{item.excerpt}</div>
-                            </div>
-                            <span className="app-chip-muted">{item.score.label} {item.score.value}</span>
-                          </div>
-                        </div>
-                      )) : (
-                        <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-sm text-muted-foreground">
-                          当前任务尚未返回可展示的关键证据来源。
-                        </div>
-                      )}
-                    </div>
-                    <div className="mt-4 flex items-center justify-between border-t border-border pt-3 text-xs text-muted-foreground">
-                      <span>命中证据数 {evidenceCount} 条</span>
-                      <span>最高相关度 {evidenceSimilarity}</span>
-                    </div>
+                    <TaskEvidencePanel
+                      items={keyEvidenceItems}
+                      evidenceCount={evidenceCount}
+                      evidenceSimilarity={evidenceSimilarity}
+                      evidenceStatusNote={evidenceStatusNote}
+                      reasoningChain={reasoningChain}
+                    />
                   </div>
+                ) : null}
+
+                {activeWorkspaceTab === "reasoning" ? (
+                  <ReasoningSubgraphPanel reasoningChain={reasoningChain} procedureSteps={reasoningProcedureSteps} />
+                ) : null}
+
+                {activeWorkspaceTab === "agent" ? (
+                  <AgentCollaborationPanel model={collaborationModel} />
                 ) : null}
 
                 {activeWorkspaceTab === "timeline" ? (
@@ -1670,7 +2293,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
               </div>
             </div>
           </section>
-        </div>
+        </div>}
       </main>
 
       <Dialog open={createWorkOrderOpen} onOpenChange={setCreateWorkOrderOpen}>
@@ -1731,6 +2354,52 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
               onClick={createLinkedWorkOrder}
             >
               {workOrderSubmitting ? "生成中…" : "确认生成工单"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={createCaseOpen} onOpenChange={setCreateCaseOpen}>
+        <DialogContent className="max-w-md border-border bg-popover text-popover-foreground">
+          <DialogHeader>
+            <DialogTitle>沉淀为知识案例</DialogTitle>
+            <DialogDescription>
+              将本次诊断结果提交为案例，经审核后将自动录入知识库供后续诊断引用。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-border bg-muted/25 p-3 text-sm">
+              <div className="text-xs text-muted-foreground">案例标题（预览）</div>
+              <div className="mt-1 font-medium text-foreground">
+                {task?.diagnosis_structured?.most_likely_fault
+                  ? `${task.equipment_type} — ${task.diagnosis_structured.most_likely_fault}`
+                  : formatSymptomForDisplay(task?.symptom_description) || task?.title || `任务 #${numericTaskId} 案例`}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/25 p-3 text-sm">
+              <div className="text-xs text-muted-foreground">关联信息</div>
+              <div className="mt-1 text-foreground">
+                设备：{task?.equipment_type}{task?.equipment_model ? ` ${task.equipment_model}` : ""}
+              </div>
+              {task?.linked_work_order_id != null && (
+                <div className="mt-1 text-xs text-muted-foreground">关联工单 #{task.linked_work_order_id}</div>
+              )}
+            </div>
+            {caseError ? (
+              <div className="text-sm text-red-400">{caseError}</div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" className="border-border" onClick={() => setCreateCaseOpen(false)}>
+              取消
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#5e6ad2] text-white hover:bg-[#6b77db]"
+              disabled={caseSubmitting}
+              onClick={createLinkedCase}
+            >
+              {caseSubmitting ? "提交中…" : "确认沉淀"}
             </Button>
           </DialogFooter>
         </DialogContent>

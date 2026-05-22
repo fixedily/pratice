@@ -1,4 +1,4 @@
-"""Workbench overview metric helpers."""
+﻿"""Workbench overview metric helpers."""
 from __future__ import annotations
 
 from typing import Any

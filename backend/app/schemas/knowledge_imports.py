@@ -1,4 +1,4 @@
-"""Schemas for formal knowledge import management."""
+﻿"""Schemas for formal knowledge import management."""
 from datetime import datetime
 
 from pydantic import BaseModel

@@ -1,4 +1,4 @@
-"""Flow-template queries for maintenance."""
+﻿"""Flow-template queries for maintenance."""
 from __future__ import annotations
 
 from typing import Any

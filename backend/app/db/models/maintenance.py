@@ -1,4 +1,4 @@
-"""Maintenance-domain ORM model exports."""
+﻿"""Maintenance-domain ORM model exports."""
 from app.models.maintenance_domain import (
     Annotation,
     ApprovalTask,

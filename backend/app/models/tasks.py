@@ -1,4 +1,4 @@
-"""Maintenance task models for TODO-SB-4."""
+﻿"""Maintenance task models for TODO-SB-4."""
 from datetime import datetime
 from typing import Any
 
@@ -88,6 +88,7 @@ class MaintenanceTask(Base):
     source_snapshot: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     execution_timeline: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     diagnosis_report: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnosis_structured: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     advice_card: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

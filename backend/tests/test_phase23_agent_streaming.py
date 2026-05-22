@@ -1,4 +1,4 @@
-"""Phase 23: Agent SSE streaming for the formal workbench."""
+﻿"""Phase 23: Agent SSE streaming for the formal workbench."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch

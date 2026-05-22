@@ -1,4 +1,4 @@
-"""Diagnosis schema compatibility exports."""
+﻿"""Diagnosis schema compatibility exports."""
 from app.schemas.diagnosis import (
     DiagnosisEvidenceItem,
     DiagnosisRequest,

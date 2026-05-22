@@ -1,4 +1,4 @@
-"""时间序列化（接口文档 ISO8601，东八区展示）。"""
+﻿"""时间序列化（接口文档 ISO8601，东八区展示）。"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

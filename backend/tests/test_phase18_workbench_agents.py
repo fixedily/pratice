@@ -1,4 +1,4 @@
-"""Phase 18: 正式工作台与 Agent 协作骨架测试."""
+﻿"""Phase 18: 正式工作台与 Agent 协作骨架测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -55,6 +55,18 @@ async def test_workbench_overview_endpoint():
                 "accent": "blue",
             }
         ],
+        "recommended_knowledge_count": 2,
+        "recommended_knowledge": [
+            {
+                "chunk_id": 11,
+                "document_id": 7,
+                "title": "摩托车发动机维修手册",
+                "source_name": "manual.pdf",
+                "section_reference": "3.2 拆卸发动机",
+                "page_reference": "P12",
+                "excerpt": "先排放机油，再拆下相关固定件。",
+            }
+        ],
         "recent_tasks": [
             {
                 "id": 1,
@@ -95,6 +107,8 @@ async def test_workbench_overview_endpoint():
     assert payload["featured_queries"] == ["火花塞", "冷启动困难"]
     assert payload["quality_highlights"][0]["label"] == "Top1 命中率"
     assert payload["runtime_highlights"][0]["value"] == "12"
+    assert payload["recommended_knowledge_count"] == 2
+    assert payload["recommended_knowledge"][0]["document_id"] == 7
     assert payload["recent_tasks"][0]["equipment_model"] == "LX200"
 
 
@@ -212,27 +226,15 @@ async def test_agent_assist_supports_selected_chunk_only_input():
             }
         ]
     )
-    service.task_service._ensure_template = AsyncMock(
-        return_value=SimpleNamespace(
-            steps=[
-                SimpleNamespace(
-                    title="检修前安全确认",
-                    instruction_template="确认 {equipment_type}{equipment_model_suffix} 已熄火后开始检修。",
-                    risk_warning="高温状态下严禁直接拆检。",
-                    caution="检查防护状态。",
-                    confirmation_text="已完成安全确认",
-                )
-            ]
-        )
-    )
     service.case_service.recommend_cases = AsyncMock(return_value=[])
 
     payload = await service.assist(AgentAssistRequest(selected_chunk_ids=[11]))
 
     service.knowledge_service.search_multimodal.assert_not_called()
     service._store_run.assert_awaited_once()
-    assert payload["task_plan_preview"][0]["title"] == "检修前安全确认"
-    assert payload["agents"][0]["agent_name"] == "KnowledgeRetrieverAgent"
+    assert payload["task_plan_preview"][0]["title"] == "摩托车发动机维修手册 1.1"
+    assert payload["agents"][0]["agent_name"] == "perception"
+    assert payload["resolved_run_plan"][0]["status"] == "skipped"
     assert payload["request_context"]["selected_chunk_ids"] == [11]
 
 
@@ -299,10 +301,24 @@ async def test_build_diagnosis_report_uses_llm_for_procedural_queries():
             related_cases=[],
             risk_findings=[],
             execution_brief={"status": "ready", "decision": "可按标准步骤执行", "next_actions": ["按步骤执行"]},
+            reasoning_chain={
+                "explanation_text": (
+                    "系统给出建议的依据：\n"
+                    "1. 问题命中了“拆卸气缸头”。\n"
+                    "2. 对应证据来自《摩托车发动机维修手册》3.2 节。"
+                )
+            },
             emit=None,
         )
 
     assert fake_llm.invoked is True
     assert payload["answer_mode"] == "procedure"
     assert payload["next_steps"][0]["title"] == "排放机油"
+    assert payload["next_steps"][0]["action"] == "排放"
+    assert payload["next_steps"][0]["object"] == "机油"
+    assert payload["next_steps"][0]["detail"] == "先完成放油"
+    assert payload["next_steps"][1]["action"] == "拆卸"
+    assert payload["next_steps"][1]["object"] == "相关固定件"
     assert "拆卸气缸头" in report
+    assert "■ 依据说明" in report
+    assert "对应证据来自《摩托车发动机维修手册》3.2 节" in report

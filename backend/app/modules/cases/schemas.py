@@ -1,4 +1,4 @@
-"""Case schema compatibility exports."""
+﻿"""Case schema compatibility exports."""
 from app.schemas.cases import (
     MaintenanceCaseCorrectionCreate,
     MaintenanceCaseCorrectionResponse,

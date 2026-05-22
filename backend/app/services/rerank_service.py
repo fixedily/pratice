@@ -1,4 +1,4 @@
-"""Reranker service: FlagEmbedding bge-reranker-v2-m3 精排封装。
+﻿"""Reranker service: FlagEmbedding bge-reranker-v2-m3 精排封装。
 
 首次调用时懒加载模型（~2s），后续推理约 100ms/20条。
 FlagEmbedding 不可用时自动降级，返回原始候选顺序。
@@ -8,11 +8,101 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 _reranker = None
 _reranker_model_name: str | None = None
 _reranker_disabled_models: dict[str, str] = {}
+
+
+def _dashscope_rerank(
+    query: str,
+    candidates: list[dict[str, Any]],
+    *,
+    model_name: str,
+    top_k: int,
+    timeout_s: float = 30.0,
+) -> list[dict[str, Any]] | None:
+    """Call Alibaba DashScope rerank API and map scores back to candidates."""
+    settings = get_settings()
+    if not settings.dashscope_api_key:
+        return None
+
+    pool = candidates[:top_k]
+    documents = [
+        f"{item.get('_heading') or item.get('title') or ''} {item.get('_content') or item.get('excerpt') or ''}".strip()
+        for item in pool
+    ]
+    if not any(documents):
+        return pool
+
+    url = settings.dashscope_api_base.rstrip("/")
+    if url.endswith("/compatible-mode/v1"):
+        url = url[: -len("/compatible-mode/v1")]
+    url = f"{url}/api/v1/services/rerank/text-rerank/text-rerank"
+    payload = {
+        "model": model_name,
+        "input": {
+            "query": query,
+            "documents": documents,
+        },
+        "parameters": {
+            "top_n": min(top_k, len(documents)),
+            "return_documents": False,
+        },
+    }
+
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            response = client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            body = response.json()
+    except Exception as exc:
+        logger.warning("DashScope rerank call failed, falling back to local reranker: %s", exc, exc_info=True)
+        return None
+
+    results = (((body or {}).get("output") or {}).get("results") or [])
+    if not isinstance(results, list) or not results:
+        logger.warning("DashScope rerank returned empty results, falling back to local reranker")
+        return None
+
+    reranked_items: list[dict[str, Any]] = []
+    seen_indexes: set[int] = set()
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if not isinstance(index, int) or index < 0 or index >= len(pool):
+            continue
+        seen_indexes.add(index)
+        candidate = pool[index]
+        score = float(item.get("relevance_score") or 0.0)
+        candidate["neural_score"] = score
+        heuristic = float(candidate.get("rerank_score") or candidate.get("retrieval_score") or 0.0)
+        candidate["rerank_score"] = round(heuristic + score * 3.0, 4)
+        reranked_items.append(candidate)
+
+    if not reranked_items:
+        return None
+
+    for index, candidate in enumerate(pool):
+        if index in seen_indexes:
+            continue
+        reranked_items.append(candidate)
+
+    reranked_items.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+    return reranked_items
 
 
 def _validate_reranker_compatibility(reranker: Any, model_name: str) -> None:
@@ -85,6 +175,20 @@ def rerank(
         return candidates
 
     pool = candidates[:top_k]
+    settings = get_settings()
+    provider = (getattr(settings, "reranker_provider", "") or "").strip().lower()
+
+    if provider == "dashscope":
+        dashscope_model = getattr(settings, "dashscope_rerank_model", None) or model_name
+        dashscope_results = _dashscope_rerank(
+            query,
+            pool,
+            model_name=dashscope_model,
+            top_k=top_k,
+        )
+        if dashscope_results is not None:
+            return dashscope_results
+
     reranker = _get_reranker(model_name)
 
     if reranker is None:

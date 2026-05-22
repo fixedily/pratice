@@ -1,15 +1,18 @@
-"""Knowledge chunking and anchor extraction helpers."""
+﻿"""Knowledge chunking and anchor extraction helpers."""
 from __future__ import annotations
 
 import re
 
 SECTION_HEADING_PATTERNS = [
-    (1, re.compile(r"^第[一二三四五六七八九十百零\d]+章(?:[：:\s-]+.+)?$")),
-    (2, re.compile(r"^第[一二三四五六七八九十百零\d]+节(?:[：:\s-]+.+)?$")),
-    (3, re.compile(r"^第[一二三四五六七八九十百零\d]+条(?:[：:\s-]+.+)?$")),
+    (1, re.compile(r"^第\s*[一二三四五六七八九十百零\d]+\s*章(?:[：:\s-]+.+)?$")),
+    (2, re.compile(r"^第\s*[一二三四五六七八九十百零\d]+\s*节(?:[：:\s-]+.+)?$")),
+    (3, re.compile(r"^第\s*[一二三四五六七八九十百零\d]+\s*条(?:[：:\s-]+.+)?$")),
 ]
 DECIMAL_SECTION_PATTERN = re.compile(r"^(\d+(?:\.\d+){1,3})(?:[：:\s-]+.+)?$")
 LIST_SECTION_PATTERN = re.compile(r"^[一二三四五六七八九十]+、.+$")
+ACTION_SUBSECTION_PATTERN = re.compile(
+    r"^(拆卸|安装|检查|更换|调整|清洁|润滑|装配|拆装)[^\s。；！？：:]{1,20}$"
+)
 COMPACT_SECTION_WITH_BODY_PATTERN = re.compile(
     r"^(?P<heading>\d+(?:\.\d+){1,3}(?:\s+[^\s。；！？]{1,20}){1,2})\s+"
     r"(?P<body>.+)$"
@@ -34,6 +37,11 @@ INLINE_STEP_SPLIT_PATTERN = re.compile(
     r"|步骤\s*\d+\s*(?:检查|测量|确认|观察|安装|拆卸|拆下|取下|加注|排放|松开|更换|调整|清洁|润滑|装上|断开|拔下)"
     r"|\d+[.、:：]\s*(?:检查|测量|确认|观察|安装|拆卸|拆下|取下|加注|排放|松开|更换|调整|清洁|润滑|装上|断开|拔下)))"
 )
+BULLET_LINE_PATTERN = re.compile(r"^[○●•·▪▫■□\-]\s*(.+)$")
+TRAILING_BLOCK_LABEL_PATTERN = re.compile(
+    r"^(?P<lead>.+?)\s+(?P<label>(?:拧紧力矩要求|机油规格要求|检查部位|具体操作顺序为)[：:])$"
+)
+MARKDOWN_HEADING_PREFIX_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*")
 
 
 def split_text_into_paragraphs(content: str) -> list[str]:
@@ -114,15 +122,18 @@ def _detect_section_heading(paragraph: str) -> tuple[int, str] | None:
     normalized = _normalize_anchor_text(paragraph, max_length=140)
     if not normalized:
         return None
+    markdown_normalized = MARKDOWN_HEADING_PREFIX_PATTERN.sub("", normalized).strip()
+    if not markdown_normalized:
+        return None
 
     for level, pattern in SECTION_HEADING_PATTERNS:
-        if pattern.match(normalized):
-            return level, normalized
+        if pattern.match(markdown_normalized):
+            return level, markdown_normalized
 
-    decimal_match = DECIMAL_SECTION_PATTERN.match(normalized)
+    decimal_match = DECIMAL_SECTION_PATTERN.match(markdown_normalized)
     if decimal_match:
         numbering = decimal_match.group(1)
-        compact_match = COMPACT_SECTION_WITH_BODY_PATTERN.match(normalized)
+        compact_match = COMPACT_SECTION_WITH_BODY_PATTERN.match(markdown_normalized)
         if compact_match:
             body = compact_match.group("body").strip()
             if body.startswith(("步骤", "1.", "2.", "3.", "4.", "5.", "（1）", "(1)")) or any(
@@ -130,10 +141,12 @@ def _detect_section_heading(paragraph: str) -> tuple[int, str] | None:
             ):
                 return min(numbering.count(".") + 1, 4), compact_match.group("heading").strip()
         # "1" → level 1, "1.2" → level 2, "1.2.3" → level 3
-        return min(numbering.count(".") + 1, 4), normalized
+        return min(numbering.count(".") + 1, 4), markdown_normalized
 
-    if len(normalized) <= 36 and LIST_SECTION_PATTERN.match(normalized) and "。" not in normalized:
-        return 1, normalized
+    if len(markdown_normalized) <= 36 and LIST_SECTION_PATTERN.match(markdown_normalized) and "。" not in markdown_normalized:
+        return 1, markdown_normalized
+    if len(markdown_normalized) <= 24 and ACTION_SUBSECTION_PATTERN.match(markdown_normalized):
+        return 99, markdown_normalized
     return None
 
 
@@ -146,6 +159,22 @@ def _detect_step_anchor(paragraph: str) -> str | None:
         if pattern.match(normalized):
             return normalized
     return None
+
+
+def _apply_heading_to_section_stack(
+    section_stack: list[str],
+    *,
+    level: int,
+    heading: str,
+) -> list[str]:
+    if level == 99:
+        if section_stack and ACTION_SUBSECTION_PATTERN.match(section_stack[-1]):
+            return [*section_stack[:-1], heading]
+        return [*section_stack, heading]
+
+    updated_stack = section_stack[: level - 1]
+    updated_stack.append(heading)
+    return updated_stack
 
 
 def _normalize_procedural_block_items(text: str) -> str:
@@ -179,6 +208,7 @@ def _extract_procedural_title_and_remainder(text: str) -> tuple[str, str]:
         " 再次向 ",
         " 依次松开",
         " 依次取下",
+        " 依次放入",
         " 具体操作顺序为",
         " 将 ",
         " 让 ",
@@ -192,6 +222,7 @@ def _extract_procedural_title_and_remainder(text: str) -> tuple[str, str]:
         " 取出",
         " 拧紧力矩要求",
         " 机油规格要求",
+        " 注意",
         " 提示",
     )
     split_index: int | None = None
@@ -214,58 +245,95 @@ def _extract_procedural_title_and_remainder(text: str) -> tuple[str, str]:
 
 
 def _format_procedural_chunk_content(text: str) -> str:
-    compact = " ".join((text or "").split()).strip()
-    if not compact:
-        return ""
+    source_lines = [" ".join(line.split()).strip() for line in (text or "").splitlines() if line.strip()]
+    if not source_lines:
+        compact = " ".join((text or "").split()).strip()
+        if not compact:
+            return ""
+        source_lines = [compact]
 
-    step_match = re.match(r"^(\d+\.)\s*(.+)$", compact)
     lines: list[str] = []
-    remainder = compact
+    first_line = source_lines[0]
+    body_inputs: list[str] = source_lines[1:]
+
+    step_match = re.match(r"^(\d+\.)\s*(.+)$", first_line)
     if step_match:
         title, remainder = _extract_procedural_title_and_remainder(step_match.group(2).strip())
         lines.append(f"{step_match.group(1).strip()} {title}".strip())
+        if remainder:
+            body_inputs = [remainder, *body_inputs]
+    else:
+        body_inputs = source_lines
 
-    oil_fill_match = re.search(r"(从[\s\S]{2,60}?加入：)", remainder)
-    if oil_fill_match and oil_fill_match.start() > 0:
-        head = remainder[: oil_fill_match.start()].strip()
-        if head:
-            lines.append(head)
-        remainder = remainder[oil_fill_match.start() :].strip()
+    prefer_bullet = len(body_inputs) >= 2
+    for raw_line in body_inputs:
+        lines.extend(_format_procedural_body_line(raw_line, prefer_bullet=prefer_bullet))
 
-    for label in PROCEDURAL_BLOCK_LABELS:
-        remainder = remainder.replace(label, f"\n\n{label}\n")
+    return "\n".join(line for line in lines if line.strip()).strip()
 
-    paragraphs = [part.strip() for part in re.split(r"\n{2,}", remainder) if part.strip()]
-    for paragraph in paragraphs:
-        inline_label_match = re.match(r"^(从[\s\S]{2,60}?加入：)\s*(.+)$", paragraph)
-        if inline_label_match:
-            lines.append(inline_label_match.group(1).strip())
-            formatted_body = _normalize_procedural_block_items(inline_label_match.group(2))
-            if formatted_body:
-                lines.extend(item for item in formatted_body.splitlines() if item.strip())
-            continue
-        if "\n" in paragraph:
-            label, body = paragraph.split("\n", 1)
-            lines.append(label.strip())
-            formatted_body = _normalize_procedural_block_items(body)
-            if formatted_body:
-                lines.extend(item for item in formatted_body.splitlines() if item.strip())
-            continue
-        if paragraph.endswith("："):
-            lines.append(paragraph)
-            continue
-        if any(token in paragraph for token in ("：", "mL", "N·m")) and paragraph.count("：") >= 2:
-            formatted_body = _normalize_procedural_block_items(paragraph)
-            if formatted_body:
-                lines.extend(item for item in formatted_body.splitlines() if item.strip())
-            continue
-        sentence_items = [part.strip() for part in re.split(r"[。；]+", paragraph) if part.strip()]
-        if len(sentence_items) >= 2:
-            lines.extend(f"- {item}" for item in sentence_items)
-            continue
-        lines.append(paragraph)
 
-    return "\n".join(lines).strip()
+def _format_procedural_body_line(line: str, *, prefer_bullet: bool = False) -> list[str]:
+    compact = " ".join((line or "").split()).strip()
+    if not compact:
+        return []
+
+    trailing_label_match = TRAILING_BLOCK_LABEL_PATTERN.match(compact)
+    if trailing_label_match:
+        lead = trailing_label_match.group("lead").strip()
+        label = trailing_label_match.group("label").strip()
+        lines: list[str] = []
+        if lead:
+            lines.extend(_format_procedural_body_line(lead, prefer_bullet=True))
+        lines.append(label)
+        return lines
+
+    bullet_match = BULLET_LINE_PATTERN.match(compact)
+    if bullet_match:
+        return [f"- {bullet_match.group(1).strip()}"]
+
+    if "○" in compact or "●" in compact or "•" in compact:
+        parts = re.split(r"[○●•]\s*", compact)
+        lead = parts[0].strip()
+        bullets = [part.strip() for part in parts[1:] if part.strip()]
+        lines: list[str] = []
+        if lead:
+            if lead.endswith("：") or lead.endswith(":"):
+                lines.append(lead)
+            else:
+                lines.extend(_format_procedural_body_line(lead, prefer_bullet=prefer_bullet))
+        lines.extend(f"- {item}" for item in bullets)
+        return lines
+
+    label_match = re.match(r"^(?P<label>[^:：]{2,24}[：:])\s*(?P<body>.+)$", compact)
+    if label_match:
+        label = label_match.group("label").strip()
+        body = label_match.group("body").strip()
+        if label.startswith(("注意：", "注意:", "提示：", "提示:")):
+            return [f"{label} {body}".strip()]
+        inline_labeled_items = re.findall(r"[^:：\s]{2,12}[：:]\s*[^:：]+?(?=\s+[^:：\s]{2,12}[：:]|$)", compact)
+        if len(inline_labeled_items) >= 2:
+            return [f"- {' '.join(item.split()).strip()}" for item in inline_labeled_items]
+        formatted_body = _normalize_procedural_block_items(body)
+        if formatted_body and formatted_body != body:
+            return [label, *[item for item in formatted_body.splitlines() if item.strip()]]
+        return [label, body] if body else [label]
+
+    if compact.endswith(("：", ":")):
+        return [compact]
+
+    if any(token in compact for token in ("：", "mL", "N·m")) and compact.count("：") >= 2:
+        formatted_body = _normalize_procedural_block_items(compact)
+        if formatted_body:
+            return [item for item in formatted_body.splitlines() if item.strip()]
+
+    sentence_items = [part.strip() for part in re.split(r"[。；]+", compact) if part.strip()]
+    if len(sentence_items) >= 2:
+        return [f"- {item}" for item in sentence_items]
+
+    if prefer_bullet:
+        return [f"- {compact.rstrip('。；')}"]
+
+    return [compact]
 
 
 def build_anchored_chunk_payloads(
@@ -307,8 +375,11 @@ def build_anchored_chunk_payloads(
         heading_info = _detect_section_heading(paragraph)
         if heading_info is not None:
             level, heading = heading_info
-            section_stack = section_stack[: level - 1]
-            section_stack.append(heading)
+            section_stack = _apply_heading_to_section_stack(
+                section_stack,
+                level=level,
+                heading=heading,
+            )
             # Pure heading paragraphs carry anchor context but should not become
             # standalone content chunks or step anchors.
             if paragraph.strip() == heading and "。" not in heading and "；" not in heading:
@@ -419,8 +490,11 @@ def resolve_terminal_section_path(
         if heading_info is None:
             continue
         level, heading = heading_info
-        section_stack = section_stack[: level - 1]
-        section_stack.append(heading)
+        section_stack = _apply_heading_to_section_stack(
+            section_stack,
+            level=level,
+            heading=heading,
+        )
 
     if section_stack:
         return " > ".join(section_stack)

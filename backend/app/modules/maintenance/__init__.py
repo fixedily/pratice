@@ -1,4 +1,4 @@
-"""Maintenance module public surface."""
+﻿"""Maintenance module public surface."""
 from __future__ import annotations
 
 from importlib import import_module

@@ -258,6 +258,12 @@ class AgentToolingService:
             "input_summary": request.maintenance_level,
             "details": details[:8],
             "output_payload": guardrails,
+            "review_facts": {
+                "blocking": blocking,
+                "authorization_required": guardrails["authorization_required"],
+                "warning_issues": list(guardrails["warning_issues"]),
+                "blocking_issues": list(guardrails["blocking_issues"]),
+            },
         }
 
     async def _require_human_authorization(

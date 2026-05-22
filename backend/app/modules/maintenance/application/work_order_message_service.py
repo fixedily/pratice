@@ -1,4 +1,4 @@
-"""Work-order message operations for maintenance."""
+﻿"""Work-order message operations for maintenance."""
 from __future__ import annotations
 
 import asyncio
@@ -39,11 +39,16 @@ class MaintenanceWorkOrderMessageService:
         content = (body.get("content") or "").strip()
         if not content:
             raise MaintenanceAPIError(400, "VALIDATION_ERROR", "content 必填")
+        attachment_ids = body.get("attachment_ids") or None
+        if attachment_ids is not None:
+            if not isinstance(attachment_ids, list) or not all(isinstance(i, int) for i in attachment_ids):
+                raise MaintenanceAPIError(400, "VALIDATION_ERROR", "attachment_ids 格式错误")
         message = WorkOrderMessage(
             work_order_id=work_order.id,
             role="user",
             content=content,
             retrieval_snapshot_id=None,
+            attachment_ids=attachment_ids,
             created_at=utc_now_naive(),
         )
         self.session.add(message)
@@ -82,6 +87,7 @@ class MaintenanceWorkOrderMessageService:
                 "role": message.role,
                 "content": message.content,
                 "retrieval_snapshot_id": message.retrieval_snapshot_id,
+                "attachment_ids": message.attachment_ids,
                 "created_at": to_iso_cn(message.created_at),
             }
             for message in rows

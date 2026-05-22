@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { AppThemeProvider } from "@/shared/theme/app-theme";
 
@@ -14,4 +14,3 @@ type ThemeProviderProps = {
 export function ThemeProvider({ children }: ThemeProviderProps) {
   return <AppThemeProvider>{children}</AppThemeProvider>;
 }
-

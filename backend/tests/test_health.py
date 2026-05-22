@@ -1,4 +1,4 @@
-# File: tests/test_health.py
+﻿# File: tests/test_health.py
 """Health endpoint tests."""
 import pytest
 from httpx import AsyncClient, ASGITransport

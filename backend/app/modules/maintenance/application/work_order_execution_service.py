@@ -1,4 +1,4 @@
-"""Work-order execution actions and filling operations for maintenance."""
+﻿"""Work-order execution actions and filling operations for maintenance."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -79,6 +79,62 @@ class MaintenanceWorkOrderExecutionService:
             work_order,
             "S7",
             event_type="enter_maintenance",
+            actor_user_id=ctx.user_id,
+        )
+        await self.session.commit()
+        return {"work_order": _wo_public(work_order)}
+
+    async def action_accept_work_order(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
+        work_order = await self.work_order_service.get_work_order(work_order_id)
+        await self.work_order_service.assert_work_order_readable(ctx, work_order)
+        if work_order.status != "S3":
+            raise MaintenanceAPIError(409, "INVALID_STATE_TRANSITION", "仅待检修状态可接单")
+        await self.work_order_service.transition(
+            work_order,
+            "S5",
+            event_type="work_order_accepted",
+            actor_user_id=ctx.user_id,
+        )
+        await self.session.commit()
+        return {"work_order": _wo_public(work_order)}
+
+    async def action_suspend_work_order(
+        self, work_order_id: int, body: dict[str, Any], ctx: CurrentUserCtx
+    ) -> dict[str, Any]:
+        work_order = await self.work_order_service.get_work_order(work_order_id)
+        await self.work_order_service.assert_work_order_readable(ctx, work_order)
+        if work_order.status != "S7":
+            raise MaintenanceAPIError(409, "INVALID_STATE_TRANSITION", "仅检修中状态可暂停")
+        if work_order.is_suspended:
+            raise MaintenanceAPIError(409, "ALREADY_SUSPENDED", "工单已处于暂停状态")
+        reason = (body.get("reason") or "").strip()
+        if not reason:
+            raise MaintenanceAPIError(400, "VALIDATION_ERROR", "暂停原因必填")
+        work_order.is_suspended = True
+        work_order.suspended_reason = reason
+        work_order.pre_suspend_status = work_order.status
+        work_order.suspended_at = utc_now_naive()
+        await self.work_order_service.record_event(
+            work_order,
+            event_type="work_order_suspended",
+            actor_user_id=ctx.user_id,
+            payload={"reason": reason},
+        )
+        await self.session.commit()
+        return {"work_order": _wo_public(work_order)}
+
+    async def action_resume_work_order(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
+        work_order = await self.work_order_service.get_work_order(work_order_id)
+        await self.work_order_service.assert_work_order_readable(ctx, work_order)
+        if not work_order.is_suspended:
+            raise MaintenanceAPIError(409, "NOT_SUSPENDED", "工单未处于暂停状态")
+        work_order.is_suspended = False
+        work_order.suspended_reason = None
+        work_order.suspended_at = None
+        work_order.pre_suspend_status = None
+        await self.work_order_service.record_event(
+            work_order,
+            event_type="work_order_resumed",
             actor_user_id=ctx.user_id,
         )
         await self.session.commit()

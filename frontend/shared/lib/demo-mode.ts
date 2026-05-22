@@ -1,4 +1,4 @@
-export const DEMO_MODE_STORAGE_KEY = "faultdiag.demo_mode"
+﻿export const DEMO_MODE_STORAGE_KEY = "faultdiag.demo_mode"
 export const DEMO_MODE_CHANGED_EVENT = "faultdiag:demo-mode-changed"
 
 function parseBooleanLike(value: string | null | undefined): boolean | null {
@@ -11,7 +11,7 @@ function parseBooleanLike(value: string | null | undefined): boolean | null {
 
 /**
  * 演示模式开关。
- * - 优先读取环境变量 `NEXT_PUBLIC_DEMO_MODE`（便于比赛展示一键开启）
+ * - 优先读取环境变量 `NEXT_PUBLIC_DEMO_MODE`（便于公开演示一键开启）
  * - 客户端可用 localStorage 覆盖（便于开发调试）
  */
 export function isDemoMode(): boolean {
@@ -40,4 +40,3 @@ export function setDemoMode(enabled: boolean) {
     // ignore
   }
 }
-

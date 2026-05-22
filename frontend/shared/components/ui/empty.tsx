@@ -1,4 +1,4 @@
-import { cva, type VariantProps } from 'class-variance-authority'
+﻿import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn } from '@/shared/lib/utils'
 
@@ -102,4 +102,3 @@ export {
   EmptyContent,
   EmptyMedia,
 }
-

@@ -1,17 +1,19 @@
-/**
+﻿/**
  * 应用内主要路径（落地页 ↔ 控制台 ↔ 登录）
  */
 export const ROUTES = {
   marketingHome: "/",
   marketingLanding: "/landing",
   dashboard: "/dashboard",
+  settings: "/settings",
   login: "/login",
-  approvalTasks: "/approval-tasks",
-  adminUsers: "/admin/users",
+  register: "/register",
+  forgotPassword: "/forgot-password",
   adminSystemConfigs: "/admin/system-configs",
-  adminAuditLogs: "/admin/audit-logs",
+  diagnosisCreate: "/tasks/new",
+  diagnosisHistory: "/tasks/history",
+  monitoringAlerts: "/monitoring/alerts",
   knowledgeReview: "/knowledge/review",
-  knowledgePublish: "/knowledge/publish",
 } as const;
 
 /** 当前为独立 /landing 路由时，Logo 回到 /landing，否则回到首页 / */
@@ -24,4 +26,8 @@ export function marketingHashHref(pathname: string | null | undefined, hash: str
   const base = pathname === "/landing" ? ROUTES.marketingLanding : ROUTES.marketingHome;
   const h = hash.startsWith("#") ? hash : `#${hash}`;
   return `${base}${h}`;
+}
+
+export function protectedEntryHref(path: string): string {
+  return `${ROUTES.login}?next=${encodeURIComponent(path)}&reason=auth_required`;
 }

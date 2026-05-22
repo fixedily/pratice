@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # 本地开发：后台启动后端，前台启动前端（Git Bash / WSL / macOS 可用）。
 # 用法：在仓库根目录执行  bash scripts/start-dev.sh
 set -euo pipefail

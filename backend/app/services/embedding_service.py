@@ -17,6 +17,7 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 64
+_DASHSCOPE_OPENAI_TEXT_EMBEDDING_FALLBACK = "text-embedding-v4"
 
 
 class EmbeddingService:
@@ -40,13 +41,53 @@ class EmbeddingService:
         if self._embeddings is None:
             from langchain_openai import OpenAIEmbeddings
 
-            self._embeddings = OpenAIEmbeddings(
-                model=self._settings.embedding_model,
-                openai_api_base=f"{self._settings.ollama_base_url}/v1",
-                openai_api_key="ollama",
-                check_embedding_ctx_length=False,
-            )
+            provider = (getattr(self._settings, "embedding_provider", "") or "").strip().lower()
+            if provider == "dashscope" and self._settings.dashscope_api_key:
+                model_name = self._resolve_dashscope_embedding_model()
+                self._embeddings = OpenAIEmbeddings(
+                    model=model_name,
+                    openai_api_base=self._settings.dashscope_api_base,
+                    openai_api_key=self._settings.dashscope_api_key,
+                    check_embedding_ctx_length=False,
+                )
+                logger.info("Embedding provider initialized: dashscope model=%s", model_name)
+            elif provider == "openai" and self._settings.openai_api_key:
+                model_name = self._settings.embedding_model
+                self._embeddings = OpenAIEmbeddings(
+                    model=model_name,
+                    openai_api_base=self._settings.openai_api_base,
+                    openai_api_key=self._settings.openai_api_key,
+                    check_embedding_ctx_length=False,
+                )
+                logger.info("Embedding provider initialized: openai model=%s", model_name)
+            else:
+                model_name = self._settings.embedding_model
+                self._embeddings = OpenAIEmbeddings(
+                    model=model_name,
+                    openai_api_base=f"{self._settings.ollama_base_url}/v1",
+                    openai_api_key="ollama",
+                    check_embedding_ctx_length=False,
+                )
+                logger.info("Embedding provider initialized: ollama model=%s", model_name)
         return self._embeddings
+
+    def _resolve_dashscope_embedding_model(self) -> str:
+        requested = (self._settings.dashscope_embedding_model or self._settings.embedding_model or "").strip()
+        lowered = requested.lower()
+        if not requested:
+            return _DASHSCOPE_OPENAI_TEXT_EMBEDDING_FALLBACK
+        # Current service only embeds text through the OpenAI-compatible embeddings API.
+        # If a multimodal model is configured here, downgrade to a text embedding model
+        # so the cloud route still works instead of failing at runtime.
+        if any(token in lowered for token in ("vl-embedding", "multimodal", "vision")):
+            logger.warning(
+                "DashScope embedding model %s is not suitable for the text-only OpenAI-compatible "
+                "embedding path; falling back to %s",
+                requested,
+                _DASHSCOPE_OPENAI_TEXT_EMBEDDING_FALLBACK,
+            )
+            return _DASHSCOPE_OPENAI_TEXT_EMBEDDING_FALLBACK
+        return requested
 
     def _embed_texts(self, texts: list[str]) -> np.ndarray:
         emb = self._get_embeddings()

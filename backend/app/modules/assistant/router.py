@@ -1,4 +1,4 @@
-"""Agent orchestration APIs for the formal workbench."""
+﻿"""Agent orchestration APIs for the formal workbench."""
 from datetime import datetime, timezone
 import json
 import logging
@@ -16,15 +16,22 @@ from app.modules.assistant.application.orchestration_service import AgentOrchest
 from app.modules.assistant.schemas import (
     AgentAssistRequest,
     AgentAssistResponse,
+    AgentCritiqueItem,
+    AgentDegradationTraceItem,
     AgentExecutionBrief,
+    AgentGraphTraceEvent,
+    AgentCurrentPlanItem,
+    AgentReplanItem,
     AgentRelatedCase,
     AgentRequestContext,
+    AgentResolvedRunStep,
     AgentRunStep,
+    AgentRuntimeStatusItem,
     AgentTaskPreviewStep,
     AgentToolCall,
 )
 from app.modules.diagnosis.schemas import DiagnosisStructuredPayload
-from app.modules.knowledge.schemas.search import KnowledgeImageAnalysis, KnowledgeSearchHit
+from app.modules.knowledge.schemas.search import KnowledgeImageAnalysis, KnowledgeReasoningChain, KnowledgeSearchHit
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent 协作"])
 logger = logging.getLogger(__name__)
@@ -58,6 +65,13 @@ def _build_agent_response(payload: dict) -> AgentAssistResponse:
             if payload.get("image_analysis") is not None
             else None
         ),
+        grounded=bool(payload.get("grounded", True)),
+        coverage_warnings=payload.get("coverage_warnings") or [],
+        reasoning_chain=(
+            KnowledgeReasoningChain(**payload["reasoning_chain"])
+            if payload.get("reasoning_chain") is not None
+            else None
+        ),
         knowledge_results=[KnowledgeSearchHit(**item) for item in payload.get("knowledge_results", [])],
         related_cases=[AgentRelatedCase(**item) for item in payload.get("related_cases", [])],
         task_plan_preview=[AgentTaskPreviewStep(**item) for item in payload.get("task_plan_preview", [])],
@@ -65,6 +79,16 @@ def _build_agent_response(payload: dict) -> AgentAssistResponse:
         case_suggestions=payload.get("case_suggestions", []),
         agents=[AgentRunStep(**item) for item in payload.get("agents", [])],
         tool_calls=[AgentToolCall(**item) for item in payload.get("tool_calls", [])],
+        resolved_run_plan=[AgentResolvedRunStep(**item) for item in payload.get("resolved_run_plan", [])],
+        degradation_trace=[AgentDegradationTraceItem(**item) for item in payload.get("degradation_trace", [])],
+        agent_runtime_status=[AgentRuntimeStatusItem(**item) for item in payload.get("agent_runtime_status", [])],
+        graph_trace=[AgentGraphTraceEvent(**item) for item in payload.get("graph_trace", [])],
+        critiques=[AgentCritiqueItem(**item) for item in payload.get("critiques", [])],
+        replans=[AgentReplanItem(**item) for item in payload.get("replans", [])],
+        current_plan=[AgentCurrentPlanItem(**item) for item in payload.get("current_plan", [])],
+        revision_rounds=int(payload.get("revision_rounds") or 0),
+        termination_reason=payload.get("termination_reason"),
+        final_resolution=payload.get("final_resolution") or {},
         created_at=payload["created_at"],
     )
 
@@ -87,16 +111,23 @@ async def assist_with_agents(
         bool(request.query),
         bool(request.image_base64),
     )
-    async with get_session_context() as session:
-        payload = await AgentOrchestrationService(session).assist(request)
-        return _build_agent_response(payload)
+    try:
+        async with get_session_context() as session:
+            payload = await AgentOrchestrationService(session).assist(request)
+            return _build_agent_response(payload)
+    except ValueError as exc:
+        raise AppError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="agent_assist_invalid_request",
+            message=str(exc),
+        ) from exc
 
 
 @router.get(
     "/assist/stream",
     status_code=status.HTTP_200_OK,
     summary="Agent 协作流式执行",
-    description="通过 SSE 按阶段推送知识召回、步骤规划、工具执行和最终协作结果。",
+    description="通过 SSE 推送 agent_start、agent_finish、critique_created、revision_requested、replan_applied、termination_decided 等阶段事件。",
 )
 async def assist_with_agents_stream(
     work_order_id: str | None = Query(default=None, description="工单编号"),

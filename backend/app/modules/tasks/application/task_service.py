@@ -1,4 +1,4 @@
-"""Maintenance task workflow service for TODO-SB-4."""
+﻿"""Maintenance task workflow service for TODO-SB-4."""
 from __future__ import annotations
 
 import asyncio
@@ -7,22 +7,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeRelation
+from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeRelation, MaintenanceCase
+from app.db.models.maintenance import WorkOrder
 from app.db.models.tasks import (
     MaintenanceTask,
     MaintenanceTaskStep,
     MaintenanceTaskTemplate,
     MaintenanceTaskTemplateStep,
 )
-from app.modules.knowledge.application.search_service import KnowledgeService
-from app.modules.knowledge.schemas.search import KnowledgeSearchRequest
+from app.schemas.diagnosis import DiagnosisStep, DiagnosisStructuredPayload
 from app.modules.tasks.schemas import MaintenanceTaskCreate, MaintenanceTaskStepUpdate
 from app.modules.diagnosis.application.report_formatter import build_structured_diagnosis
-from app.services.knowledge_query_rewrite import analyze_procedural_query
 from app.services.maintenance_safety_service import MaintenanceSafetyService
 
 
@@ -71,7 +69,7 @@ DEFAULT_TEMPLATE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
         },
         "standard": {
             "name": "摩托车发动机标准检修流程",
-            "description": "适用于答辩演示和较完整的标准化检修闭环。",
+            "description": "适用于演示演示和较完整的标准化检修闭环。",
             "steps": [
                 {
                     "title": "检修前安全隔离",
@@ -153,6 +151,8 @@ DEFAULT_TEMPLATE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
         },
     }
 }
+
+WORKFLOW_STAGE_TOTAL = 5
 
 
 GENERIC_TEMPLATE_CATALOG = {
@@ -248,6 +248,33 @@ class MaintenanceTaskService:
         self.session = session
 
     @staticmethod
+    def _utc_naive_now() -> datetime:
+        """Return naive UTC datetime for DB columns declared as TIMESTAMP WITHOUT TIME ZONE."""
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    @classmethod
+    def _coerce_naive_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    async def _flush_session(self) -> None:
+        try:
+            await self.session.flush()
+        except Exception:
+            await self.session.rollback()
+            raise
+
+    async def _commit_session(self) -> None:
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+
+    @staticmethod
     def _json_safe_snapshot(value: Any) -> Any:
         if isinstance(value, datetime):
             return value.isoformat()
@@ -258,22 +285,7 @@ class MaintenanceTaskService:
         return value
 
     async def create_task(self, data: MaintenanceTaskCreate) -> dict[str, Any]:
-        """Create a task, runtime steps and task-to-knowledge relations."""
-        template: MaintenanceTaskTemplate | None = None
-        for attempt in range(3):
-            try:
-                template = await self._ensure_template(
-                    equipment_type=data.equipment_type,
-                    maintenance_level=data.maintenance_level,
-                )
-                break
-            except OperationalError as exc:
-                if "database is locked" not in str(exc).lower() or attempt >= 2:
-                    raise
-                await self.session.rollback()
-                await asyncio.sleep(0.2 * (attempt + 1))
-        if template is None:
-            raise RuntimeError("检修模板加载失败，请稍后重试。")
+        """Create a task shell and knowledge relations without template fallback steps."""
         knowledge_refs = self._json_safe_snapshot(await self._load_knowledge_refs(data.source_chunk_ids))
 
         task = MaintenanceTask(
@@ -288,35 +300,13 @@ class MaintenanceTaskService:
             fault_type=data.fault_type,
             symptom_description=data.symptom_description,
             status="pending",
-            template_id=template.id,
+            template_id=None,
             source_chunk_ids=list(data.source_chunk_ids),
             source_snapshot=knowledge_refs,
             advice_card=self._build_advice_card(data, knowledge_refs),
         )
         self.session.add(task)
-        await self.session.flush()
-
-        for template_step in template.steps:
-            task_step = MaintenanceTaskStep(
-                task_id=task.id,
-                template_step_id=template_step.id,
-                step_order=template_step.step_order,
-                title=template_step.title,
-                instruction=self._render_instruction(
-                    template_step.instruction_template,
-                    data,
-                    knowledge_refs,
-                ),
-                risk_warning=template_step.risk_warning,
-                caution=template_step.caution,
-                confirmation_text=template_step.confirmation_text,
-                required_tools=self._normalize_step_items(template_step.required_tools),
-                required_materials=self._normalize_step_items(template_step.required_materials),
-                estimated_minutes=template_step.estimated_minutes,
-                status="pending",
-                knowledge_refs=knowledge_refs,
-            )
-            self.session.add(task_step)
+        await self._flush_session()
 
         for chunk_id in data.source_chunk_ids:
             self.session.add(
@@ -330,8 +320,40 @@ class MaintenanceTaskService:
                 )
             )
 
-        await self.session.commit()
-        return await self.get_task_detail(task.id)
+        await self._commit_session()
+        workflow_stages = self._build_workflow_stages(task)
+        workflow_total, workflow_completed = self._count_workflow_stages(workflow_stages)
+        return {
+            "id": task.id,
+            "title": task.title,
+            "work_order_id": task.work_order_id,
+            "asset_code": task.asset_code,
+            "report_source": task.report_source,
+            "priority": task.priority,
+            "equipment_type": task.equipment_type,
+            "equipment_model": task.equipment_model,
+            "maintenance_level": task.maintenance_level,
+            "fault_type": task.fault_type,
+            "symptom_description": task.symptom_description,
+            "status": task.status,
+            "advice_card": task.advice_card,
+            "diagnosis_report": task.diagnosis_report,
+            "diagnosis_structured": None,
+            "execution_timeline": [],
+            "workflow_stages": workflow_stages,
+            "workflow_total": workflow_total,
+            "workflow_completed": workflow_completed,
+            "total_steps": 0,
+            "completed_steps": 0,
+            "source_refs": knowledge_refs,
+            "steps": [],
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "run_started_at": None,
+            "run_finished_at": None,
+            "linked_work_order_id": None,
+            "linked_case_id": None,
+        }
 
     async def update_task_step(
         self,
@@ -350,7 +372,7 @@ class MaintenanceTaskService:
 
         step.status = data.status
         step.completion_note = data.completion_note
-        step.completed_at = datetime.now(timezone.utc) if data.status in {"completed", "skipped"} else None
+        step.completed_at = self._utc_naive_now() if data.status in {"completed", "skipped"} else None
 
         task_stmt = (
             select(MaintenanceTask)
@@ -369,7 +391,7 @@ class MaintenanceTaskService:
         else:
             task.status = "pending"
 
-        await self.session.commit()
+        await self._commit_session()
         return await self.get_task_detail(task_id)
 
     async def complete_task_after_pipeline_success(self, task_id: int) -> None:
@@ -382,13 +404,79 @@ class MaintenanceTaskService:
         task = (await self.session.execute(stmt)).scalar_one_or_none()
         if task is None or task.status == "completed":
             return
-        now = datetime.now(timezone.utc)
+        now = self._utc_naive_now()
         for step in task.steps:
             if step.status not in {"completed", "skipped"}:
                 step.status = "completed"
                 step.completed_at = now
         task.status = "completed"
-        await self.session.commit()
+        await self._commit_session()
+
+    async def finalize_task_after_agent_pipeline(
+        self,
+        task_id: int,
+        run_payload: dict[str, Any],
+    ) -> None:
+        """Finalize task status only when the final graph resolution satisfies the closure gate."""
+        stmt = (
+            select(MaintenanceTask)
+            .options(selectinload(MaintenanceTask.steps))
+            .where(MaintenanceTask.id == task_id)
+        )
+        task = (await self.session.execute(stmt)).scalar_one_or_none()
+        if task is None:
+            return
+
+        final_resolution = run_payload.get("final_resolution") or {}
+        if final_resolution:
+            finalized = (
+                str(final_resolution.get("status") or "") == "completed"
+                and not bool(final_resolution.get("manual_review_required"))
+            )
+            detail = (
+                f"final_resolution.status={final_resolution.get('status')}; "
+                f"manual_review_required={bool(final_resolution.get('manual_review_required'))}; "
+                f"reason={final_resolution.get('reason') or 'unknown'}"
+            )
+        else:
+            plan_rows = {
+                str(item.get("agent_name")): item
+                for item in run_payload.get("resolved_run_plan", [])
+                if isinstance(item, dict) and item.get("agent_name")
+            }
+            planning_status = str(plan_rows.get("planning", {}).get("status") or "missing")
+            review_status = str(plan_rows.get("review", {}).get("status") or "missing")
+            finalized = planning_status == "completed" and review_status in {"completed", "skipped"}
+            detail = f"planning.status={planning_status}; review.status={review_status}"
+
+        now = self._utc_naive_now()
+        if finalized:
+            for step in task.steps:
+                if step.status not in {"completed", "skipped"}:
+                    step.status = "completed"
+                    step.completed_at = now
+            task.status = "completed"
+            description = f"Agent 流水线已完成，{detail}，任务自动收口。"
+        else:
+            if task.status == "pending":
+                task.status = "in_progress"
+            description = f"Agent 流水线已完成，但任务保持 in_progress；{detail}。"
+
+        timeline = list(task.execution_timeline or [])
+        timeline.append(
+            {
+                "id": f"agent-pipeline-{task_id}-{int(now.timestamp())}",
+                "type": "agent_pipeline_completed",
+                "code": "AGENT_PIPELINE_COMPLETED",
+                "title": "Agent 流水线完成",
+                "description": description,
+                "detail": detail,
+                "time": now.replace(tzinfo=timezone.utc).isoformat(),
+                "task_finalized": finalized,
+            }
+        )
+        task.execution_timeline = timeline
+        await self._commit_session()
 
     async def get_task_detail(self, task_id: int) -> dict[str, Any]:
         """Return a fully expanded task detail payload."""
@@ -403,32 +491,52 @@ class MaintenanceTaskService:
 
         source_refs = list(task.source_snapshot or [])
         symptom_text = task.symptom_description or task.fault_type or task.title or ""
-        procedural_query = analyze_procedural_query(symptom_text).is_procedural
-        if procedural_query or len(source_refs) < 3:
-            try:
-                payload = await KnowledgeService(self.session).search_multimodal(
-                    KnowledgeSearchRequest(
-                        query=symptom_text,
-                        equipment_type=task.equipment_type,
-                        equipment_model=task.equipment_model,
-                        fault_type=task.fault_type,
-                        limit=5,
-                    )
-                )
-                extra_refs = payload.get("results") or []
-                if extra_refs:
-                    source_refs = extra_refs[:5]
-            except Exception:
-                pass
         timeline_payload = list(task.execution_timeline or [])
         if not timeline_payload:
             timeline_payload = self._build_minimal_timeline(task)
         steps_payload = [self._serialize_step(step, task) for step in task.steps]
         derived_steps = self._derive_step_runtime_states(steps_payload, timeline_payload)
-        diagnosis_ready = self._has_final_diagnosis(task)
-        completed_steps = sum(1 for step in derived_steps if step["status"] == "completed")
-        normalized_status = "completed" if diagnosis_ready else task.status
+        total_steps, completed_steps = self._resolve_task_progress(
+            task,
+            derived_steps=derived_steps,
+        )
         run_started_at, run_finished_at = self._extract_runtime_window(timeline_payload)
+
+        # 查关联工单和案例（并行）
+        linked_work_order_id, linked_case_id = await asyncio.gather(
+            self._find_linked_work_order_id(task.id),
+            self._find_linked_case_id(task.id),
+        )
+        stored_diagnosis_structured = (
+            dict(task.diagnosis_structured)
+            if isinstance(task.diagnosis_structured, dict)
+            else None
+        )
+        reasoning_chain_payload = (
+            stored_diagnosis_structured.pop("_reasoning_chain", None)
+            if stored_diagnosis_structured
+            else None
+        )
+        diagnosis_structured_payload = stored_diagnosis_structured or build_structured_diagnosis(
+            diagnosis_report=task.diagnosis_report,
+            advice_card=task.advice_card,
+            retrieval_results=source_refs,
+            maintenance_level=task.maintenance_level,
+            symptom_description=symptom_text,
+            work_order_ready=bool(task.asset_code),
+        ).model_dump()
+        if reasoning_chain_payload is None:
+            reasoning_chain_payload = self._build_reasoning_chain_snapshot(
+                task=task,
+                source_refs=source_refs,
+                diagnosis_structured=diagnosis_structured_payload,
+            )
+        workflow_stages = self._build_workflow_stages(
+            task,
+            linked_work_order_id=linked_work_order_id,
+            linked_case_id=linked_case_id,
+        )
+        workflow_total, workflow_completed = self._count_workflow_stages(workflow_stages)
 
         return {
             "id": task.id,
@@ -442,19 +550,16 @@ class MaintenanceTaskService:
             "maintenance_level": task.maintenance_level,
             "fault_type": task.fault_type,
             "symptom_description": task.symptom_description,
-            "status": normalized_status,
+            "status": task.status,
             "advice_card": task.advice_card,
             "diagnosis_report": task.diagnosis_report,
-            "diagnosis_structured": build_structured_diagnosis(
-                diagnosis_report=task.diagnosis_report,
-                advice_card=task.advice_card,
-                retrieval_results=source_refs,
-                maintenance_level=task.maintenance_level,
-                symptom_description=symptom_text,
-                work_order_ready=bool(task.asset_code),
-            ).model_dump(),
+            "diagnosis_structured": diagnosis_structured_payload,
+            "reasoning_chain": reasoning_chain_payload,
             "execution_timeline": timeline_payload,
-            "total_steps": len(task.steps),
+            "workflow_stages": workflow_stages,
+            "workflow_total": workflow_total,
+            "workflow_completed": workflow_completed,
+            "total_steps": total_steps,
             "completed_steps": completed_steps,
             "source_refs": source_refs,
             "steps": derived_steps,
@@ -462,7 +567,92 @@ class MaintenanceTaskService:
             "updated_at": task.updated_at,
             "run_started_at": run_started_at,
             "run_finished_at": run_finished_at,
+            "linked_work_order_id": linked_work_order_id,
+            "linked_case_id": linked_case_id,
         }
+
+    def _build_reasoning_chain_snapshot(
+        self,
+        *,
+        task: MaintenanceTask,
+        source_refs: list[dict[str, Any]],
+        diagnosis_structured: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        evidence_chunks: list[dict[str, Any]] = []
+        for item in source_refs[:5]:
+            chunk_id = item.get("chunk_id")
+            document_id = item.get("document_id")
+            if chunk_id is None or document_id is None:
+                continue
+            evidence_chunks.append(
+                {
+                    "chunk_id": int(chunk_id),
+                    "document_id": int(document_id),
+                    "title": str(item.get("title") or item.get("source_name") or "知识片段"),
+                    "source_name": str(item.get("source_name") or item.get("title") or "知识来源"),
+                    "citation_label": item.get("citation_label"),
+                    "section_reference": item.get("section_reference") or item.get("section_path"),
+                    "page_reference": item.get("page_reference"),
+                    "excerpt": str(item.get("excerpt") or item.get("evidence_summary") or ""),
+                    "score": item.get("score") or item.get("rerank_score") or item.get("retrieval_score"),
+                }
+            )
+        if not evidence_chunks and not diagnosis_structured:
+            return None
+
+        selected_claims: list[str] = []
+        symptoms = [
+            str(item).strip()
+            for item in (diagnosis_structured or {}).get("main_symptoms", [])
+            if str(item).strip()
+        ]
+        if symptoms:
+            selected_claims.append(f"问题现象包括：{'、'.join(symptoms[:4])}。")
+        fault = str((diagnosis_structured or {}).get("most_likely_fault") or task.fault_type or "").strip()
+        if fault:
+            selected_claims.append(f"系统优先围绕“{fault}”组织排查路径。")
+        if evidence_chunks:
+            labels = [
+                str(chunk.get("citation_label") or f"chunk:{chunk['chunk_id']}")
+                for chunk in evidence_chunks[:3]
+            ]
+            selected_claims.append(f"对应证据来自：{'、'.join(labels)}。")
+
+        question = task.symptom_description or task.title
+        confidence = float((diagnosis_structured or {}).get("confidence") or 0) / 100
+        return {
+            "question": question,
+            "matched_entities": [],
+            "expanded_relations": [],
+            "evidence_chunks": evidence_chunks,
+            "selected_answer_claims": selected_claims,
+            "confidence": round(confidence, 4),
+            "warnings": ["当前推理链由任务诊断快照生成，未包含完整图谱关系。"] if not evidence_chunks else [],
+            "explanation_text": self._format_reasoning_snapshot_explanation(
+                fault=fault,
+                selected_claims=selected_claims,
+                evidence_chunks=evidence_chunks,
+            ),
+        }
+
+    @staticmethod
+    def _format_reasoning_snapshot_explanation(
+        *,
+        fault: str,
+        selected_claims: list[str],
+        evidence_chunks: list[dict[str, Any]],
+    ) -> str:
+        subject = f"优先排查{fault}" if fault else "生成当前建议"
+        lines = [f"系统判断{subject}，是因为："]
+        for index, claim in enumerate(selected_claims[:3], start=1):
+            lines.append(f"{index}. {claim}")
+        if evidence_chunks:
+            first = evidence_chunks[0]
+            source = first.get("source_name") or first.get("title")
+            section = first.get("section_reference") or first.get("page_reference")
+            suffix = f" {section}" if section else ""
+            lines.append(f"{len(lines)}. 对应证据来自《{source}》{suffix}。")
+        return "\n".join(lines)
 
     async def list_history(
         self,
@@ -486,35 +676,47 @@ class MaintenanceTaskService:
         if work_order_id:
             stmt = stmt.where(MaintenanceTask.work_order_id.ilike(f"%{work_order_id.strip()}%"))
         tasks = (await self.session.execute(stmt)).scalars().all()
-        return [
-            {
-                "id": task.id,
-                "title": task.title,
-                "work_order_id": task.work_order_id,
-                "asset_code": task.asset_code,
-                "report_source": task.report_source,
-                "priority": task.priority,
-                "equipment_type": task.equipment_type,
-                "equipment_model": task.equipment_model,
-                "maintenance_level": task.maintenance_level,
-                "status": "completed" if self._has_final_diagnosis(task) else task.status,
-                "total_steps": len(task.steps),
-                "completed_steps": (
-                    len(task.steps)
-                    if self._has_final_diagnosis(task)
-                    else sum(1 for step in task.steps if step.status == "completed")
-                ),
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-                "run_started_at": self._extract_runtime_window(
-                    getattr(task, "execution_timeline", None)
-                )[0],
-                "run_finished_at": self._extract_runtime_window(
-                    getattr(task, "execution_timeline", None)
-                )[1],
-            }
-            for task in tasks
-        ]
+        task_ids = [task.id for task in tasks]
+        linked_work_order_ids, linked_case_ids = await asyncio.gather(
+            self._find_linked_work_order_ids(task_ids),
+            self._find_linked_case_ids(task_ids),
+        )
+
+        history_items: list[dict[str, Any]] = []
+        for task in tasks:
+            total_steps, completed_steps = self._resolve_task_progress(task)
+            workflow_stages = self._build_workflow_stages(
+                task,
+                linked_work_order_id=linked_work_order_ids.get(task.id),
+                linked_case_id=linked_case_ids.get(task.id),
+            )
+            workflow_total, workflow_completed = self._count_workflow_stages(workflow_stages)
+            run_started_at, run_finished_at = self._extract_runtime_window(
+                getattr(task, "execution_timeline", None)
+            )
+            history_items.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "work_order_id": task.work_order_id,
+                    "asset_code": task.asset_code,
+                    "report_source": task.report_source,
+                    "priority": task.priority,
+                    "equipment_type": task.equipment_type,
+                    "equipment_model": task.equipment_model,
+                    "maintenance_level": task.maintenance_level,
+                    "status": task.status,
+                    "workflow_total": workflow_total,
+                    "workflow_completed": workflow_completed,
+                    "total_steps": total_steps,
+                    "completed_steps": completed_steps,
+                    "created_at": task.created_at,
+                    "updated_at": task.updated_at,
+                    "run_started_at": run_started_at,
+                    "run_finished_at": run_finished_at,
+                }
+            )
+        return history_items
 
     async def export_task(self, task_id: int) -> dict[str, Any]:
         """Build an export-friendly summary payload."""
@@ -540,7 +742,7 @@ class MaintenanceTaskService:
             )
         )
         await self.session.delete(task)
-        await self.session.commit()
+        await self._commit_session()
 
     async def reset_task_for_retry(self, task_id: int) -> dict[str, Any]:
         """Clear persisted diagnosis artifacts and reopen the task for a fresh rerun."""
@@ -555,7 +757,7 @@ class MaintenanceTaskService:
 
         self._reset_task_runtime_state(task)
 
-        await self.session.commit()
+        await self._commit_session()
         return await self.get_task_detail(task_id)
 
     async def upsert_execution_timeline(
@@ -579,7 +781,7 @@ class MaintenanceTaskService:
                 self._reset_task_runtime_state(task, clear_timeline=False)
         elif events and task.status == "pending":
             task.status = "in_progress"
-        await self.session.commit()
+        await self._commit_session()
 
     async def append_execution_timeline_event(
         self,
@@ -605,7 +807,7 @@ class MaintenanceTaskService:
         elif task.status == "pending":
             task.status = "in_progress"
 
-        await self.session.commit()
+        await self._commit_session()
 
     async def update_diagnosis_report(self, task_id: int, diagnosis_report: str | None) -> None:
         """Persist only the final diagnosis report for a maintenance task."""
@@ -617,7 +819,7 @@ class MaintenanceTaskService:
         task.diagnosis_report = normalized or None
         if task.diagnosis_report:
             self._mark_task_completed_from_diagnosis(task)
-        await self.session.commit()
+        await self._commit_session()
 
     async def update_diagnosis_context(
         self,
@@ -626,27 +828,212 @@ class MaintenanceTaskService:
         diagnosis_report: str | None,
         source_chunk_ids: list[int],
         source_refs: list[dict[str, Any]],
+        diagnosis_structured: dict[str, Any] | None = None,
+        reasoning_chain: dict[str, Any] | None = None,
+        mark_task_completed: bool = True,
     ) -> None:
         """Persist diagnosis report and the latest knowledge citation snapshot back to the task."""
-        stmt = select(MaintenanceTask).where(MaintenanceTask.id == task_id)
+        stmt = (
+            select(MaintenanceTask)
+            .options(selectinload(MaintenanceTask.steps))
+            .where(MaintenanceTask.id == task_id)
+        )
         task = (await self.session.execute(stmt)).scalar_one_or_none()
         if task is None:
             raise ValueError("指定的检修任务不存在。")
         normalized = (diagnosis_report or "").strip()
         task.diagnosis_report = normalized or None
         task.source_chunk_ids = list(source_chunk_ids)
-        task.source_snapshot = self._json_safe_snapshot(list(source_refs))
-        if task.diagnosis_report:
+        safe_source_refs = self._json_safe_snapshot(list(source_refs))
+        task.source_snapshot = safe_source_refs
+        if diagnosis_structured:
+            normalized_diagnosis_structured = self._normalize_diagnosis_structured_snapshot(diagnosis_structured)
+            structured_snapshot = dict(normalized_diagnosis_structured)
+            if reasoning_chain:
+                structured_snapshot["_reasoning_chain"] = self._json_safe_snapshot(reasoning_chain)
+            task.diagnosis_structured = structured_snapshot
+            self._replace_steps_from_diagnosis_structured(task, normalized_diagnosis_structured, safe_source_refs)
+        if task.diagnosis_report and mark_task_completed:
             self._mark_task_completed_from_diagnosis(task)
-        await self.session.commit()
+        elif task.diagnosis_report and task.status == "pending":
+            task.status = "in_progress"
+        await self._commit_session()
+
+    @staticmethod
+    def _normalize_diagnosis_structured_snapshot(diagnosis_structured: dict[str, Any]) -> dict[str, Any]:
+        required_fields = {"most_likely_fault", "risk_level", "confidence", "preliminary_conclusion"}
+        if required_fields.issubset(diagnosis_structured):
+            return DiagnosisStructuredPayload.model_validate(diagnosis_structured).model_dump()
+
+        normalized = dict(diagnosis_structured)
+        raw_steps = normalized.get("next_steps")
+        if not isinstance(raw_steps, list):
+            return normalized
+
+        normalized_steps: list[dict[str, Any]] = []
+        for index, raw_step in enumerate(raw_steps, start=1):
+            if isinstance(raw_step, str):
+                step_payload = {
+                    "step_no": index,
+                    "title": raw_step.strip() or f"步骤 {index}",
+                    "summary": "",
+                    "sections": [],
+                    "meta": [],
+                    "raw_text": raw_step.strip() or None,
+                }
+            elif isinstance(raw_step, dict):
+                step_payload = raw_step
+            else:
+                continue
+            normalized_steps.append(DiagnosisStep.model_validate(step_payload).model_dump())
+
+        normalized["next_steps"] = normalized_steps
+        return normalized
+
+    def _replace_steps_from_diagnosis_structured(
+        self,
+        task: MaintenanceTask,
+        diagnosis_structured: dict[str, Any],
+        knowledge_refs: list[dict[str, Any]],
+    ) -> None:
+        """Replace template-derived runtime steps with diagnosis-generated steps."""
+        raw_steps = diagnosis_structured.get("next_steps") if isinstance(diagnosis_structured, dict) else None
+        if not isinstance(raw_steps, list):
+            return
+
+        task.steps.clear()
+        for index, raw_step in enumerate(raw_steps, start=1):
+            if isinstance(raw_step, str):
+                title = raw_step.strip() or f"步骤 {index}"
+                instruction = title
+                meta: list[str] = []
+            elif isinstance(raw_step, dict):
+                title = str(raw_step.get("title") or "").strip() or f"步骤 {index}"
+                instruction = self._build_instruction_from_diagnosis_step(raw_step, title)
+                meta = [
+                    str(item).strip()
+                    for item in raw_step.get("meta", [])
+                    if str(item).strip()
+                ] if isinstance(raw_step.get("meta"), list) else []
+            else:
+                continue
+
+            task.steps.append(
+                MaintenanceTaskStep(
+                    task_id=task.id,
+                    template_step_id=None,
+                    step_order=index,
+                    title=title,
+                    instruction=instruction,
+                    risk_warning=None,
+                    caution="；".join(meta) if meta else None,
+                    confirmation_text=f"已完成{title}",
+                    required_tools=[],
+                    required_materials=[],
+                    estimated_minutes=None,
+                    status="pending",
+                    knowledge_refs=knowledge_refs,
+                )
+            )
+
+    @staticmethod
+    def _build_instruction_from_diagnosis_step(raw_step: dict[str, Any], title: str) -> str:
+        parts: list[str] = []
+        summary = str(raw_step.get("summary") or "").strip()
+        raw_text = str(raw_step.get("raw_text") or "").strip()
+        if raw_text:
+            parts.append(raw_text)
+        elif summary:
+            parts.append(summary)
+
+        sections = raw_step.get("sections")
+        if isinstance(sections, list):
+            for section in sections:
+                if not isinstance(section, dict):
+                    continue
+                label = str(section.get("label") or "").strip()
+                items = section.get("items")
+                item_text = "；".join(
+                    str(item).strip()
+                    for item in items
+                    if str(item).strip()
+                ) if isinstance(items, list) else ""
+                if label and item_text:
+                    parts.append(f"{label}：{item_text}")
+                elif item_text:
+                    parts.append(item_text)
+
+        return " ".join(parts).strip() or title
 
     def _mark_task_completed_from_diagnosis(self, task: MaintenanceTask) -> None:
         """Promote the parent task once a final diagnosis report is available."""
         task.status = "completed"
+        completed_at = self._utc_naive_now()
+        for step in task.steps:
+            if step.status != "completed":
+                step.status = "completed"
+                step.completed_at = completed_at
+
+    async def _find_linked_work_order_id(self, task_id: int) -> int | None:
+        """找到以该诊断任务为来源创建的第一个工单 ID（存在 step_progress_json 里）。"""
+        stmt = select(WorkOrder.id, WorkOrder.step_progress_json).order_by(WorkOrder.id)
+        rows = (await self.session.execute(stmt)).all()
+        for row in rows:
+            snapshot = row.step_progress_json
+            if isinstance(snapshot, dict):
+                source_task = snapshot.get("source_task")
+                if isinstance(source_task, dict) and source_task.get("task_id") == task_id:
+                    return row.id
+        return None
+
+    async def _find_linked_case_id(self, task_id: int) -> int | None:
+        """找到关联该诊断任务的第一个案例 ID。"""
+        stmt = select(MaintenanceCase.id).where(MaintenanceCase.task_id == task_id).limit(1)
+        result = (await self.session.execute(stmt)).scalar_one_or_none()
+        return result
+
+    async def _find_linked_work_order_ids(self, task_ids: list[int]) -> dict[int, int]:
+        """批量找到以诊断任务为来源创建的工单 ID。"""
+        if not task_ids:
+            return {}
+        target_ids = set(task_ids)
+        stmt = select(WorkOrder.id, WorkOrder.step_progress_json).order_by(WorkOrder.id)
+        rows = (await self.session.execute(stmt)).all()
+        linked_ids: dict[int, int] = {}
+        for row in rows:
+            snapshot = row.step_progress_json
+            if not isinstance(snapshot, dict):
+                continue
+            source_task = snapshot.get("source_task")
+            if not isinstance(source_task, dict):
+                continue
+            source_task_id = source_task.get("task_id")
+            if source_task_id in target_ids and source_task_id not in linked_ids:
+                linked_ids[source_task_id] = row.id
+        return linked_ids
+
+    async def _find_linked_case_ids(self, task_ids: list[int]) -> dict[int, int]:
+        """批量找到诊断任务关联的案例 ID。"""
+        if not task_ids:
+            return {}
+        stmt = (
+            select(MaintenanceCase.id, MaintenanceCase.task_id)
+            .where(MaintenanceCase.task_id.in_(task_ids))
+            .order_by(MaintenanceCase.id)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        linked_ids: dict[int, int] = {}
+        for row in rows:
+            if row.task_id is not None and row.task_id not in linked_ids:
+                linked_ids[row.task_id] = row.id
+        return linked_ids
 
     def _reset_task_runtime_state(self, task: MaintenanceTask, *, clear_timeline: bool = True) -> None:
         task.diagnosis_report = None
+        task.diagnosis_structured = None
         task.advice_card = None
+        task.source_chunk_ids = []
+        task.source_snapshot = []
         if clear_timeline:
             task.execution_timeline = []
         task.status = "pending"
@@ -658,7 +1045,13 @@ class MaintenanceTaskService:
     def _has_final_diagnosis(self, task: MaintenanceTask) -> bool:
         if (task.diagnosis_report or "").strip():
             return True
-        if (task.advice_card or "").strip():
+        structured = task.diagnosis_structured
+        if isinstance(structured, dict) and (
+            (structured.get("preliminary_conclusion") or "").strip()
+            or (structured.get("most_likely_fault") or "").strip()
+            or structured.get("next_steps")
+            or structured.get("root_causes")
+        ):
             return True
         timeline = task.execution_timeline or []
         timeline_types = {
@@ -667,6 +1060,131 @@ class MaintenanceTaskService:
             if isinstance(item, dict)
         }
         return "done" in timeline_types or "report" in timeline_types
+
+    def _extract_structured_step_count(self, task: MaintenanceTask) -> int:
+        structured = task.diagnosis_structured
+        raw_steps = structured.get("next_steps") if isinstance(structured, dict) else None
+        return self._count_structured_step_items(raw_steps)
+
+    def _count_structured_step_items(self, raw_steps: Any) -> int:
+        if not isinstance(raw_steps, list):
+            return 0
+        return sum(
+            1
+            for item in raw_steps
+            if (
+                isinstance(item, str) and item.strip()
+            ) or (
+                isinstance(item, dict)
+                and (
+                    str(item.get("title") or "").strip()
+                    or str(item.get("summary") or "").strip()
+                    or str(item.get("raw_text") or "").strip()
+                )
+            )
+        )
+
+    def _build_workflow_stages(
+        self,
+        task: MaintenanceTask,
+        *,
+        linked_work_order_id: int | None = None,
+        linked_case_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        safe_source_refs = list(task.source_snapshot or [])
+        safe_timeline = list(task.execution_timeline or [])
+        structured_steps = self._extract_structured_step_count(task)
+        # Avoid triggering lazy-load IO from helpers that may run before the
+        # relationship has been eagerly loaded (e.g. immediately after create).
+        loaded_steps = getattr(task, "__dict__", {}).get("steps")
+        persisted_steps = len(list(loaded_steps or []))
+        workflow_step_count = persisted_steps if persisted_steps > 0 else structured_steps
+        status = str(getattr(task, "status", "") or "").lower()
+        has_retrieval_stage = bool(safe_source_refs) or bool(safe_timeline) or self._has_final_diagnosis(task)
+        has_step_stage = workflow_step_count > 0
+        return [
+            {
+                "key": "task_created",
+                "title": "任务创建",
+                "done": True,
+                "active": False,
+                "helper": "已接收故障描述、设备信息与输入上下文",
+            },
+            {
+                "key": "knowledge_retrieval",
+                "title": "知识检索",
+                "done": has_retrieval_stage,
+                "active": status == "in_progress" and not has_retrieval_stage,
+                "helper": f"已命中 {len(safe_source_refs)} 条核心证据" if safe_source_refs else "正在召回知识依据",
+            },
+            {
+                "key": "workflow_actions",
+                "title": "链路完成步骤输出",
+                "done": has_step_stage,
+                "active": status == "in_progress" and not has_step_stage,
+                "helper": f"已整理 {workflow_step_count} 条链路完成步骤" if has_step_stage else "等待诊断结果生成链路完成步骤",
+            },
+            {
+                "key": "work_order",
+                "title": "生成工单",
+                "done": linked_work_order_id is not None,
+                "active": status == "completed" and linked_work_order_id is None,
+                "helper": (
+                    f"工单 #{linked_work_order_id} 已生成"
+                    if linked_work_order_id is not None
+                    else ("诊断已结束，可进入工单生成" if status == "completed" else "需先完成诊断后再生成工单")
+                ),
+            },
+            {
+                "key": "knowledge_case",
+                "title": "沉淀案例",
+                "done": linked_case_id is not None,
+                "active": linked_work_order_id is not None and linked_case_id is None,
+                "helper": (
+                    f"案例 #{linked_case_id} 已沉淀"
+                    if linked_case_id is not None
+                    else "工单闭环后可继续沉淀为知识案例"
+                ),
+            },
+        ]
+
+    def _count_workflow_stages(self, workflow_stages: list[dict[str, Any]]) -> tuple[int, int]:
+        total = len(workflow_stages) if workflow_stages else WORKFLOW_STAGE_TOTAL
+        completed = sum(1 for stage in workflow_stages if bool(stage.get("done")))
+        return total, completed
+
+    def _resolve_task_progress(
+        self,
+        task: MaintenanceTask,
+        *,
+        derived_steps: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int]:
+        raw_status = str(getattr(task, "status", "") or "").lower()
+        if derived_steps is not None:
+            total_steps = len(derived_steps)
+            finished_steps = sum(
+                1 for step in derived_steps if str(step.get("status") or "").lower() in {"completed", "skipped"}
+            )
+        else:
+            steps = list(task.steps or [])
+            total_steps = len(steps)
+            finished_steps = sum(
+                1 for step in steps if str(getattr(step, "status", "") or "").lower() in {"completed", "skipped"}
+            )
+
+        if total_steps > 0:
+            if raw_status == "completed" and finished_steps < total_steps:
+                return total_steps, total_steps
+            return total_steps, finished_steps
+
+        structured_step_count = self._extract_structured_step_count(task)
+        if structured_step_count > 0:
+            return (
+                structured_step_count,
+                structured_step_count if raw_status == "completed" else 0,
+            )
+
+        return 0, 0
 
     def _extract_runtime_window(
         self, timeline: list[dict[str, Any]] | None
@@ -693,8 +1211,8 @@ class MaintenanceTaskService:
         if not self._has_final_diagnosis(task):
             return []
 
-        created_at = task.created_at or datetime.now(timezone.utc)
-        finished_at = task.updated_at or created_at
+        created_at = self._coerce_naive_utc(task.created_at) or self._utc_naive_now()
+        finished_at = self._coerce_naive_utc(task.updated_at) or created_at
         total_seconds = max(int((finished_at - created_at).total_seconds()), 0)
         quarter = max(total_seconds // 4, 1) if total_seconds > 0 else 1
         stage_2_time = created_at + timedelta(seconds=quarter)
@@ -836,7 +1354,7 @@ class MaintenanceTaskService:
             status="published",
         )
         self.session.add(template)
-        await self.session.flush()
+        await self._flush_session()
 
         for index, item in enumerate(template_spec["steps"], start=1):
             resource_hint = self._get_step_resource_hint(item["title"])
@@ -859,7 +1377,7 @@ class MaintenanceTaskService:
                 )
             )
 
-        await self.session.flush()
+        await self._flush_session()
         refreshed_stmt = (
             select(MaintenanceTaskTemplate)
             .options(selectinload(MaintenanceTaskTemplate.steps))
@@ -894,6 +1412,10 @@ class MaintenanceTaskService:
                     "step_anchor": chunk.step_anchor,
                     "page_reference": chunk.page_reference or document.page_reference,
                     "image_anchor": chunk.image_anchor,
+                    "source_modality": chunk.source_modality,
+                    "ocr_text": chunk.ocr_text,
+                    "image_caption": chunk.image_caption,
+                    "evidence_summary": chunk.evidence_summary,
                     "citation_label": f"C{len(refs) + 1}",
                     "excerpt": self._truncate_excerpt(chunk.content),
                     "retrieval_score": None,
@@ -912,7 +1434,7 @@ class MaintenanceTaskService:
         data: MaintenanceTaskCreate,
         knowledge_refs: list[dict[str, Any]],
     ) -> str:
-        source_titles = "、".join(ref["title"] for ref in knowledge_refs[:3]) or "当前已选标准检修模板"
+        source_titles = "、".join(ref["title"] for ref in knowledge_refs[:3]) or "当前输入信息"
         symptom = data.symptom_description or "当前故障现象待现场进一步确认"
         fault_type = data.fault_type or "当前未明确故障类型"
         model = data.equipment_model or "未指定型号"
@@ -931,7 +1453,7 @@ class MaintenanceTaskService:
         data: MaintenanceTaskCreate,
         knowledge_refs: list[dict[str, Any]],
     ) -> str:
-        source_titles = "、".join(ref["title"] for ref in knowledge_refs[:2]) or "当前标准模板"
+        source_titles = "、".join(ref["title"] for ref in knowledge_refs[:2]) or "当前输入信息"
         replacements = defaultdict(
             str,
             {
@@ -995,7 +1517,7 @@ class MaintenanceTaskService:
         )
 
         return (
-            f"《{task['title']}》当前状态为{status_text}，共 {total} 个标准步骤，已完成 {completed} 个。"
+            f"《{task['title']}》当前状态为{status_text}，共 {total} 个建议步骤，已完成 {completed} 个。"
             f"{self._build_export_context_line(task)}"
             f"{f'建议准备工具：{tools}。' if tools else ''}"
             f"本次作业主要依据 {sources} 生成作业指引，建议结合现场备注继续复核未完成步骤。"

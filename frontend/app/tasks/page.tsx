@@ -1,3 +1,5 @@
-import TaskListPage from "@/features/tasks/screens/task-list-page";
+﻿import { redirect } from "next/navigation";
 
-export default TaskListPage;
+export default function TasksPage() {
+  redirect("/tasks/new");
+}

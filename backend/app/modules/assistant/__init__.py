@@ -1,4 +1,4 @@
-"""Assistant module public surface."""
+﻿"""Assistant module public surface."""
 from __future__ import annotations
 
 from importlib import import_module
@@ -9,6 +9,10 @@ __all__ = [
     "AgentOrchestrationService",
     "AgentAssistRequest",
     "AgentAssistResponse",
+    "AgentGraphTraceEvent",
+    "AgentCritiqueItem",
+    "AgentReplanItem",
+    "AgentCurrentPlanItem",
     "AgentTaskPreviewStep",
     "AgentRunStep",
     "AgentToolCall",
@@ -22,6 +26,10 @@ _EXPORTS = {
     ),
     "AgentAssistRequest": ("app.modules.assistant.schemas", "AgentAssistRequest"),
     "AgentAssistResponse": ("app.modules.assistant.schemas", "AgentAssistResponse"),
+    "AgentGraphTraceEvent": ("app.modules.assistant.schemas", "AgentGraphTraceEvent"),
+    "AgentCritiqueItem": ("app.modules.assistant.schemas", "AgentCritiqueItem"),
+    "AgentReplanItem": ("app.modules.assistant.schemas", "AgentReplanItem"),
+    "AgentCurrentPlanItem": ("app.modules.assistant.schemas", "AgentCurrentPlanItem"),
     "AgentTaskPreviewStep": ("app.modules.assistant.schemas", "AgentTaskPreviewStep"),
     "AgentRunStep": ("app.modules.assistant.schemas", "AgentRunStep"),
     "AgentToolCall": ("app.modules.assistant.schemas", "AgentToolCall"),

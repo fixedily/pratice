@@ -1,4 +1,4 @@
-"""PDF import integration exports."""
+﻿"""PDF import integration exports."""
 from app.services.pdf_import_service import (
     ExtractedPdfPage,
     PdfKnowledgeImportService,

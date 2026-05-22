@@ -1,4 +1,4 @@
-"""Data Analyst 节点 - 传感器数据查询与统计分析
+﻿"""Data Analyst 节点 - 传感器数据查询与统计分析
 
 该节点负责:
 1. 调用 get_sensor_data_by_time_range 工具获取传感器统计数据

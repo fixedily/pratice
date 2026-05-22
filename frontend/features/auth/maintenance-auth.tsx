@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   createContext,
@@ -97,4 +97,3 @@ export function useMaintenanceAuth() {
   }
   return ctx;
 }
-

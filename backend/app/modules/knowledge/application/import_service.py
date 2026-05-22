@@ -1,7 +1,8 @@
-"""Formal knowledge import management service for the Next.js knowledge center."""
+﻿"""Formal knowledge import management service for the Next.js knowledge center."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import re
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from app.modules.knowledge.schemas.search import KnowledgeDocumentCreate
 from app.services.knowledge_chunking import build_anchored_chunk_payloads
 from app.services.knowledge_index_sync import rebuild_all_knowledge_indices
 from app.services.ocr_service import ImageOcrResult, KnowledgeOcrService
+from app.services.pdf_import_service import _is_toc_page
 
 IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -27,6 +29,44 @@ _SOURCE_IMPORT_LOCKS: dict[str, asyncio.Lock] = {}
 SUMMARY_SENTENCE_SPLIT = re.compile(r"[。！？；\n]+")
 TOP_LEVEL_SECTION_PATTERN = re.compile(r"^[一二三四五六七八九十]+、\s*(.+)$")
 OPERATION_KEYWORDS = ("拆卸", "检查", "安装", "测量", "调整", "装配")
+SCANNED_OCR_IMAGE_LINE_PATTERN = re.compile(r"^!\[\]\(page=\d+,bbox=\[[^\]]+\]\)$")
+SCANNED_OCR_PAGE_MARKER_PATTERN = re.compile(r"^\[第\s*\d+\s*页 OCR\]$")
+SCANNED_OCR_CHAPTER_PATTERN = re.compile(r"^#*\s*第\s*\d+\s*章")
+SCANNED_OCR_DOTTED_TOC_PATTERN = re.compile(r"[·•…]{2,}\s*\d+$")
+SCANNED_OCR_SENTENCE_PATTERN = re.compile(r"[一-鿿]{6,}[，。；！？]")
+SCANNED_OCR_FRONT_KEYWORDS = (
+    "案例大全版",
+    "图书在版编目",
+    "版权所有",
+    "机械工业出版社",
+    "China Machine Press",
+    "客服热线",
+    "购书热线",
+    "投稿热线",
+    "读者信箱",
+    "责任编辑",
+    "印刷",
+    "定价：",
+    "丛书创作团队",
+    "前言",
+    "本书法律顾问",
+)
+SCANNED_OCR_TITLE_PAGE_KEYWORDS = (
+    "完全手册",
+    "编著",
+    "技术才是硬道理",
+    "维修技能速成",
+)
+SCANNED_OCR_TOC_KEYWORDS = ("目录", "全书章目", "主要内容")
+SCANNED_OCR_BODY_CUE_KEYWORDS = (
+    "一般解决方法",
+    "故障维修",
+    "故障排除",
+    "启动步骤",
+    "数据恢复方法",
+    "维修方法",
+)
+logger = logging.getLogger(__name__)
 
 
 def _utc_naive_now() -> datetime:
@@ -59,6 +99,151 @@ def render_pdf_pages_as_png_bytes(
     finally:
         if doc is not None:
             doc.close()
+
+
+def _normalize_scanned_ocr_page_text(text: str) -> str:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            lines.append("")
+            continue
+        if SCANNED_OCR_PAGE_MARKER_PATTERN.match(line):
+            continue
+        if SCANNED_OCR_IMAGE_LINE_PATTERN.match(line):
+            continue
+        lines.append(line)
+
+    compact_lines: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if previous_blank:
+                continue
+            previous_blank = True
+            compact_lines.append("")
+            continue
+        previous_blank = False
+        compact_lines.append(line)
+    return "\n".join(compact_lines).strip()
+
+
+def _is_scanned_front_matter_page(page_number: int, text: str) -> bool:
+    if not text:
+        return True
+    if _is_scanned_toc_page(text):
+        return False
+    if _looks_like_scanned_body_page(text):
+        return False
+
+    keyword_hits = sum(1 for keyword in SCANNED_OCR_FRONT_KEYWORDS if keyword in text)
+    if _is_scanned_title_page(text):
+        return True
+    if page_number <= 5 and keyword_hits >= 1:
+        return True
+    if page_number <= 8 and keyword_hits >= 2:
+        return True
+    return False
+
+
+def _is_scanned_toc_page(text: str) -> bool:
+    if not text:
+        return False
+    if _is_toc_page(text):
+        return True
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    dotted_count = sum(1 for line in lines if SCANNED_OCR_DOTTED_TOC_PATTERN.search(line))
+    chapter_ref_count = len(re.findall(r"第\s*\d+\s*章", text))
+    toc_keyword_hits = sum(1 for keyword in SCANNED_OCR_TOC_KEYWORDS if keyword in text)
+    if "<table" in text and chapter_ref_count >= 2:
+        return True
+    if toc_keyword_hits >= 1 and chapter_ref_count >= 2:
+        return True
+    if dotted_count >= 8:
+        return True
+    if chapter_ref_count >= 4 and dotted_count >= 4:
+        return True
+    return False
+
+
+def _is_scanned_title_page(text: str) -> bool:
+    lines = [line.strip("# ").strip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 10:
+        return False
+    if sum(1 for keyword in SCANNED_OCR_TITLE_PAGE_KEYWORDS if keyword in text) < 2:
+        return False
+    if SCANNED_OCR_CHAPTER_PATTERN.search(text):
+        return False
+    if len(SCANNED_OCR_SENTENCE_PATTERN.findall(text)) >= 1:
+        return False
+    return True
+
+
+def _looks_like_scanned_body_page(text: str) -> bool:
+    if not text or _is_scanned_toc_page(text) or _is_scanned_title_page(text):
+        return False
+
+    chapter_hit = bool(SCANNED_OCR_CHAPTER_PATTERN.search(text))
+    dotted_count = sum(
+        1
+        for line in text.splitlines()
+        if SCANNED_OCR_DOTTED_TOC_PATTERN.search(line.strip())
+    )
+    sentence_count = len(SCANNED_OCR_SENTENCE_PATTERN.findall(text))
+    body_cue_hits = sum(1 for keyword in SCANNED_OCR_BODY_CUE_KEYWORDS if keyword in text)
+    substantial_lines = sum(
+        1
+        for line in text.splitlines()
+        if len(line.strip()) >= 12 and not line.strip().startswith("#")
+    )
+
+    if chapter_hit and dotted_count >= 5:
+        return False
+    if chapter_hit and sentence_count >= 1:
+        return True
+    if chapter_hit and (body_cue_hits >= 2 or substantial_lines >= 8):
+        return True
+    if sentence_count >= 3 and substantial_lines >= 4:
+        return True
+    return False
+
+
+def _detect_scanned_body_start_page(normalized_pages: list[tuple[int, str]]) -> int | None:
+    for page_number, text in normalized_pages:
+        if _looks_like_scanned_body_page(text):
+            return page_number
+    return None
+
+
+def _filter_scanned_ocr_pages(page_entries: list[tuple[int, str]]) -> tuple[list[tuple[int, str]], dict[str, list[int]]]:
+    normalized_pages = [
+        (page_number, _normalize_scanned_ocr_page_text(text))
+        for page_number, text in page_entries
+    ]
+    body_start_page = _detect_scanned_body_start_page(normalized_pages)
+
+    kept_pages: list[tuple[int, str]] = []
+    dropped_front: list[int] = []
+    dropped_toc: list[int] = []
+    for page_number, text in normalized_pages:
+        if not text:
+            continue
+        if body_start_page is not None and page_number < body_start_page:
+            if _is_scanned_toc_page(text):
+                dropped_toc.append(page_number)
+            else:
+                dropped_front.append(page_number)
+            continue
+        if _is_scanned_front_matter_page(page_number, text):
+            dropped_front.append(page_number)
+            continue
+        if body_start_page is not None and _is_scanned_toc_page(text):
+            dropped_toc.append(page_number)
+            continue
+        kept_pages.append((page_number, text))
+
+    return kept_pages, {"front": dropped_front, "toc": dropped_toc}
 
 
 class KnowledgeImportService:
@@ -447,20 +632,15 @@ class KnowledgeImportService:
     async def delete_document(self, document_id: int) -> None:
         """Delete a knowledge document and remove all graph relations that reference it."""
         document = await self._ensure_document(document_id)
-        await self.session.execute(
-            delete(KnowledgeRelation).where(
-                (KnowledgeRelation.source_kind == "knowledge_document")
-                & (KnowledgeRelation.source_id == document_id)
-            )
-        )
-        await self.session.execute(
-            delete(KnowledgeRelation).where(
-                (KnowledgeRelation.target_kind == "knowledge_document")
-                & (KnowledgeRelation.target_id == document_id)
-            )
-        )
+        await self._delete_document_relations(document_id)
         await self.session.delete(document)
         await self.session.commit()
+        try:
+            from app.services import cache_service
+
+            cache_service.clear()
+        except Exception:
+            logger.warning("search_cache_clear_failed after delete_document", exc_info=True)
 
     def _build_document_summary(
         self,
@@ -620,9 +800,30 @@ class KnowledgeImportService:
     async def _delete_existing_documents(self, source_name: str) -> None:
         existing = await self._list_existing_documents(source_name)
         for document in existing:
+            await self._delete_document_relations(document.id)
             await self.session.delete(document)
         if existing:
             await self.session.commit()
+            try:
+                from app.services import cache_service
+
+                cache_service.clear()
+            except Exception:
+                logger.warning("search_cache_clear_failed after replace_existing delete", exc_info=True)
+
+    async def _delete_document_relations(self, document_id: int) -> None:
+        await self.session.execute(
+            delete(KnowledgeRelation).where(
+                (KnowledgeRelation.source_kind == "knowledge_document")
+                & (KnowledgeRelation.source_id == document_id)
+            )
+        )
+        await self.session.execute(
+            delete(KnowledgeRelation).where(
+                (KnowledgeRelation.target_kind == "knowledge_document")
+                & (KnowledgeRelation.target_id == document_id)
+            )
+        )
 
     async def _load_job(self, job_id: int) -> KnowledgeImportJob:
         stmt = select(KnowledgeImportJob).where(KnowledgeImportJob.id == job_id)
@@ -784,10 +985,10 @@ class KnowledgeImportService:
             "chunk_payloads": chunk_payloads,
             "page_reference": "IMG1",
             "page_count": 1,
-            "final_import_type": "image_ocr" if ocr_result.source == "vision_model" else "image_fallback",
+            "final_import_type": "image_ocr" if ocr_result.source != "fallback" else "image_fallback",
             "processing_note": (
                 "图片已通过视觉 OCR 提取为知识文本。"
-                if ocr_result.source == "vision_model"
+                if ocr_result.source != "fallback"
                 else "图片已按回退模式生成可导入文本，请在导入后人工校对。"
             ),
             "processing_warning": ocr_result.warning,
@@ -843,8 +1044,9 @@ class KnowledgeImportService:
         section_reference: str | None,
     ) -> dict[str, Any]:
         """将扫描件 PDF 各页 PNG 走视觉 OCR，拼成可入库文档与分段。"""
-        parts: list[str] = []
         warnings: list[str] = []
+        fallback_pages: list[int] = []
+        recognized_pages: list[tuple[int, str]] = []
         for index, png in enumerate(png_pages, start=1):
             ocr_result: ImageOcrResult = await self.ocr_service.extract_text(
                 image_bytes=png,
@@ -855,9 +1057,26 @@ class KnowledgeImportService:
                 title=title,
                 section_reference=section_reference,
             )
-            parts.append(f"[第 {index} 页 OCR]\n{ocr_result.recognized_text}")
+            if ocr_result.source == "fallback":
+                fallback_pages.append(index)
+            recognized_pages.append((index, ocr_result.recognized_text))
             if ocr_result.warning:
                 warnings.append(f"第{index}页：{ocr_result.warning}")
+
+        if fallback_pages:
+            pages_label = "、".join(str(page) for page in fallback_pages[:8])
+            if len(fallback_pages) > 8:
+                pages_label = f"{pages_label} 等 {len(fallback_pages)} 页"
+            raise ValueError(
+                "扫描件 PDF 的视觉 OCR 未成功完成，"
+                f"第 {pages_label} 页仅生成了回退占位文本。"
+                "当前已阻止该批内容入库，请先配置可用视觉模型后重试。"
+            )
+
+        filtered_pages, dropped_pages = _filter_scanned_ocr_pages(recognized_pages)
+        parts = [f"[第 {page_number} 页 OCR]\n{text}" for page_number, text in filtered_pages]
+        if not parts:
+            raise ValueError("扫描件 PDF 经过前置过滤后未保留有效正文页，请调整导入页数范围或过滤规则后重试。")
 
         content = "\n\n".join(parts)
         chunk_payloads = build_anchored_chunk_payloads(
@@ -881,12 +1100,24 @@ class KnowledgeImportService:
             payload["image_caption"] = "扫描件页 OCR 导入"
             payload["evidence_summary"] = "扫描件 PDF 经逐页 OCR 转换为检修知识片段。"
 
+        if dropped_pages["front"]:
+            warnings.append(
+                "已过滤前置噪声页：第"
+                + "、".join(str(page) for page in dropped_pages["front"])
+                + "页"
+            )
+        if dropped_pages["toc"]:
+            warnings.append(
+                "已过滤目录页：第"
+                + "、".join(str(page) for page in dropped_pages["toc"])
+                + "页"
+            )
         processing_warning = "；".join(warnings) if warnings else None
         return {
             "content": content,
             "chunk_payloads": chunk_payloads,
-            "page_reference": f"P1-P{len(png_pages)}",
-            "page_count": len(png_pages),
+            "page_reference": f"P{filtered_pages[0][0]}-P{filtered_pages[-1][0]}",
+            "page_count": len(filtered_pages),
             "final_import_type": "pdf_scanned_ocr",
             "processing_note": (
                 "扫描件 PDF 已逐页渲染并进行视觉识别，请在预览确认后再导入，导入后建议人工校对。"

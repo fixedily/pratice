@@ -1,17 +1,21 @@
-"""Schemas for maintenance task workflow."""
+﻿"""Schemas for maintenance task workflow."""
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.diagnosis import DiagnosisStructuredPayload
+from app.schemas.knowledge import KnowledgeReasoningChain
 
 class KnowledgeReference(BaseModel):
     """Knowledge citation attached to a task or step."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     chunk_id: int
     document_id: int
     title: str
     source_name: str
+    source_type: str | None = None
     equipment_type: str
     equipment_model: str | None = None
     fault_type: str | None = None
@@ -21,9 +25,18 @@ class KnowledgeReference(BaseModel):
     page_reference: str | None = None
     image_anchor: str | None = None
     citation_label: str | None = None
+    source_modality: str | None = None
+    ocr_text: str | None = None
+    image_caption: str | None = None
+    evidence_summary: str | None = None
+    expanded_content: str | None = None
+    recommendation_reason: str | None = None
+    graph_relation_type: str | None = None
     excerpt: str
+    score: float | None = None
     retrieval_score: float | None = None
     rerank_score: float | None = None
+    retrieval_path: list[str] = Field(default_factory=list, alias="_retrieval_path")
 
 
 class MaintenanceTaskCreate(BaseModel):
@@ -152,6 +165,16 @@ class MaintenanceTaskTimelineUpsert(BaseModel):
     diagnosis_report: str | None = Field(default=None, description="RAG/协作诊断生成的最终结论")
 
 
+class MaintenanceTaskWorkflowStage(BaseModel):
+    """Unified workflow stage state for detail/list progress alignment."""
+
+    key: str
+    title: str
+    done: bool
+    active: bool = False
+    helper: str
+
+
 class MaintenanceTaskResponse(BaseModel):
     """Detailed maintenance task response."""
 
@@ -170,7 +193,11 @@ class MaintenanceTaskResponse(BaseModel):
     advice_card: str | None = None
     diagnosis_report: str | None = None
     diagnosis_structured: DiagnosisStructuredPayload | None = None
+    reasoning_chain: KnowledgeReasoningChain | None = None
     execution_timeline: list[MaintenanceTaskTimelineEvent] = Field(default_factory=list)
+    workflow_stages: list[MaintenanceTaskWorkflowStage] = Field(default_factory=list)
+    workflow_total: int
+    workflow_completed: int
     total_steps: int
     completed_steps: int
     source_refs: list[KnowledgeReference] = Field(default_factory=list)
@@ -179,6 +206,8 @@ class MaintenanceTaskResponse(BaseModel):
     updated_at: datetime | None = None
     run_started_at: datetime | None = None
     run_finished_at: datetime | None = None
+    linked_work_order_id: int | None = None
+    linked_case_id: int | None = None
 
 
 class MaintenanceTaskHistoryItem(BaseModel):
@@ -194,6 +223,8 @@ class MaintenanceTaskHistoryItem(BaseModel):
     equipment_model: str | None = None
     maintenance_level: str
     status: str
+    workflow_total: int
+    workflow_completed: int
     total_steps: int
     completed_steps: int
     created_at: datetime | None = None

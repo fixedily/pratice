@@ -1,17 +1,22 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   Activity,
+  ArrowUpRight,
   CheckCircle2,
   ChevronLeft,
   FileText,
   Loader2,
   MessageSquare,
+  Paperclip,
+  PauseCircle,
+  Pencil,
   PenTool,
+  PlayCircle,
   RefreshCw,
   Send,
   Sparkles,
@@ -21,11 +26,13 @@ import { Header } from "@/shared/components/brand/app-header";
 import { useMaintenanceAuth } from "@/features/auth/maintenance-auth";
 import {
   canAcceptFillReview,
+  canAcceptWorkOrder,
   canAssignWorkOrder,
   canCompleteMaintenance,
   canConfirmWorkOrderStep,
   canCreateKnowledgeDraft,
   canOperateWorkOrder,
+  canRequestEscalation,
   canSubmitFilling,
   canEnterMaintenance as canEnterMaintenanceWithRole,
 } from "@/features/auth/permissions";
@@ -41,9 +48,18 @@ import {
   DialogTitle,
 } from "@/shared/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/shared/components/ui/select";
+import {
+  acceptWorkOrder,
   acceptWorkOrderFillReview,
   completeWorkOrderMaintenance,
   confirmWorkOrderStep,
+  createWorkOrderEscalation,
   enterWorkOrderMaintenance,
   fetchWorkOrderAssignmentCandidates,
   fetchWorkOrderDetail,
@@ -51,7 +67,9 @@ import {
   fetchWorkOrderMessages,
   isMaintenanceAuthExpiredError,
   postWorkOrderMessage,
+  resumeWorkOrder,
   submitWorkOrderFilling,
+  suspendWorkOrder,
   updateWorkOrderAssignment,
   type WorkOrderAssignee,
   type WorkOrderAssignmentUpdatePayload,
@@ -104,6 +122,9 @@ const overdueStatusMeta = {
 
 const eventLabelMap: Record<string, string> = {
   work_order_created: "工单创建",
+  work_order_accepted: "确认接单",
+  work_order_suspended: "工单暂停",
+  work_order_resumed: "工单恢复",
   retrieval_started: "知识检索开始",
   retrieval_done: "知识检索完成",
   enter_maintenance: "进入检修",
@@ -112,6 +133,7 @@ const eventLabelMap: Record<string, string> = {
   escalation_resolved: "升级会诊完成",
   approval_approved: "审批通过",
   approval_rejected: "审批驳回",
+  approval_returned: "审批退回",
   approval_requested: "提交审批",
   expert_accept_fill: "专家验收通过",
   fill_submitted: "已提交回填",
@@ -126,6 +148,8 @@ type TimelineEntry =
       content: string;
       time: string;
       actor: string;
+      eventType: string;
+      attachmentCount?: undefined;
     }
   | {
       id: string;
@@ -134,7 +158,15 @@ type TimelineEntry =
       content: string;
       time: string;
       actor: string;
+      eventType?: undefined;
+      attachmentCount: number;
     };
+
+type TimelineFilter = "all" | "system" | "manual" | "approval";
+
+const APPROVAL_EVENT_TYPES = new Set([
+  "approval_approved", "approval_rejected", "approval_returned", "approval_requested",
+]);
 
 function getMaintenanceLevelMeta(level?: string | null) {
   return maintenanceLevelMeta[String(level || "").toLowerCase()] ?? {
@@ -178,6 +210,23 @@ function formatSlaRemaining(deadline: string | null | undefined) {
     minutes > 0 || (days === 0 && hours === 0) ? `${minutes}分钟` : "",
   ].filter(Boolean);
   return `${overdue ? "已超时" : "剩余"} ${parts.join("")}`;
+}
+
+function formatSlaOutcome(deadline: string | null | undefined, finishedAt: string | null | undefined) {
+  const deadlineMs = Date.parse(String(deadline || ""));
+  const finishedMs = Date.parse(String(finishedAt || ""));
+  if (Number.isNaN(deadlineMs) || Number.isNaN(finishedMs)) return null;
+  const diff = finishedMs - deadlineMs;
+  if (diff <= 0) {
+    return { label: "按时完成", overdue: false };
+  }
+  const overdueMinutes = Math.floor(diff / 60_000);
+  const hours = Math.floor(overdueMinutes / 60);
+  const minutes = overdueMinutes % 60;
+  return {
+    label: `超时完成 ${hours}h ${minutes}m`,
+    overdue: true,
+  };
 }
 
 function parseReferenceTitles(text: string) {
@@ -236,6 +285,8 @@ function formatEventContent(event: WorkOrderEventItem) {
   switch (event.event_type) {
     case "work_order_created":
       return "系统已创建检修工单，等待生成可执行的检修流程。";
+    case "work_order_accepted":
+      return "检修员已确认接单，工单进入待进场状态。";
     case "retrieval_started":
       return "系统开始检索相关知识和历史案例，正在整理可参考的处理步骤。";
     case "retrieval_done":
@@ -250,6 +301,12 @@ function formatEventContent(event: WorkOrderEventItem) {
       return "审批已通过，可继续执行后续流程。";
     case "approval_rejected":
       return "审批未通过，请根据意见补充信息后再提交。";
+    case "approval_returned": {
+      const reason = payload?.reason as string | undefined;
+      return reason
+        ? `审批已退回：${reason}。请补充后重新确认相关工步。`
+        : "审批已退回，请根据意见补充信息后重新确认相关工步。";
+    }
     case "approval_requested":
       return "当前工步已提交审批，等待审批员确认后才能继续执行。";
     case "approval_need_info":
@@ -421,7 +478,7 @@ function buildActionCardsFromTask(
         };
       }
       const title = step.title?.trim() || `建议动作 ${index + 1}`;
-      const detail = (step.summary || step.raw_text || title).trim();
+      const detail = (step.detail || step.summary || step.raw_text || title).trim();
       const hint = step.meta?.[0] || "";
       return {
         id: `structured-${index}-${title}`,
@@ -487,6 +544,7 @@ function buildTimeline(
       content: formatEventContent(event),
       time: formatDateTimeLocal(event.created_at),
       actor: formatTimelineActor(event),
+      eventType: event.event_type,
       sortKey: Number.isNaN(ts) ? 0 : ts,
     });
   }
@@ -501,6 +559,7 @@ function buildTimeline(
       time: formatDateTimeLocal(message.created_at),
       actor: formatTimelineActor(message),
       sortKey: Number.isNaN(ts) ? 0 : ts,
+      attachmentCount: message.attachment_ids?.length ?? 0,
     });
   }
 
@@ -527,6 +586,12 @@ function TimelineCard({ entry, isLast }: { entry: TimelineEntry; isLast: boolean
           <span className="text-xs text-muted-foreground">{entry.time}</span>
         </div>
         <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground/85">{entry.content}</p>
+        {(entry.attachmentCount ?? 0) > 0 ? (
+          <div className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+            <Paperclip className="h-3 w-3" />
+            {entry.attachmentCount} 个附件
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -647,6 +712,51 @@ function buildCaseDraft(
   };
 }
 
+function SlaCountdown({ deadline }: { deadline: string | null | undefined }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!deadline) return <span className="text-foreground">--</span>;
+  const target = Date.parse(deadline);
+  if (Number.isNaN(target)) return <span className="text-foreground">--</span>;
+  const diff = target - now;
+  if (diff <= 0) {
+    const overMs = Math.abs(diff);
+    const overH = Math.floor(overMs / 3_600_000);
+    const overM = Math.floor((overMs % 3_600_000) / 60_000);
+    return <span className="animate-pulse text-red-500">已超时 {overH}h {overM}m</span>;
+  }
+  const hours = Math.floor(diff / 3_600_000);
+  const minutes = Math.floor((diff % 3_600_000) / 60_000);
+  const urgent = diff < 30 * 60_000;
+  return (
+    <span className={urgent ? "animate-pulse text-red-500" : "text-foreground"}>
+      剩余 {hours}h {minutes}m
+    </span>
+  );
+}
+
+function SlaStatus({
+  deadline,
+  status,
+  finishedAt,
+}: {
+  deadline: string | null | undefined;
+  status?: string | null;
+  finishedAt?: string | null;
+}) {
+  const normalizedStatus = String(status || "").toUpperCase();
+  if (normalizedStatus === "S10") {
+    const outcome = formatSlaOutcome(deadline, finishedAt);
+    if (!outcome) return <span className="text-foreground">--</span>;
+    return <span className={outcome.overdue ? "text-red-500" : "text-emerald-600"}>{outcome.label}</span>;
+  }
+  return <SlaCountdown deadline={deadline} />;
+}
+
 export default function TicketDetailPage() {
   const params = useParams<{ ticketId: string }>();
   const router = useRouter();
@@ -667,7 +777,7 @@ export default function TicketDetailPage() {
   const [sourceTaskLoading, setSourceTaskLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [actionPending, setActionPending] = useState<"enter" | "complete" | null>(null);
+  const [actionPending, setActionPending] = useState<"enter" | "complete" | "accept" | null>(null);
   const [acceptingReview, setAcceptingReview] = useState(false);
   const [confirmingStepNo, setConfirmingStepNo] = useState<number | null>(null);
   const [creatingCase, setCreatingCase] = useState(false);
@@ -685,12 +795,27 @@ export default function TicketDetailPage() {
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [assignmentCandidates, setAssignmentCandidates] = useState<WorkOrderAssignee[]>([]);
+  const [assignmentSearch, setAssignmentSearch] = useState("");
   const [assignmentDraft, setAssignmentDraft] = useState<Required<WorkOrderAssignmentUpdatePayload>>({
     assigned_worker_user_id: null,
     assigned_expert_user_id: null,
     assigned_safety_user_id: null,
     current_owner_user_id: null,
   });
+  const [escalationDialogOpen, setEscalationDialogOpen] = useState(false);
+  const [escalationSubmitting, setEscalationSubmitting] = useState(false);
+  const [escalationNote, setEscalationNote] = useState("");
+  const [actionBarSticky, setActionBarSticky] = useState(false);
+  const actionBarRef = useRef<HTMLDivElement>(null);
+  const [commentFiles, setCommentFiles] = useState<File[]>([]);
+  const [commentUploading, setCommentUploading] = useState(false);
+  const commentFileRef = useRef<HTMLInputElement>(null);
+  const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
+  const [suspendReason, setSuspendReason] = useState("");
+  const [suspendSubmitting, setSuspendSubmitting] = useState(false);
+  const [stepNoteDialogOpen, setStepNoteDialogOpen] = useState(false);
+  const [stepNoteTarget, setStepNoteTarget] = useState<number | null>(null);
+  const [stepNote, setStepNote] = useState("");
 
   const loadTimeline = async (token: string, workOrderId: number) => {
     setTimelineLoading(true);
@@ -774,6 +899,14 @@ export default function TicketDetailPage() {
   const title = useMemo(() => buildTitle(detail), [detail]);
   const summary = useMemo(() => buildSummary(detail, messages, events), [detail, messages, events]);
   const timeline = useMemo(() => buildTimeline(events, messages), [events, messages]);
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>("all");
+
+  const filteredTimeline = useMemo(() => {
+    if (timelineFilter === "all") return timeline;
+    if (timelineFilter === "manual") return timeline.filter((e) => e.kind === "message");
+    if (timelineFilter === "approval") return timeline.filter((e) => e.kind === "event" && APPROVAL_EVENT_TYPES.has(e.eventType ?? ""));
+    return timeline.filter((e) => e.kind === "event" && !APPROVAL_EVENT_TYPES.has(e.eventType ?? ""));
+  }, [timeline, timelineFilter]);
   const statusMeta = getDisplayedWorkOrderStatusMeta(detail);
   const levelMeta = getMaintenanceLevelMeta(detail?.maintenance_level);
   const sourceTask = detail?.source_task;
@@ -793,19 +926,29 @@ export default function TicketDetailPage() {
     () => normalizeExecutionSteps(detail, actionSteps),
     [actionSteps, detail],
   );
-  const hasFlowTemplateSteps = executionSteps.some((step) => step.confirmable);
   const canEditAssignment = canAssignWorkOrder(user);
+  const matchesSearch = useCallback(
+    (candidate: WorkOrderAssignee) => {
+      if (!assignmentSearch.trim()) return true;
+      const q = assignmentSearch.trim().toLowerCase();
+      return (
+        (candidate.display_name ?? "").toLowerCase().includes(q) ||
+        (candidate.username ?? "").toLowerCase().includes(q)
+      );
+    },
+    [assignmentSearch],
+  );
   const workerCandidates = useMemo(
-    () => assignmentCandidates.filter((candidate) => candidate.roles.includes("worker")),
-    [assignmentCandidates],
+    () => assignmentCandidates.filter((c) => c.roles.includes("worker") && matchesSearch(c)),
+    [assignmentCandidates, matchesSearch],
   );
   const expertCandidates = useMemo(
-    () => assignmentCandidates.filter((candidate) => candidate.roles.includes("expert")),
-    [assignmentCandidates],
+    () => assignmentCandidates.filter((c) => c.roles.includes("expert") && matchesSearch(c)),
+    [assignmentCandidates, matchesSearch],
   );
   const safetyCandidates = useMemo(
-    () => assignmentCandidates.filter((candidate) => candidate.roles.includes("safety")),
-    [assignmentCandidates],
+    () => assignmentCandidates.filter((c) => c.roles.includes("safety") && matchesSearch(c)),
+    [assignmentCandidates, matchesSearch],
   );
   const currentOwnerOptions = useMemo(() => {
     const selectedIds = [
@@ -883,15 +1026,47 @@ export default function TicketDetailPage() {
     assignmentDraft.current_owner_user_id,
   ]);
 
+  useEffect(() => {
+    if (!actionBarRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setActionBarSticky(!entry.isIntersecting);
+      },
+      { threshold: 0, rootMargin: "0px" }
+    );
+    observer.observe(actionBarRef.current);
+    return () => observer.disconnect();
+  }, []);
+
   const handleSubmitComment = () => {
     const token = getMaintenanceToken();
     const content = comment.trim();
     if (!token || !Number.isFinite(numericId) || !content) return;
     setSubmitting(true);
+    setCommentUploading(commentFiles.length > 0);
     void (async () => {
       try {
-        const created = await postWorkOrderMessage(token, numericId, { content });
+        let attachmentIds: number[] | undefined;
+        if (commentFiles.length > 0) {
+          const uploaded = await Promise.all(
+            commentFiles.map((file) =>
+              uploadMaintenanceAttachment(token, {
+                file,
+                biz_type: "message",
+                work_order_id: numericId,
+              })
+            )
+          );
+          attachmentIds = uploaded.map((item) => item.id);
+        }
+        setCommentUploading(false);
+        const created = await postWorkOrderMessage(token, numericId, {
+          content,
+          ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        });
         setComment("");
+        setCommentFiles([]);
+        if (commentFileRef.current) commentFileRef.current.value = "";
         setMessages((current) => [
           ...current,
           {
@@ -899,6 +1074,7 @@ export default function TicketDetailPage() {
             role: "user",
             content,
             retrieval_snapshot_id: null,
+            attachment_ids: attachmentIds || null,
             created_at: created.created_at,
           },
         ]);
@@ -907,11 +1083,12 @@ export default function TicketDetailPage() {
         toast.error(e instanceof Error ? e.message : "提交失败");
       } finally {
         setSubmitting(false);
+        setCommentUploading(false);
       }
     })();
   };
 
-  const handleAction = (kind: "enter" | "complete") => {
+  const handleAction = (kind: "enter" | "complete" | "accept") => {
     const token = getMaintenanceToken();
     if (!token || !Number.isFinite(numericId)) return;
     setActionPending(kind);
@@ -920,9 +1097,12 @@ export default function TicketDetailPage() {
         if (kind === "enter") {
           await enterWorkOrderMaintenance(token, numericId);
           toast.success("已进入检修流程");
-        } else {
+        } else if (kind === "complete") {
           await completeWorkOrderMaintenance(token, numericId);
           toast.success("已标记为完成检修");
+        } else {
+          await acceptWorkOrder(token, numericId);
+          toast.success("已确认接单");
         }
         await loadDetail({ silent: true });
       } catch (e) {
@@ -934,22 +1114,28 @@ export default function TicketDetailPage() {
   };
 
   const handleConfirmStep = (stepNo: number) => {
+    setStepNoteTarget(stepNo);
+    setStepNote("");
+    setStepNoteDialogOpen(true);
+  };
+
+  const handleSubmitStepConfirm = () => {
     const token = getMaintenanceToken();
-    if (!token || !Number.isFinite(numericId)) return;
-    setConfirmingStepNo(stepNo);
+    if (!token || !Number.isFinite(numericId) || stepNoteTarget == null) return;
+    setConfirmingStepNo(stepNoteTarget);
+    setStepNoteDialogOpen(false);
     void (async () => {
       try {
-        const result = await confirmWorkOrderStep(token, numericId, { step_no: stepNo, mark_done: true });
-        if (result.business_code === "APPROVAL_REQUIRED") {
-          toast.success(`工步 ${stepNo} 已提交审批，请前往审批任务处理`);
-        } else {
-          toast.success(`已确认工步 ${stepNo}`);
-        }
+        const body: { step_no: number; mark_done: true; note?: string } = { step_no: stepNoteTarget, mark_done: true };
+        if (stepNote.trim()) body.note = stepNote.trim();
+        await confirmWorkOrderStep(token, numericId, body);
+        toast.success(`已确认工步 ${stepNoteTarget}`);
         await loadDetail({ silent: true });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "工步确认失败");
       } finally {
         setConfirmingStepNo(null);
+        setStepNoteTarget(null);
       }
     })();
   };
@@ -1069,6 +1255,68 @@ export default function TicketDetailPage() {
     })();
   };
 
+  const handleSubmitEscalation = () => {
+    const token = getMaintenanceToken();
+    if (!token || !Number.isFinite(numericId)) return;
+    const note = escalationNote.trim();
+    if (note.length < 10) {
+      toast.error("升级说明至少需要 10 个字");
+      return;
+    }
+    setEscalationSubmitting(true);
+    void (async () => {
+      try {
+        await createWorkOrderEscalation(token, numericId, { escalation_note: note });
+        setEscalationDialogOpen(false);
+        setEscalationNote("");
+        toast.success("已发起升级会诊");
+        await loadDetail({ silent: true });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "发起升级会诊失败");
+      } finally {
+        setEscalationSubmitting(false);
+      }
+    })();
+  };
+
+  const handleSuspend = () => {
+    const token = getMaintenanceToken();
+    if (!token || !Number.isFinite(numericId)) return;
+    const reason = suspendReason.trim();
+    if (!reason) {
+      toast.error("请填写暂停原因");
+      return;
+    }
+    setSuspendSubmitting(true);
+    void (async () => {
+      try {
+        await suspendWorkOrder(token, numericId, reason);
+        setSuspendDialogOpen(false);
+        setSuspendReason("");
+        toast.success("工单已暂停");
+        await loadDetail({ silent: true });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "暂停失败");
+      } finally {
+        setSuspendSubmitting(false);
+      }
+    })();
+  };
+
+  const handleResume = () => {
+    const token = getMaintenanceToken();
+    if (!token || !Number.isFinite(numericId)) return;
+    void (async () => {
+      try {
+        await resumeWorkOrder(token, numericId);
+        toast.success("工单已恢复");
+        await loadDetail({ silent: true });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "恢复失败");
+      }
+    })();
+  };
+
   if (detailLoading) {
     return (
       <div className="min-h-screen bg-background">
@@ -1117,7 +1365,9 @@ export default function TicketDetailPage() {
   const canAcceptReview = canAcceptFillReview(user, detail.status);
   const canCreateCaseDraft = canCreateKnowledgeDraft(user, detail.status);
   const canAdvanceWorkOrder = canOperateWorkOrder(user);
-  const hasAvailableAction = canEnterMaintenance || canCompleteCurrentMaintenance || canFillResult || canAcceptReview;
+  const canEscalate = canRequestEscalation(user, detail.status);
+  const canAccept = canAcceptWorkOrder(user, detail.status);
+  const hasAvailableAction = canEnterMaintenance || canCompleteCurrentMaintenance || canFillResult || canAcceptReview || canAccept;
 
   return (
     <div className="min-h-screen bg-background">
@@ -1143,7 +1393,7 @@ export default function TicketDetailPage() {
         </section>
 
         <section className="app-card">
-          <div className="flex flex-col gap-4 border-b border-border p-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-4 border-b border-border p-6 lg:flex-row lg:items-center lg:justify-between" ref={actionBarRef}>
             <div className="min-w-0 flex-1">
               <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1174,6 +1424,47 @@ export default function TicketDetailPage() {
                 >
                   <PenTool className="h-4 w-4" />
                   提交回填结果
+                </button>
+              ) : null}
+              {canAccept ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={() => handleAction("accept")}
+                  disabled={actionPending != null}
+                >
+                  {actionPending === "accept" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  确认接单
+                </button>
+              ) : null}
+              {canEscalate ? (
+                <button
+                  type="button"
+                  className="app-btn-secondary"
+                  onClick={() => setEscalationDialogOpen(true)}
+                >
+                  <ArrowUpRight className="h-4 w-4" />
+                  升级会诊
+                </button>
+              ) : null}
+              {detail?.status === "S7" && !detail?.is_suspended ? (
+                <button
+                  type="button"
+                  className="app-btn-secondary"
+                  onClick={() => setSuspendDialogOpen(true)}
+                >
+                  <PauseCircle className="h-4 w-4" />
+                  暂停
+                </button>
+              ) : null}
+              {detail?.is_suspended ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={handleResume}
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  恢复
                 </button>
               ) : null}
               {canEnterMaintenance ? (
@@ -1213,6 +1504,11 @@ export default function TicketDetailPage() {
                     已超时
                   </span>
                 ) : null}
+                {detail.is_suspended ? (
+                  <span className="inline-flex items-center rounded-md border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-500">
+                    已暂停
+                  </span>
+                ) : null}
               </div>
               <p className="mt-2 text-sm leading-6 text-foreground/85">{summary}</p>
               {!hasAvailableAction && !canAcceptReview && !canFillResult ? (
@@ -1232,7 +1528,7 @@ export default function TicketDetailPage() {
                 <div className="mt-3">
                   <button
                     type="button"
-                    className="app-btn-secondary"
+                    className="app-btn-primary h-10 px-4 shadow-sm"
                     onClick={() => setCreateCaseOpen(true)}
                     disabled={creatingCase}
                   >
@@ -1249,12 +1545,14 @@ export default function TicketDetailPage() {
           <section className="space-y-6">
             <div className="app-card">
               <div className="flex items-center justify-between border-b border-border px-5 py-4">
-                <div className="inline-flex items-center gap-2 text-base font-medium text-foreground">
-                  <Wrench className="h-4 w-4 text-muted-foreground" />
-                  检修步骤执行
+                <div>
+                  <div className="inline-flex items-center gap-2 text-base font-medium text-foreground">
+                    <Wrench className="h-4 w-4 text-muted-foreground" />
+                    检修步骤执行
+                  </div>
                 </div>
                 <span className="text-sm text-muted-foreground">
-                  {detail.flow_template?.name || "建议步骤"}
+                  {executionSteps.some((s) => s.requiresApproval) ? "含必执行步骤" : "建议步骤"}
                 </span>
               </div>
               <div className="p-5">
@@ -1263,7 +1561,7 @@ export default function TicketDetailPage() {
                     {executionSteps.map((step) => (
                       <div
                         key={step.key}
-                        className={`rounded-xl border p-5 transition-all ${
+                        className={`rounded-xl border p-3 sm:p-5 transition-all ${
                           step.current
                             ? "border-[#5e6ad2]/40 bg-[#5e6ad2]/5 shadow-sm"
                             : step.completed
@@ -1298,9 +1596,13 @@ export default function TicketDetailPage() {
                               ) : null}
                               {step.requiresApproval ? (
                                 <span className="inline-flex items-center rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-600 dark:text-orange-400">
-                                  需审批
+                                  必执行步骤
                                 </span>
-                              ) : null}
+                              ) : (
+                                <span className="inline-flex items-center rounded-md border border-border bg-muted/30 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                                  建议步骤
+                                </span>
+                              )}
                             </div>
                             {step.detail ? (
                               <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.detail}</p>
@@ -1320,19 +1622,17 @@ export default function TicketDetailPage() {
                                   )}
                                   确认完成
                                 </button>
-                              ) : (
+                              ) : step.completed || canConfirmWorkOrderStep(user, detail.status) || !canAdvanceWorkOrder ? (
                                 <p className="text-xs text-muted-foreground">
                                   {step.completed
                                     ? "✓ 该工步已确认完成"
                                     : canConfirmWorkOrderStep(user, detail.status)
                                       ? step.confirmable
                                         ? "需按顺序执行后确认"
-                                        : "建议步骤，未绑定流程模板"
-                                      : canAdvanceWorkOrder
-                                        ? "进入检修后可逐步确认"
-                                        : "当前账号没有工步确认权限"}
+                                        : "建议步骤，请结合现场执行记录确认"
+                                      : "当前账号没有工步确认权限"}
                                 </p>
-                              )}
+                              ) : null}
                             </div>
                           </div>
                         </div>
@@ -1344,11 +1644,6 @@ export default function TicketDetailPage() {
                     当前尚未生成可执行步骤，请等待系统检索完成。
                   </div>
                 )}
-                {canConfirmWorkOrderStep(user, detail.status) && !hasFlowTemplateSteps && executionSteps.length > 0 ? (
-                  <div className="mt-4 rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3 text-xs leading-6 text-muted-foreground">
-                    💡 当前显示的是检索生成的建议步骤，还没有绑定真实流程模板，所以可以参考执行，但不能逐步确认。
-                  </div>
-                ) : null}
               </div>
             </div>
 
@@ -1358,7 +1653,19 @@ export default function TicketDetailPage() {
                   <Activity className="h-4 w-4 text-muted-foreground" />
                   执行记录时间线
                 </div>
-                <span className="text-sm text-muted-foreground">{timelineLoading ? "加载中..." : `${timeline.length} 条`}</span>
+                <span className="text-sm text-muted-foreground">{timelineLoading ? "加载中..." : `${filteredTimeline.length} 条`}</span>
+              </div>
+              <div className="flex gap-1 border-b border-border px-5 py-2">
+                {([["all", "全部"], ["system", "系统事件"], ["manual", "人工记录"], ["approval", "审批"]] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${timelineFilter === key ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"}`}
+                    onClick={() => setTimelineFilter(key)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
               <div className="p-5">
                 {timelineLoading ? (
@@ -1366,15 +1673,15 @@ export default function TicketDetailPage() {
                     <div className="app-skeleton h-20 w-full rounded-xl" />
                     <div className="app-skeleton h-20 w-full rounded-xl" />
                   </div>
-                ) : timeline.length > 0 ? (
+                ) : filteredTimeline.length > 0 ? (
                   <div className="space-y-0">
-                    {timeline.map((entry, index) => (
-                      <TimelineCard key={entry.id} entry={entry} isLast={index === timeline.length - 1} />
+                    {filteredTimeline.map((entry, index) => (
+                      <TimelineCard key={entry.id} entry={entry} isLast={index === filteredTimeline.length - 1} />
                     ))}
                   </div>
                 ) : (
                   <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
-                    当前工单暂无可展示的执行记录。
+                    当前筛选条件下暂无记录。
                   </div>
                 )}
               </div>
@@ -1398,15 +1705,65 @@ export default function TicketDetailPage() {
                       rows={4}
                       className="app-textarea min-h-[120px]"
                     />
-                    <div className="mt-3 flex justify-end">
+                    {commentFiles.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {commentFiles.map((file, idx) => (
+                          <div
+                            key={`${file.name}-${idx}`}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground"
+                          >
+                            <Paperclip className="h-3 w-3 text-muted-foreground" />
+                            <span className="max-w-[120px] truncate">{file.name}</span>
+                            <button
+                              type="button"
+                              className="ml-1 text-muted-foreground hover:text-foreground"
+                              onClick={() => {
+                                setCommentFiles((prev) => prev.filter((_, i) => i !== idx));
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 flex items-center justify-between">
+                      <div>
+                        <input
+                          ref={commentFileRef}
+                          type="file"
+                          multiple
+                          accept="image/*,.pdf"
+                          className="hidden"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || []);
+                            if (files.length > 0) setCommentFiles((prev) => [...prev, ...files]);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="app-btn-secondary h-9 px-3 text-xs"
+                          onClick={() => commentFileRef.current?.click()}
+                          disabled={submitting}
+                        >
+                          <Paperclip className="h-3.5 w-3.5" />
+                          附件
+                        </button>
+                      </div>
                       <button
                         type="button"
                         className="app-btn-secondary"
                         onClick={handleSubmitComment}
                         disabled={submitting || !comment.trim()}
                       >
-                        {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        提交记录
+                        {commentUploading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : submitting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Send className="h-4 w-4" />
+                        )}
+                        {commentUploading ? "上传中..." : "提交记录"}
                       </button>
                     </div>
                   </>
@@ -1426,9 +1783,10 @@ export default function TicketDetailPage() {
                 {canEditAssignment ? (
                   <button
                     type="button"
-                    className="app-btn-secondary h-8 px-3 text-xs"
+                    className="app-btn-secondary h-9 border-emerald-500/60 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 shadow-sm hover:bg-emerald-100 hover:text-emerald-800"
                     onClick={() => setAssignmentDialogOpen(true)}
                   >
+                    <Pencil className="h-3.5 w-3.5" />
                     编辑分配
                   </button>
                 ) : null}
@@ -1446,6 +1804,12 @@ export default function TicketDetailPage() {
                   <span className="text-muted-foreground">最后更新</span>
                   <span className="text-foreground">{formatDateTimeLocal(detail.updated_at)}</span>
                 </div>
+                {detail.status === "S10" ? (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">完成时间</span>
+                    <span className="text-foreground">{formatDateTimeLocal(detail.updated_at)}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">SLA 时限</span>
                   <span className="text-foreground">{detail.sla_hours ? `${detail.sla_hours} 小时` : "--"}</span>
@@ -1455,10 +1819,8 @@ export default function TicketDetailPage() {
                   <span className="text-foreground">{formatDateTimeLocal(detail.sla_deadline || "")}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">超时状态</span>
-                  <span className={detail.is_overdue ? "text-red-500" : "text-emerald-600 dark:text-emerald-400"}>
-                    {detail.is_overdue ? "已超时" : "未超时"}
-                  </span>
+                  <span className="text-muted-foreground">{detail.status === "S10" ? "SLA 结果" : "SLA 倒计时"}</span>
+                  <SlaStatus deadline={detail.sla_deadline} status={detail.status} finishedAt={detail.updated_at} />
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">检修员</span>
@@ -1476,12 +1838,6 @@ export default function TicketDetailPage() {
                   <span className="text-muted-foreground">当前负责人</span>
                   <span className="text-foreground">{formatAssigneeName(detail.current_owner)}</span>
                 </div>
-                {detail.flow_template?.name ? (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">流程模板</span>
-                    <span className="text-foreground">{detail.flow_template.name}</span>
-                  </div>
-                ) : null}
                 {detail.device?.device_type ? (
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">设备类型</span>
@@ -1565,93 +1921,116 @@ export default function TicketDetailPage() {
         onOpenChange={(open) => {
           if (assignmentSubmitting) return;
           setAssignmentDialogOpen(open);
+          if (!open) setAssignmentSearch("");
         }}
       >
         <DialogContent className="max-w-lg border-border bg-popover text-popover-foreground">
           <DialogHeader>
             <DialogTitle>编辑工单分配</DialogTitle>
-            <DialogDescription>设置分配组角色槽位，并从已分配成员里指定当前负责人。</DialogDescription>
           </DialogHeader>
+          <input
+            type="text"
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            placeholder="搜索候选人姓名或用户名..."
+            value={assignmentSearch}
+            onChange={(e) => setAssignmentSearch(e.target.value)}
+          />
           <div className="grid gap-4">
             <div className="grid gap-2">
               <div className="text-sm font-medium text-foreground">检修员</div>
-              <select
-                value={assignmentDraft.assigned_worker_user_id ?? ""}
-                onChange={(e) =>
+              <Select
+                value={String(assignmentDraft.assigned_worker_user_id ?? "unassigned")}
+                onValueChange={(value) =>
                   setAssignmentDraft((current) => ({
                     ...current,
-                    assigned_worker_user_id: e.target.value ? Number(e.target.value) : null,
+                    assigned_worker_user_id: value === "unassigned" ? null : Number(value),
                   }))
                 }
-                className="app-select h-10 w-full"
               >
-                <option value="">未分配</option>
-                {workerCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.display_name} @{candidate.username}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue placeholder="未分配" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">未分配</SelectItem>
+                  {workerCandidates.map((candidate) => (
+                    <SelectItem key={candidate.id} value={String(candidate.id)}>
+                      {candidate.display_name} @{candidate.username}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <div className="text-sm font-medium text-foreground">专家</div>
-              <select
-                value={assignmentDraft.assigned_expert_user_id ?? ""}
-                onChange={(e) =>
+              <Select
+                value={String(assignmentDraft.assigned_expert_user_id ?? "unassigned")}
+                onValueChange={(value) =>
                   setAssignmentDraft((current) => ({
                     ...current,
-                    assigned_expert_user_id: e.target.value ? Number(e.target.value) : null,
+                    assigned_expert_user_id: value === "unassigned" ? null : Number(value),
                   }))
                 }
-                className="app-select h-10 w-full"
               >
-                <option value="">未分配</option>
-                {expertCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.display_name} @{candidate.username}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue placeholder="未分配" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">未分配</SelectItem>
+                  {expertCandidates.map((candidate) => (
+                    <SelectItem key={candidate.id} value={String(candidate.id)}>
+                      {candidate.display_name} @{candidate.username}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <div className="text-sm font-medium text-foreground">安全员</div>
-              <select
-                value={assignmentDraft.assigned_safety_user_id ?? ""}
-                onChange={(e) =>
+              <Select
+                value={String(assignmentDraft.assigned_safety_user_id ?? "unassigned")}
+                onValueChange={(value) =>
                   setAssignmentDraft((current) => ({
                     ...current,
-                    assigned_safety_user_id: e.target.value ? Number(e.target.value) : null,
+                    assigned_safety_user_id: value === "unassigned" ? null : Number(value),
                   }))
                 }
-                className="app-select h-10 w-full"
               >
-                <option value="">未分配</option>
-                {safetyCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.display_name} @{candidate.username}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue placeholder="未分配" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">未分配</SelectItem>
+                  {safetyCandidates.map((candidate) => (
+                    <SelectItem key={candidate.id} value={String(candidate.id)}>
+                      {candidate.display_name} @{candidate.username}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <div className="text-sm font-medium text-foreground">当前负责人</div>
-              <select
-                value={assignmentDraft.current_owner_user_id ?? ""}
-                onChange={(e) =>
+              <Select
+                value={String(assignmentDraft.current_owner_user_id ?? "unassigned")}
+                onValueChange={(value) =>
                   setAssignmentDraft((current) => ({
                     ...current,
-                    current_owner_user_id: e.target.value ? Number(e.target.value) : null,
+                    current_owner_user_id: value === "unassigned" ? null : Number(value),
                   }))
                 }
-                className="app-select h-10 w-full"
               >
-                <option value="">未分配</option>
-                {currentOwnerOptions.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.display_name} @{candidate.username}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue placeholder="未分配" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">未分配</SelectItem>
+                  {currentOwnerOptions.map((candidate) => (
+                    <SelectItem key={candidate.id} value={String(candidate.id)}>
+                      {candidate.display_name} @{candidate.username}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <div className="text-xs text-muted-foreground">当前负责人只能从已分配槽位中选择。</div>
             </div>
           </div>
@@ -1735,69 +2114,87 @@ export default function TicketDetailPage() {
           <div className="space-y-4">
             <div className="grid gap-2">
               <div className="text-sm font-medium text-foreground">处理结果</div>
-              <select
+              <Select
                 value={fillResolutionStatus}
-                onChange={(e) => {
-                  const nextValue = e.target.value as "resolved" | "unresolved";
+                onValueChange={(value) => {
+                  const nextValue = value as "resolved" | "unresolved";
                   setFillResolutionStatus(nextValue);
                   setFillClosureCode(nextValue === "resolved" ? "NORMAL" : "UNRESOLVED");
                 }}
-                className="app-select h-10 w-full"
               >
-                <option value="resolved">已解决</option>
-                <option value="unresolved">未解决</option>
-              </select>
+                <SelectTrigger className="h-10 w-full">
+                  <SelectValue placeholder="处理结果" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="resolved">已解决</SelectItem>
+                  <SelectItem value="unresolved">未解决</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {fillResolutionStatus === "resolved" ? (
               <div className="grid gap-2">
                 <div className="text-sm font-medium text-foreground">处理方式</div>
-                <select
+                <Select
                   value={fillClosureCode}
-                  onChange={(e) => setFillClosureCode(e.target.value as "NORMAL" | "PART_REPLACED" | "ADJUSTED" | "OTHER")}
-                  className="app-select h-10 w-full"
+                  onValueChange={(value) =>
+                    setFillClosureCode(value as "NORMAL" | "PART_REPLACED" | "ADJUSTED" | "OTHER")
+                  }
                 >
-                  <option value="NORMAL">正常处理恢复</option>
-                  <option value="PART_REPLACED">已更换部件</option>
-                  <option value="ADJUSTED">已调整参数</option>
-                  <option value="OTHER">其他情况</option>
-                </select>
+                  <SelectTrigger className="h-10 w-full">
+                    <SelectValue placeholder="处理方式" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="NORMAL">正常处理恢复</SelectItem>
+                    <SelectItem value="PART_REPLACED">已更换部件</SelectItem>
+                    <SelectItem value="ADJUSTED">已调整参数</SelectItem>
+                    <SelectItem value="OTHER">其他情况</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             ) : (
               <>
                 <div className="grid gap-2">
                   <div className="text-sm font-medium text-foreground">未解决原因</div>
-                  <select
+                  <Select
                     value={fillUnresolvedReason}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFillUnresolvedReason(
-                        e.target.value as "EQUIPMENT_LIMIT" | "INFO_INSUFFICIENT" | "EXPERT_REQUIRED" | "USER_ABORT" | "OTHER",
+                        value as "EQUIPMENT_LIMIT" | "INFO_INSUFFICIENT" | "EXPERT_REQUIRED" | "USER_ABORT" | "OTHER",
                       )
                     }
-                    className="app-select h-10 w-full"
                   >
-                    <option value="INFO_INSUFFICIENT">信息不足，暂无法判断</option>
-                    <option value="EXPERT_REQUIRED">需要专家进一步介入</option>
-                    <option value="EQUIPMENT_LIMIT">受设备条件限制</option>
-                    <option value="USER_ABORT">现场中止处理</option>
-                    <option value="OTHER">其他原因</option>
-                  </select>
+                    <SelectTrigger className="h-10 w-full">
+                      <SelectValue placeholder="未解决原因" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="INFO_INSUFFICIENT">信息不足，暂无法判断</SelectItem>
+                      <SelectItem value="EXPERT_REQUIRED">需要专家进一步介入</SelectItem>
+                      <SelectItem value="EQUIPMENT_LIMIT">受设备条件限制</SelectItem>
+                      <SelectItem value="USER_ABORT">现场中止处理</SelectItem>
+                      <SelectItem value="OTHER">其他原因</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="grid gap-2">
                   <div className="text-sm font-medium text-foreground">后续动作</div>
-                  <select
+                  <Select
                     value={fillUnresolvedAction}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFillUnresolvedAction(
-                        e.target.value as "REOPEN_ESCALATION" | "RETRY_RETRIEVAL" | "CLOSE_UNRESOLVED",
+                        value as "REOPEN_ESCALATION" | "RETRY_RETRIEVAL" | "CLOSE_UNRESOLVED",
                       )
                     }
-                    className="app-select h-10 w-full"
                   >
-                    <option value="RETRY_RETRIEVAL">重新检索方案</option>
-                    <option value="REOPEN_ESCALATION">发起升级会诊</option>
-                    <option value="CLOSE_UNRESOLVED">保留未解决并关闭</option>
-                  </select>
+                    <SelectTrigger className="h-10 w-full">
+                      <SelectValue placeholder="后续动作" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="RETRY_RETRIEVAL">重新检索方案</SelectItem>
+                      <SelectItem value="REOPEN_ESCALATION">发起升级会诊</SelectItem>
+                      <SelectItem value="CLOSE_UNRESOLVED">保留未解决并关闭</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </>
             )}
@@ -1823,8 +2220,19 @@ export default function TicketDetailPage() {
                 type="file"
                 multiple
                 className="app-input h-auto w-full cursor-pointer py-2"
-                onChange={(e) => setFillFiles(Array.from(e.target.files || []))}
-                accept=".jpg,.jpeg,.png,.webp,.pdf"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  const maxSize = 10 * 1024 * 1024;
+                  const allowedTypes = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+                  const invalid = files.filter((f) => !allowedTypes.includes(f.type) || f.size > maxSize);
+                  if (invalid.length > 0) {
+                    toast.error(`${invalid.map((f) => f.name).join("、")} 不符合要求（仅支持图片/PDF，单文件≤10MB）`);
+                    setFillFiles(files.filter((f) => allowedTypes.includes(f.type) && f.size <= maxSize));
+                  } else {
+                    setFillFiles(files);
+                  }
+                }}
+                accept="image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf"
               />
               <div className="text-xs text-muted-foreground">
                 至少上传 1 个附件，支持图片或 PDF，单文件不超过 10MB。
@@ -1857,6 +2265,211 @@ export default function TicketDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={escalationDialogOpen}
+        onOpenChange={(open) => {
+          if (escalationSubmitting) return;
+          setEscalationDialogOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-lg border-border bg-popover text-popover-foreground">
+          <DialogHeader>
+            <DialogTitle>发起升级会诊</DialogTitle>
+            <DialogDescription>
+              当前问题超出现场处理能力时，可升级至责任专家进行远程会诊。请描述升级原因和现场情况。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <div className="text-sm font-medium text-foreground">升级说明</div>
+              <textarea
+                className="min-h-[120px] w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="请描述当前故障现象、已尝试的处理措施、需要专家协助的具体问题（至少 10 字）"
+                value={escalationNote}
+                onChange={(e) => setEscalationNote(e.target.value)}
+                disabled={escalationSubmitting}
+              />
+              <div className="text-xs text-muted-foreground">
+                {escalationNote.trim().length < 10
+                  ? `还需输入 ${10 - escalationNote.trim().length} 字`
+                  : `已输入 ${escalationNote.trim().length} 字`}
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <button
+              type="button"
+              className="app-btn-secondary"
+              onClick={() => setEscalationDialogOpen(false)}
+              disabled={escalationSubmitting}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="app-btn-primary"
+              onClick={handleSubmitEscalation}
+              disabled={escalationSubmitting || escalationNote.trim().length < 10}
+            >
+              {escalationSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUpRight className="h-4 w-4" />}
+              确认升级
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={suspendDialogOpen}
+        onOpenChange={(open) => {
+          if (suspendSubmitting) return;
+          setSuspendDialogOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-lg border-border bg-popover text-popover-foreground">
+          <DialogHeader>
+            <DialogTitle>暂停工单</DialogTitle>
+            <DialogDescription>
+              暂停后工单将挂起，不影响状态流转记录。恢复后可继续检修。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <div className="text-sm font-medium text-foreground">暂停原因</div>
+              <textarea
+                className="min-h-[100px] w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="请说明暂停原因，如等待备件、等待审批等"
+                value={suspendReason}
+                onChange={(e) => setSuspendReason(e.target.value)}
+                disabled={suspendSubmitting}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <button
+              type="button"
+              className="app-btn-secondary"
+              onClick={() => setSuspendDialogOpen(false)}
+              disabled={suspendSubmitting}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="app-btn-primary"
+              onClick={handleSuspend}
+              disabled={suspendSubmitting || !suspendReason.trim()}
+            >
+              {suspendSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PauseCircle className="h-4 w-4" />}
+              确认暂停
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={stepNoteDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) setStepNoteDialogOpen(false);
+        }}
+      >
+        <DialogContent className="max-w-md border-border bg-popover text-popover-foreground">
+          <DialogHeader>
+            <DialogTitle>确认工步 {stepNoteTarget}</DialogTitle>
+            <DialogDescription>
+              确认完成该工步。可选填备注说明执行情况。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <textarea
+              className="min-h-[80px] w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              placeholder="备注（可选）：如实际操作细节、异常情况等"
+              value={stepNote}
+              onChange={(e) => setStepNote(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <button
+              type="button"
+              className="app-btn-secondary"
+              onClick={() => setStepNoteDialogOpen(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="app-btn-primary"
+              onClick={handleSubmitStepConfirm}
+            >
+              <CheckCircle2 className="h-4 w-4" />
+              确认完成
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {actionBarSticky && hasAvailableAction ? (
+        <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          <div className="app-main app-main-wide py-4">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {canAcceptReview ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={handleAcceptFillReview}
+                  disabled={acceptingReview}
+                >
+                  {acceptingReview ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  通过验收
+                </button>
+              ) : null}
+              {canFillResult ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={() => setFillDialogOpen(true)}
+                >
+                  <PenTool className="h-4 w-4" />
+                  提交回填结果
+                </button>
+              ) : null}
+              {canAccept ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={() => handleAction("accept")}
+                  disabled={actionPending != null}
+                >
+                  {actionPending === "accept" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  确认接单
+                </button>
+              ) : null}
+              {canEnterMaintenance ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={() => handleAction("enter")}
+                  disabled={actionPending != null}
+                >
+                  {actionPending === "enter" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
+                  进入检修
+                </button>
+              ) : null}
+              {canCompleteCurrentMaintenance ? (
+                <button
+                  type="button"
+                  className="app-btn-primary"
+                  onClick={() => handleAction("complete")}
+                  disabled={actionPending != null}
+                >
+                  {actionPending === "complete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  完成检修
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

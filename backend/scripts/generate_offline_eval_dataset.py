@@ -1,4 +1,4 @@
-"""Generate offline evaluation datasets under backend/evaluation.
+﻿"""Generate offline evaluation datasets under backend/evaluation.
 
 Usage:
     python scripts/generate_offline_eval_dataset.py

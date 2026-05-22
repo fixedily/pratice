@@ -1,4 +1,4 @@
-"""Phase 22: Agent tool registry and safety guardrails."""
+﻿"""Phase 22: Agent tool registry and safety guardrails."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -38,22 +38,6 @@ async def test_agent_assist_returns_tool_calls_and_authorization_flags():
                 "excerpt": "拆检前必须确认发动机完成停机冷却。",
             }
         ]
-    )
-    service.task_service._ensure_template = AsyncMock(
-        return_value=SimpleNamespace(
-            steps=[
-                SimpleNamespace(
-                    title="试车验证与结果确认",
-                    instruction_template="执行试车并确认 {symptom_text} 是否解除。",
-                    risk_warning="高温状态下禁止直接试车。",
-                    caution="确保周边区域清场。",
-                    confirmation_text="已完成试车验证",
-                    required_tools=["试车检测表"],
-                    required_materials=["结果确认单"],
-                    estimated_minutes=18,
-                )
-            ]
-        )
     )
     service.case_service.recommend_cases = AsyncMock(return_value=[])
 

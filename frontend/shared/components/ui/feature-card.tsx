@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+﻿import type { ReactNode } from "react";
 import { ArrowUpRight } from "lucide-react";
 
 import { cn } from "@/shared/lib/utils";
@@ -34,7 +34,7 @@ export function FeatureCard({
   onActiveChange,
   onHoverChange,
   onActionClick,
-  actionLabel = "查看详情",
+  actionLabel,
   className,
 }: FeatureCardProps) {
   return (
@@ -121,28 +121,28 @@ export function FeatureCard({
           ))}
         </ul>
 
-        {/* 二级入口：hover/active 出现 */}
-        <div
-          className={cn(
-            "mt-3 flex items-center justify-end text-[13px] font-medium text-brand/80 transition-[opacity,transform] duration-200",
-            "opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0",
-            active && "opacity-100 translate-y-0",
-          )}
-        >
-          <button
-            type="button"
-            className="inline-flex translate-x-2 translate-y-2 items-center gap-1.5 rounded px-1 py-0.5 text-brand/80 transition-[transform,color,opacity] duration-200 group-hover:translate-x-0 group-hover:translate-y-0 hover:text-brand-light"
-            onClick={(e) => {
-              e.stopPropagation();
-              onActionClick?.();
-            }}
+        {actionLabel ? (
+          <div
+            className={cn(
+              "mt-3 flex items-center justify-end text-[13px] font-medium text-brand/80 transition-[opacity,transform] duration-200",
+              "opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0",
+              active && "opacity-100 translate-y-0",
+            )}
           >
-            <span>{actionLabel}</span>
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
+            <button
+              type="button"
+              className="inline-flex translate-x-2 translate-y-2 items-center gap-1.5 rounded px-1 py-0.5 text-brand/80 transition-[transform,color,opacity] duration-200 group-hover:translate-x-0 group-hover:translate-y-0 hover:text-brand-light"
+              onClick={(e) => {
+                e.stopPropagation();
+                onActionClick?.();
+              }}
+            >
+              <span>{actionLabel}</span>
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
-

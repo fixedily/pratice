@@ -1,4 +1,4 @@
-"""Knowledge base models for the maintenance knowledge system."""
+﻿"""Knowledge base models for the 公开演示检修知识系统."""
 from datetime import datetime
 
 from sqlalchemy import (
@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -222,3 +223,249 @@ class KnowledgeRelation(Base):
     relation_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgEntity(Base):
+    """Semantic knowledge graph entity."""
+
+    __tablename__ = "kg_entities"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "canonical_name", name="uq_kg_entities_type_canonical"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", nullable=False, index=True)
+    source_type: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    primary_chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    primary_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
+class KgEntityAlias(Base):
+    """Alias and variant names for semantic entities."""
+
+    __tablename__ = "kg_entity_aliases"
+    __table_args__ = (
+        UniqueConstraint("entity_id", "alias_name", name="uq_kg_entity_aliases_entity_alias"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alias_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    alias_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
+class KgRelation(Base):
+    """Semantic relation between knowledge graph entities."""
+
+    __tablename__ = "kg_relations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    relation_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    directional: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    weight: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False, index=True)
+    source_type: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    evidence_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
+class KgRelationEvidence(Base):
+    """Evidence records that support a semantic relation."""
+
+    __tablename__ = "kg_relation_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    relation_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    section_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    evidence_type: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgRelationReview(Base):
+    """Review history for semantic relations."""
+
+    __tablename__ = "kg_relation_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    relation_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_relations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    review_status_before: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    review_status_after: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewer_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgEntityReview(Base):
+    """Review history for semantic entities."""
+
+    __tablename__ = "kg_entity_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewer_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgEntityMerge(Base):
+    """Merge history for deduplicated semantic entities."""
+
+    __tablename__ = "kg_entity_merges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    merged_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgExtractionJob(Base):
+    """Extraction job for semantic entities and relations."""
+
+    __tablename__ = "kg_extraction_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    trigger_source: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("maintenance_cases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class KgExtractedCandidate(Base):
+    """Candidate entity or relation extracted before formal review."""
+
+    __tablename__ = "kg_extracted_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("kg_extraction_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    candidate_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    normalized_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(30), default="pending_review", nullable=False, index=True
+    )
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )

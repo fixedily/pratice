@@ -1,4 +1,4 @@
-"""Work-order retrieval and streaming suggestion operations for maintenance."""
+﻿"""Work-order retrieval and streaming suggestion operations for maintenance."""
 from __future__ import annotations
 
 import re
@@ -16,6 +16,7 @@ from app.modules.maintenance.application.device_service import MaintenanceDevice
 from app.modules.maintenance.application.work_order_service import MaintenanceWorkOrderService
 from app.modules.maintenance.datetime_util import to_iso_cn, utc_now_naive
 from app.modules.maintenance.deps import CurrentUserCtx
+from app.modules.maintenance.errors import MaintenanceAPIError
 
 AuditCallback = Callable[[str, str, str, int | None, dict | None, str | None], Awaitable[None]]
 
@@ -92,6 +93,11 @@ class MaintenanceWorkOrderRetrievalService:
                     "section_reference": result.get("section_reference"),
                     "page_reference": result.get("page_reference"),
                     "score": result.get("score"),
+                    "source_modality": result.get("source_modality"),
+                    "ocr_text": result.get("ocr_text"),
+                    "image_caption": result.get("image_caption"),
+                    "evidence_summary": result.get("evidence_summary"),
+                    "retrieval_path": result.get("_retrieval_path") or [],
                     "text_excerpt": excerpt,
                 }
             )
@@ -148,6 +154,10 @@ class MaintenanceWorkOrderRetrievalService:
                     "section_reference": ref.get("section_reference"),
                     "page_reference": ref.get("page_reference"),
                     "score": ref.get("retrieval_score") or ref.get("rerank_score"),
+                    "source_modality": ref.get("source_modality"),
+                    "ocr_text": ref.get("ocr_text"),
+                    "image_caption": ref.get("image_caption"),
+                    "evidence_summary": ref.get("evidence_summary"),
                     "text_excerpt": excerpt,
                 }
             )
@@ -224,6 +234,9 @@ class MaintenanceWorkOrderRetrievalService:
             )
         device = await self.device_service.get_device(work_order.device_id)
         query_text = (body.get("query_text") or "").strip()
+        attachment_ids = body.get("attachment_ids") or []
+        if attachment_ids and (not isinstance(attachment_ids, list) or not all(isinstance(item, int) for item in attachment_ids)):
+            raise MaintenanceAPIError(400, "VALIDATION_ERROR", "attachment_ids 格式错误")
         maintenance_level = body.get("maintenance_level") or work_order.maintenance_level
         knowledge_level = _map_maint_for_knowledge(maintenance_level if isinstance(maintenance_level, str) else None)
         source_task = await self._load_source_task(work_order)
@@ -247,13 +260,17 @@ class MaintenanceWorkOrderRetrievalService:
                 equipment_type=device.device_type,
                 equipment_model=device.model,
                 maintenance_level=knowledge_level,
+                attachment_ids=list(attachment_ids),
                 limit=8,
             )
             knowledge_service = KnowledgeService(self.session)
             try:
                 payload = await knowledge_service.search_multimodal(request)
                 results = payload.get("results") or []
+            except ValueError as exc:
+                raise MaintenanceAPIError(400, "INVALID_ATTACHMENT", str(exc)) from exc
             except Exception:
+                payload = {"grounded": False, "coverage_warnings": []}
                 results = []
                 soft_code = "MODEL_UNAVAILABLE"
                 soft_msg = "检索或模型链路异常，已降级为片段模式"
@@ -264,8 +281,11 @@ class MaintenanceWorkOrderRetrievalService:
             if empty_hit and soft_code is None:
                 soft_code = "EMPTY_HIT"
                 soft_msg = "未命中可用知识片段，请补充描述或发起升级"
+            elif citations and not bool(payload.get("grounded", True)) and soft_code is None:
+                soft_code = "LOW_CONFIDENCE"
+                soft_msg = (payload.get("coverage_warnings") or ["当前证据强度不足，请补充更清晰图片或更具体描述。"])[0]
 
-            if citations:
+            if citations and soft_code is None:
                 suggested_reply = "建议参考：" + "；".join(
                     f"[{citation['citation_label']}] {citation['source_document']}（chunk_id={citation['chunk_id']}）"
                     for citation in citations[:5]
@@ -279,17 +299,23 @@ class MaintenanceWorkOrderRetrievalService:
             "model": device.model,
             "asset_code": device.asset_code,
             "device_type": device.device_type,
+            "attachment_ids": list(attachment_ids),
+            "multimodal_context": payload.get("multimodal_context") if not used_source_task else None,
+            "input_modalities": payload.get("input_modalities") if not used_source_task else [],
+            "grounded": payload.get("grounded") if not used_source_task else True,
+            "coverage_warnings": payload.get("coverage_warnings") if not used_source_task else [],
+            "effective_query": payload.get("effective_query") if not used_source_task else query_text,
         }
         snapshot = RetrievalSnapshot(
             work_order_id=work_order.id,
             query_text=query_text,
             chunks=chunks_json,
-            model_name=None,
-            knowledge_corpus_version=None,
+            model_name=payload.get("model_name") if not used_source_task else "source_task_snapshot",
+            knowledge_corpus_version=payload.get("knowledge_corpus_version") if not used_source_task else "source_task_snapshot",
             confidence_top1=top_score,
             empty_hit=empty_hit,
             degraded_response=not used_source_task,
-            prompt_template_version="maintenance-1",
+            prompt_template_version=payload.get("prompt_template_version") if not used_source_task else "maintenance-source-task-v1",
             device_context_snapshot=device_snapshot,
             created_at=utc_now_naive(),
         )
@@ -317,7 +343,12 @@ class MaintenanceWorkOrderRetrievalService:
             "work_order",
             str(work_order.id),
             ctx.user_id,
-            {"retrieval_snapshot_id": snapshot.id, "empty_hit": empty_hit},
+            {
+                "retrieval_snapshot_id": snapshot.id,
+                "empty_hit": empty_hit,
+                "attachment_ids": list(attachment_ids),
+                "grounded": payload.get("grounded") if not used_source_task else True,
+            },
             business_code=soft_code,
         )
         await self.session.commit()
@@ -329,6 +360,8 @@ class MaintenanceWorkOrderRetrievalService:
             "message_id": message.id,
             "suggested_reply": suggested_reply,
             "citations": citations,
+            "grounded": payload.get("grounded") if not used_source_task else True,
+            "coverage_warnings": payload.get("coverage_warnings") if not used_source_task else [],
             "work_order": _wo_public(work_order),
         }
         if soft_code:

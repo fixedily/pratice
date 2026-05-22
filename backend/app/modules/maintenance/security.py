@@ -1,4 +1,4 @@
-"""检修域：密码哈希与 JWT。"""
+﻿"""检修域：密码哈希与 JWT。"""
 from __future__ import annotations
 
 import uuid

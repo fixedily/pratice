@@ -1,4 +1,4 @@
-"""Knowledge graph query service — reads KnowledgeRelation rows and resolves
+﻿"""Knowledge graph query service — reads KnowledgeRelation rows and resolves
 referenced entities into a {nodes, edges} structure for visualisation."""
 from __future__ import annotations
 

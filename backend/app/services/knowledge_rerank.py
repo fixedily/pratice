@@ -1,4 +1,4 @@
-"""Deterministic candidate merge and rerank helpers for knowledge retrieval."""
+﻿"""Deterministic candidate merge and rerank helpers for knowledge retrieval."""
 from __future__ import annotations
 
 import logging

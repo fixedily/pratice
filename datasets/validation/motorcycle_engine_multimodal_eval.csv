@@ -1,7 +1,21 @@
-case_id,category,modality,query,image_path,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
-MM-01,success,image+text,请结合图片判断是否存在火花塞积炭，并给出与启动困难相关的检修依据,,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|积炭|间隙标准值|更换火花塞,Top-3 内应命中火花塞检查或启动困难相关知识,请替换 image_path 为你自己的合规图片
-MM-02,success,image+text,请结合图片识别火花塞的关键测量位置，并检索火花塞间隙标准值,,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|塞尺|间隙标准值|0.7|0.9,Top-3 内应命中火花塞间隙检查与标准值,请替换 image_path 为你自己的合规图片
-MM-03,success,image+text,请结合图片识别起动电机相关部件，并给出拆卸时需要先处理的连接或固定件,,摩托车发动机,通用,起动系统,2.2 拆卸起动电机,P4,起动电机|正极线|螺母|M6×30|固定螺栓,Top-3 内应命中起动电机拆卸步骤,请替换 image_path 为你自己的合规图片
-MM-04,success,image+text,请结合图片说明正时链条涨紧器如何预压、自锁和释放,,摩托车发动机,通用,正时系统,4.4 安装涨紧器,P13,涨紧器|顶销螺栓|一字螺丝刀|顺时针|逆时针,Top-3 内应命中涨紧器安装与校核流程,请替换 image_path 为你自己的合规图片
-MM-05,success,image+text,请结合图片识别气门机构关键部位，并检索气门间隙标准范围和垫片调整知识,,摩托车发动机,通用,气门机构,4.6 气门间隙标准值,P15,气门间隙|进气门|排气门|调整垫片|基圆位置,Top-3 内应命中气门间隙标准与调整方法,请替换 image_path 为你自己的合规图片
-MM-06,success,image+text,请结合图片识别装配标记，并检索曲轴和平衡轴的对正要求,,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P40,标记A|标记B|曲轴|平衡轴|对正角相,Top-3 内应命中曲轴和平衡轴标记对正要求,请替换 image_path 为你自己的合规图片
+﻿case_id,category,modality,query,image_path,equipment_type,equipment_model,fault_type,expected_section_reference,expected_page_reference,expected_terms,expected_behavior,notes
+MM-01,success,image+text,请结合图片判断是否存在火花塞积炭，并给出与启动困难相关的检修依据,datasets/img/spark_plug_carbon_fouling_photo.png,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|积炭|间隙标准值|更换火花塞,Top-3 内应命中火花塞检查或启动困难相关知识,真实照片+文本
+MM-02,success,image+text,请结合图片识别火花塞的关键测量位置，并检索火花塞间隙标准值,datasets/img/spark_plug_gap_out_of_spec_check.png,摩托车发动机,通用,点火系统,1.2 检查火花塞,P3,火花塞|塞尺|间隙标准值|0.7|0.9,Top-3 内应命中火花塞间隙检查与标准值,示意图+参数问题
+MM-03,fuzzy,image+text,这张图片像是点火相关零件，请结合图片判断应优先检查什么,datasets/img/spark_plug_removal_reference.png,摩托车发动机,通用,点火系统,1.1 拆卸火花塞,P2,高压帽|火花塞专用套筒|逆时针|拆卸火花塞,Top-3 内应命中火花塞拆卸或检查前置步骤,弱文本依赖图片定位
+MM-04,success,image+text,请结合图片识别起动电机相关部件，并给出拆卸时需要先处理的连接或固定件,datasets/img/starter_motor_connection_removal_check.png,摩托车发动机,通用,起动系统,2.2 拆卸起动电机,P4,起动电机|正极线|螺母|固定螺栓,Top-3 内应命中起动电机拆卸步骤,部件识别+步骤检索
+MM-05,success,image+text,请结合图片说明起动电机拆下后安装前应检查哪些位置,datasets/img/starter_motor_removal_reference.png,摩托车发动机,通用,起动系统,2.3 安装起动电机,P5,起动电机轴|转动灵活|螺栓孔对齐,Top-3 内应命中起动电机安装与检查要求,安装后检查类
+MM-06,success,image+text,请结合图片说明正时链条涨紧器如何预压、自锁和释放,datasets/img/timing_chain_tensioner_lock_release_check.png,摩托车发动机,通用,正时系统,4.4 安装涨紧器,P13,涨紧器|顶销螺栓|一字螺丝刀|顺时针|逆时针,Top-3 内应命中涨紧器安装与校核流程,动作理解
+MM-07,success,image+text,请结合图片判断这是不是涨紧器安装参考图，并给出安装后的校核要点,datasets/img/timing_chain_tensioner_install_reference_a.png,摩托车发动机,通用,正时系统,4.4 安装涨紧器,P13,涨紧器|安装|释放|校核|链条张紧,Top-3 内应命中涨紧器安装后检查,装配示意图
+MM-08,fuzzy,image+text,图片里像是正时系统零件，请问这种结构装回去后最该检查什么,datasets/img/timing_chain_tensioner_install_reference_b.png,摩托车发动机,通用,正时系统,4.4 安装涨紧器,P13,涨紧器|自锁|释放|张紧状态,Top-3 内应命中涨紧器相关流程,模糊提问
+MM-09,success,image+text,请结合图片识别气门机构关键部位，并检索气门间隙标准范围和垫片调整知识,datasets/img/valve_clearance_out_of_spec_shim_check.png,摩托车发动机,通用,气门机构,4.6 气门间隙标准值,P15,气门间隙|进气门|排气门|调整垫片|基圆位置,Top-3 内应命中气门间隙标准与调整方法,图像定位到参数知识
+MM-10,success,image+text,请结合图片说明这类气门机构调整时需要测量什么位置,datasets/img/valve_clearance_adjustment_reference_a.png,摩托车发动机,通用,气门机构,4.6 气门间隙标准值,P15,气门间隙|基圆位置|塞尺|进气门|排气门,Top-3 内应命中气门间隙测量方法,测量位置识别
+MM-11,fuzzy,image+text,请结合图片判断这张图更可能对应哪类检修任务,datasets/img/valve_clearance_adjustment_reference_b.png,摩托车发动机,通用,气门机构,4.6 气门间隙标准值,P15,气门间隙|调整垫片|测量|基圆位置,Top-3 内应命中气门间隙调整相关知识,任务归类型问题
+MM-12,success,image+text,请结合图片识别装配标记，并检索曲轴和平衡轴的对正要求,datasets/img/crankshaft_balance_shaft_timing_mark_check.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P40,标记A|标记B|曲轴|平衡轴|对正,Top-3 内应命中曲轴和平衡轴标记对正要求,装配校核
+MM-13,success,image+text,请结合图片说明曲轴和平衡轴标记错位会带来什么风险,datasets/img/crankshaft_balance_shaft_alignment_reference_a.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P40-P41,标记|曲轴|平衡轴|对正|安装,Top-3 内应命中对正与安装校核要求,风险解释型问题
+MM-14,fuzzy,image+text,图片里有多个轴系标记，请结合图片判断需要核对的关键关系,datasets/img/crankshaft_balance_shaft_alignment_reference_b.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P40-P41,标记A|标记B|标记C|标记D|轴系关系,Top-3 内应命中多标记对正要求,多标记场景
+MM-15,success,image+text,请结合图片说明上止点标记应如何识别，并检索对应校核要求,datasets/img/crankshaft_tdc_mark_alignment_check.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P41,上止点|TDC|标记|对正,Top-3 内应命中上止点标记与装配校核,上止点定位
+MM-16,success,image+text,请结合图片判断这是否与曲轴上止点对正有关，并给出安装检查要求,datasets/img/crankshaft_tdc_alignment_reference_a.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P41,上止点|标记|曲轴|安装检查,Top-3 内应命中上止点校核知识,图文联合判断
+MM-17,fuzzy,image+text,请结合图片判断这里展示的是哪类装配校核步骤,datasets/img/crankshaft_tdc_alignment_reference_b.png,摩托车发动机,通用,曲轴总成,9.4 安装曲轴与平衡轴,P41,上止点|标记|对正|校核步骤,Top-3 内应命中标记对正或装配校核知识,模糊装配问题
+MM-18,failure,image+text,请结合图片说明手机蓝牙连接异常的维修方法,datasets/img/spark_plug_carbon_fouling_photo.png,摩托车发动机,通用,车载通信,,,"",应尽量返回低置信度或覆盖不足提示,图片存在但问题与知识库无关
+MM-19,failure,image+text,请根据这张机械示意图判断导航语音中断的原因,datasets/img/timing_chain_tensioner_lock_release_check.png,摩托车发动机,通用,车载通信,,,"",应尽量返回低置信度或提示知识边界,错误领域问题
+MM-20,failure,image+text,请结合图片判断空调遥控器失灵该如何修,datasets/img/starter_motor_connection_removal_check.png,摩托车发动机,通用,家电控制,,,"",应尽量不返回高置信度手册答案,跨域无关问题

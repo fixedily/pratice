@@ -1,13 +1,19 @@
-"""Phase 19: 正式知识导入管理接口测试."""
+﻿"""Phase 19: 正式知识导入管理接口测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import app
+from app.models.base import Base
+from app.models.knowledge import KnowledgeDocument, KnowledgeRelation
+from app.modules.knowledge.application.import_service import KnowledgeImportService
 
 
 @pytest.fixture(autouse=True)
@@ -476,3 +482,54 @@ async def test_get_knowledge_document_chunks_forwards_focus_chunk_id():
 
     assert response.status_code == 200
     mocked_list_chunks.assert_awaited_once_with(3, limit=8, focus_chunk_id=51)
+
+
+@pytest.mark.asyncio
+async def test_delete_document_clears_search_cache_and_relations():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            document = KnowledgeDocument(
+                title="维修手册",
+                source_name="manual.pdf",
+                source_type="manual",
+                equipment_type="摩托车发动机",
+                equipment_model="LX200",
+                fault_type="启动困难",
+                content="发动机启动困难时，先检查火花塞与供油系统。",
+                status="published",
+            )
+            session.add(document)
+            await session.flush()
+            session.add(
+                KnowledgeRelation(
+                    source_kind="knowledge_document",
+                    source_id=document.id,
+                    target_kind="knowledge_document",
+                    target_id=document.id,
+                    relation_type="similar_fault",
+                )
+            )
+            await session.commit()
+
+            service = KnowledgeImportService(session)
+            with patch("app.services.cache_service.clear") as mocked_cache_clear:
+                await service.delete_document(document.id)
+
+            assert mocked_cache_clear.call_count == 1
+            assert (
+                await session.execute(select(KnowledgeDocument).where(KnowledgeDocument.id == document.id))
+            ).scalar_one_or_none() is None
+            assert (
+                await session.execute(select(KnowledgeRelation).where(KnowledgeRelation.source_id == document.id))
+            ).scalars().all() == []
+    finally:
+        await engine.dispose()

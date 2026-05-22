@@ -1,4 +1,4 @@
-"""Grounding and coverage checks for knowledge retrieval results."""
+﻿"""Grounding and coverage checks for knowledge retrieval results."""
 from __future__ import annotations
 
 from typing import Any

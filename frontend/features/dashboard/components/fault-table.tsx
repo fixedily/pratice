@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { MoreHorizontal, AlertTriangle, AlertCircle, Info, ChevronRight } from "lucide-react"
 import { Button } from "@/shared/components/ui/button"
@@ -198,4 +198,3 @@ export function FaultTable({
     </div>
   )
 }
-

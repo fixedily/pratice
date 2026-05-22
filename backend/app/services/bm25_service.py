@@ -1,4 +1,4 @@
-"""BM25 lexical index for hybrid retrieval (keyword + vector + BM25)."""
+﻿"""BM25 lexical index for hybrid retrieval (keyword + vector + BM25)."""
 from __future__ import annotations
 
 import json

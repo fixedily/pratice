@@ -1,4 +1,4 @@
-"""Work-order core operations for maintenance."""
+﻿"""Work-order core operations for maintenance."""
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +14,6 @@ from app.core.metrics import observe_duration
 from app.db.session import get_session_factory
 from app.db.models.maintenance import (
     Annotation,
-    ApprovalTask,
     Attachment,
     AuthUser,
     Device,
@@ -57,6 +56,28 @@ ASSIGNMENT_ROLE_FIELDS: dict[str, str] = {
     "safety": "assigned_safety_user_id",
 }
 
+TODO_STATUS_META: dict[str, tuple[str, str]] = {
+    "S1": ("unassigned", "待分派"),
+    "S3": ("waiting_accept", "待接单"),
+    "S7": ("in_progress", "处理中"),
+    "S9": ("fill_review", "待复核"),
+}
+
+TODO_KIND_ORDER: dict[str, int] = {
+    "escalated": 0,
+    "unassigned": 1,
+    "waiting_accept": 2,
+    "in_progress": 3,
+    "fill_review": 4,
+}
+
+TODO_PRIORITY_ORDER: dict[str, int] = {
+    "urgent": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+}
+
 
 def _resolve_sla_hours(maintenance_level: str | None) -> int:
     level = (maintenance_level or "").strip()
@@ -86,6 +107,31 @@ def _build_sla_payload(wo: WorkOrder) -> dict[str, Any]:
     }
 
 
+def _format_work_order_code(work_order_id: int) -> str:
+    return f"WO-{work_order_id:06d}"
+
+
+def _todo_priority(maintenance_level: str | None) -> str:
+    level = (maintenance_level or "").strip().lower()
+    if "emergency" in level or "紧急" in level:
+        return "urgent"
+    if "standard" in level or "标准" in level or "计划" in level:
+        return "high"
+    if "routine" in level or "例行" in level or "日常" in level:
+        return "medium"
+    return "low"
+
+
+def _todo_related_alert_count(work_order: WorkOrder) -> int:
+    progress = work_order.step_progress_json if isinstance(work_order.step_progress_json, dict) else {}
+    raw = progress.get("related_alerts") or progress.get("alerts") or 0
+    if isinstance(raw, list):
+        return len(raw)
+    if isinstance(raw, int):
+        return max(raw, 0)
+    return 0
+
+
 def _serialize_user(user: AuthUser | None) -> dict[str, Any] | None:
     if user is None:
         return None
@@ -111,6 +157,9 @@ def _wo_public(wo: WorkOrder) -> dict[str, Any]:
         "last_retrieval_snapshot_id": wo.last_retrieval_snapshot_id,
         "created_by_user_id": wo.created_by_user_id,
         "source_task_id": source_task.get("task_id") if isinstance(source_task, dict) else None,
+        "is_suspended": wo.is_suspended,
+        "suspended_reason": wo.suspended_reason,
+        "suspended_at": to_iso_cn(wo.suspended_at) if wo.suspended_at else None,
         "created_at": to_iso_cn(wo.created_at),
         "updated_at": to_iso_cn(wo.updated_at),
         **_build_sla_payload(wo),
@@ -301,6 +350,26 @@ class MaintenanceWorkOrderService:
             created_at=utc_now_naive(),
         )
         work_order.status = to_status
+        work_order.updated_at = utc_now_naive()
+        self.session.add(event)
+
+    async def record_event(
+        self,
+        work_order: WorkOrder,
+        *,
+        event_type: str,
+        actor_user_id: int | None,
+        payload: dict | None = None,
+    ) -> None:
+        event = WorkOrderEvent(
+            work_order_id=work_order.id,
+            from_status=work_order.status,
+            to_status=work_order.status,
+            event_type=event_type,
+            payload=payload,
+            actor_user_id=actor_user_id,
+            created_at=utc_now_naive(),
+        )
         work_order.updated_at = utc_now_naive()
         self.session.add(event)
 
@@ -513,7 +582,6 @@ class MaintenanceWorkOrderService:
         )
         await self.session.execute(delete(Annotation).where(Annotation.work_order_id == work_order_id))
         await self.session.execute(delete(Escalation).where(Escalation.work_order_id == work_order_id))
-        await self.session.execute(delete(ApprovalTask).where(ApprovalTask.work_order_id == work_order_id))
         await self.session.execute(delete(WorkOrderMessage).where(WorkOrderMessage.work_order_id == work_order_id))
         await self.session.execute(delete(RetrievalSnapshot).where(RetrievalSnapshot.work_order_id == work_order_id))
         await self.session.execute(delete(WorkOrderEvent).where(WorkOrderEvent.work_order_id == work_order_id))
@@ -633,58 +701,9 @@ class MaintenanceWorkOrderService:
             }
         if work_order.current_step_no is None or step_no != work_order.current_step_no:
             raise MaintenanceAPIError(409, "STEP_NOT_ALLOWED", "工步序号不匹配")
-        if step_def.get("requires_approval"):
-            approval_task = (
-                await self.session.execute(
-                    select(ApprovalTask).where(
-                        ApprovalTask.work_order_id == work_order.id,
-                        ApprovalTask.step_no == step_no,
-                    )
-                )
-            ).scalar_one_or_none()
-            approved = (
-                await self.session.execute(
-                    select(ApprovalTask).where(
-                        ApprovalTask.work_order_id == work_order.id,
-                        ApprovalTask.step_no == step_no,
-                        ApprovalTask.status == "approved",
-                    )
-                )
-            ).scalar_one_or_none()
-            if approved is None:
-                if approval_task is None:
-                    approval_task = ApprovalTask(
-                        work_order_id=work_order.id,
-                        step_no=step_no,
-                        status="pending",
-                        created_at=utc_now_naive(),
-                        updated_at=utc_now_naive(),
-                    )
-                    self.session.add(approval_task)
-                await self.transition(
-                    work_order,
-                    "S6",
-                    event_type="approval_requested",
-                    actor_user_id=ctx.user_id,
-                    payload={"step_no": step_no},
-                )
-                await self._audit(
-                    "approval.requested",
-                    "work_order",
-                    str(work_order.id),
-                    ctx.user_id,
-                    {"step_no": step_no},
-                    None,
-                )
-                await self.session.commit()
-                return {
-                    "work_order_id": work_order.id,
-                    "current_step_no": work_order.current_step_no,
-                    "confirmed_step_no": None,
-                    "business_code": "APPROVAL_REQUIRED",
-                }
         done_list.append(step_no)
         progress["completed_steps"] = done_list
+        note = body.get("note", "").strip() if isinstance(body.get("note"), str) else ""
         work_order.step_progress_json = progress
         next_no = step_no + 1
         if any(int(step.get("step_no", -1)) == next_no for step in steps):
@@ -692,12 +711,15 @@ class MaintenanceWorkOrderService:
         else:
             work_order.current_step_no = next_no
         work_order.updated_at = utc_now_naive()
+        event_payload: dict[str, Any] = {"step_no": step_no}
+        if note:
+            event_payload["note"] = note
         await self._audit(
             "step.confirmed",
             "work_order",
             str(work_order.id),
             ctx.user_id,
-            {"step_no": step_no},
+            event_payload,
             None,
         )
         await self.session.commit()

@@ -1,17 +1,24 @@
-"use client";
+﻿"use client";
 
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { toast, Toaster } from "sonner";
 import { MaintenanceAuthProvider } from "@/features/auth/maintenance-auth";
-import { ThemeProvider } from "@/shared/providers/theme-provider";
 import { ThemeToggle } from "@/shared/components/ui/theme-toggle";
+import { ThemeProvider } from "@/shared/providers/theme-provider";
 import { MAINTENANCE_AUTH_EXPIRED_EVENT } from "@/features/auth/lib/token-store";
 import { ROUTES } from "@/shared/lib/routes";
+
+const WORKBENCH_PATH_PREFIXES = ["/dashboard", "/tasks", "/tickets", "/cases", "/knowledge", "/settings", "/admin"];
+
+function isWorkbenchPath(pathname: string | null) {
+  return WORKBENCH_PATH_PREFIXES.some((prefix) => pathname === prefix || pathname?.startsWith(`${prefix}/`));
+}
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const showFloatingThemeToggle = !isWorkbenchPath(pathname);
 
   useEffect(() => {
     const handleExpired = () => {
@@ -21,11 +28,12 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         currentPath && currentPath !== ROUTES.login
           ? `?next=${encodeURIComponent(currentPath)}&reason=expired`
           : "?reason=expired";
-      toast.error("登录已失效，请重新登录");
       if (pathname !== ROUTES.login) {
         router.push(`${ROUTES.login}${next}`);
         router.refresh();
+        return;
       }
+      toast.error("登录已失效，请重新登录");
     };
 
     window.addEventListener(MAINTENANCE_AUTH_EXPIRED_EVENT, handleExpired as EventListener);
@@ -44,7 +52,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     >
       <MaintenanceAuthProvider>
         {children}
-        <ThemeToggle />
+        {showFloatingThemeToggle ? <ThemeToggle variant="fixed" /> : null}
         <Toaster
           position="top-right"
           richColors
@@ -57,4 +65,3 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     </ThemeProvider>
   );
 }
-

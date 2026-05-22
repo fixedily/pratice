@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 
 import { cn } from "@/shared/lib/utils";
 
@@ -32,4 +32,3 @@ export function AppLogoLink({ href, className, title, onClick }: AppLogoLinkProp
     </Link>
   );
 }
-

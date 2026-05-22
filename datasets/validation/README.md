@@ -1,4 +1,4 @@
-# Retrieval Evaluation Templates
+﻿# Retrieval Evaluation Templates
 
 These files are public-safe evaluation templates for the knowledge retrieval module.
 
@@ -16,7 +16,7 @@ This repository does not bundle:
 - local evaluation outputs
 - local image attachments
 
-Before running the evaluation scripts, prepare your own compliant files in a private environment.
+Before running the evaluation scripts, prepare your own compliant files in a local environment.
 
 ## How to use
 

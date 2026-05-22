@@ -1,4 +1,4 @@
-import { PermissionPlaceholderPage } from "@/features/auth/components/permission-placeholder-page";
+﻿import { PermissionPlaceholderPage } from "@/features/auth/components/permission-placeholder-page";
 
 export default function KnowledgeReviewPage() {
   return (

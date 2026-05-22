@@ -1,4 +1,4 @@
-"""Helpers for producing structured diagnosis payloads and legacy text reports."""
+﻿"""Helpers for producing structured diagnosis payloads and legacy text reports."""
 from __future__ import annotations
 
 import json
@@ -646,6 +646,7 @@ def _extract_step_title_and_remainder(body: str) -> tuple[str, str]:
     split_markers = (
         " 安装顺序",
         " 安装 ",
+        " 使用",
         " 从 ",
         " 向 ",
         " 用 ",

@@ -1,1 +1,1 @@
-"""Diagnosis application layer."""
+﻿"""Diagnosis application layer."""

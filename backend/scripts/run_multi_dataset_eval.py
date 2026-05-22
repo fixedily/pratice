@@ -1,4 +1,4 @@
-"""按配置执行多数据集评测并汇总结果。"""
+﻿"""按配置执行多数据集评测并汇总结果。"""
 from __future__ import annotations
 
 import argparse
@@ -538,7 +538,7 @@ def eval_cmrc_keypoint(dataset_id: str, split: str, sample_rows: int) -> dict[st
     }
 
 
-def eval_softbei_workflow(repo_root: Path, dataset_cfg: dict[str, Any]) -> dict[str, Any]:
+def eval_public_eval_workflow(repo_root: Path, dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     script_path = repo_root / dataset_cfg["runner_script"]
     runner_args = dataset_cfg.get("runner_args", {})
 
@@ -635,7 +635,7 @@ def run_all(config_path: Path, query_limit: int, corpus_limit: int) -> dict[str,
                 )
                 results[dataset_id] = result
             elif task_type == "workflow_regression":
-                result = eval_softbei_workflow(repo_root, item)
+                result = eval_public_eval_workflow(repo_root, item)
                 results[dataset_id] = result
             else:
                 failures[dataset_id] = f"不支持的 task_type: {task_type}"

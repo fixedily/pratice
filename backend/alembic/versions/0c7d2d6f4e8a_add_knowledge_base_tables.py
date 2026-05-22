@@ -1,4 +1,4 @@
-"""add_knowledge_base_tables
+﻿"""add_knowledge_base_tables
 
 Revision ID: 0c7d2d6f4e8a
 Revises: 388d25b1856f

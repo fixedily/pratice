@@ -1,4 +1,4 @@
-"""OCR helpers for scanned manuals and image-based knowledge uploads."""
+﻿"""OCR helpers for scanned manuals and image-based knowledge uploads."""
 from __future__ import annotations
 
 import base64
@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
+from app.core.config import get_settings
 from app.services.image_analysis_service import FaultImageAnalysisService
 
 try:
@@ -47,6 +50,16 @@ class KnowledgeOcrService:
     ) -> ImageOcrResult:
         """Extract OCR text from one uploaded knowledge image."""
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        zhipu_result = await self._extract_with_glm_ocr(
+            image_base64=image_base64,
+            image_filename=image_filename,
+            equipment_type=equipment_type,
+            equipment_model=equipment_model,
+            title=title,
+            section_reference=section_reference,
+        )
+        if zhipu_result is not None:
+            return zhipu_result
 
         llm = self.image_analysis_service._create_multimodal_llm(  # noqa: SLF001
             model_provider=model_provider,
@@ -59,7 +72,11 @@ class KnowledgeOcrService:
                 equipment_model=equipment_model,
                 title=title,
                 section_reference=section_reference,
-                warning="当前环境不可用视觉 OCR，已退化为文件名和元数据生成导入文本，请导入后人工校对。",
+                warning=(
+                    "当前环境未配置可用的视觉 OCR 模型。"
+                    "请优先配置 OPENAI_API_KEY 或 ANTHROPIC_API_KEY 后重试；"
+                    "当前已退化为文件名和元数据生成导入文本。"
+                ),
             )
 
         prompt = (
@@ -187,3 +204,101 @@ class KnowledgeOcrService:
         if not isinstance(payload, dict):
             return None
         return payload
+
+    async def _extract_with_glm_ocr(
+        self,
+        *,
+        image_base64: str,
+        image_filename: str | None,
+        equipment_type: str | None,
+        equipment_model: str | None,
+        title: str | None,
+        section_reference: str | None,
+    ) -> ImageOcrResult | None:
+        settings = get_settings()
+        if not settings.zhipu_api_key:
+            return None
+
+        url = settings.zhipu_api_base.rstrip("/") + "/paas/v4/layout_parsing"
+        payload = {
+            "model": "glm-ocr",
+            "file": f"data:image/png;base64,{image_base64}",
+            "return_crop_images": False,
+            "need_layout_visualization": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {settings.zhipu_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            return None
+
+        recognized_text = str(data.get("md_results") or "").strip()
+        if not recognized_text:
+            recognized_text = self._extract_text_from_layout_details(data.get("layout_details"))
+        if not recognized_text:
+            return None
+
+        summary = self._build_summary(recognized_text, title=title, section_reference=section_reference)
+        keywords = self.image_analysis_service._extract_keywords(recognized_text)  # noqa: SLF001
+        if equipment_type:
+            keywords.insert(0, equipment_type)
+        if equipment_model:
+            keywords.insert(0, equipment_model)
+        keywords = self.image_analysis_service._normalize_keywords(keywords)  # noqa: SLF001
+
+        return ImageOcrResult(
+            recognized_text=recognized_text,
+            summary=summary,
+            keywords=keywords,
+            source="glm_ocr",
+            warning=None,
+        )
+
+    def _extract_text_from_layout_details(self, layout_details: Any) -> str:
+        lines: list[str] = []
+        if not isinstance(layout_details, list):
+            return ""
+        for page in layout_details:
+            if not isinstance(page, list):
+                continue
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip().lower()
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    continue
+                if label in {"text", "formula", "table"}:
+                    lines.append(content)
+        return "\n".join(lines).strip()
+
+    def _build_summary(
+        self,
+        recognized_text: str,
+        *,
+        title: str | None,
+        section_reference: str | None,
+    ) -> str:
+        for line in recognized_text.splitlines():
+            compact = line.strip().lstrip("#").strip()
+            if compact:
+                return compact[:50]
+        if section_reference:
+            return f"{section_reference} OCR 识别结果"
+        if title:
+            return f"{title} OCR 识别结果"
+        return "图片已通过 GLM-OCR 提取为可导入知识文本。"

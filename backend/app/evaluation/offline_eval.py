@@ -1,4 +1,4 @@
-"""Offline evaluation dataset and metrics helpers for maintenance RAG."""
+﻿"""Offline evaluation dataset and metrics helpers for maintenance RAG."""
 from __future__ import annotations
 
 import csv

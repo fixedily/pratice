@@ -1,4 +1,4 @@
-"""Graph RAG — relation-graph expansion for knowledge retrieval.
+﻿"""Graph RAG — relation-graph expansion for knowledge retrieval.
 
 Given a set of seed chunk IDs (from the primary vector/BM25 search), this
 service walks the ``knowledge_relations`` table to find related documents /
@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeRelation
@@ -35,14 +35,18 @@ logger = logging.getLogger(__name__)
 _USEFUL_RELATION_TYPES = frozenset(
     {
         "similar_fault",
-        "same_equipment",
-        "related_maintenance",
-        "causes",
-        "caused_by",
-        "see_also",
-        "follow_up",
+        "prerequisite",
+        "related_case",
     }
 )
+_DOCUMENT_NODE_KINDS = ("knowledge_document", "document")
+
+
+def _build_excerpt(content: str, limit: int = 200) -> str:
+    text = " ".join((content or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
 
 
 async def graph_expand(
@@ -52,6 +56,7 @@ async def graph_expand(
     max_hops: int = 1,
     max_extra_chunks: int = 10,
     relation_types: frozenset[str] | None = None,
+    base_score: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Return extra chunks reachable from *seed_chunk_ids* via the relation graph.
 
@@ -75,7 +80,7 @@ async def graph_expand(
         Serialised chunk dicts (same schema as the primary search results)
         with an extra ``"graph_source": True`` flag.
     """
-    if not seed_chunk_ids:
+    if not seed_chunk_ids or max_extra_chunks <= 0:
         return []
 
     allowed_types = relation_types if relation_types is not None else _USEFUL_RELATION_TYPES
@@ -96,6 +101,7 @@ async def graph_expand(
         # ── Step 2: walk the relation graph ───────────────────────────────────
         frontier: set[int] = set(seed_doc_ids)
         visited: set[int] = set(seed_doc_ids)
+        relation_type_by_doc_id: dict[int, str] = {}
 
         for _hop in range(max_hops):
             if not frontier:
@@ -107,12 +113,12 @@ async def graph_expand(
                         KnowledgeRelation.target_id,
                         KnowledgeRelation.relation_type,
                     ).where(
-                        KnowledgeRelation.source_kind == "document",
-                        KnowledgeRelation.target_kind == "document",
+                        KnowledgeRelation.source_kind.in_(list(_DOCUMENT_NODE_KINDS)),
+                        KnowledgeRelation.target_kind.in_(list(_DOCUMENT_NODE_KINDS)),
                         KnowledgeRelation.relation_type.in_(list(allowed_types)),
-                        (
-                            KnowledgeRelation.source_id.in_(list(frontier))
-                            | KnowledgeRelation.target_id.in_(list(frontier))
+                        or_(
+                            KnowledgeRelation.source_id.in_(list(frontier)),
+                            KnowledgeRelation.target_id.in_(list(frontier)),
                         ),
                     )
                 )
@@ -120,10 +126,13 @@ async def graph_expand(
 
             new_frontier: set[int] = set()
             for row in rel_rows:
-                for neighbour in (row.source_id, row.target_id):
-                    if neighbour not in visited:
-                        visited.add(neighbour)
-                        new_frontier.add(neighbour)
+                endpoints = ((row.source_id, row.target_id), (row.target_id, row.source_id))
+                for current, neighbour in endpoints:
+                    if current not in frontier or neighbour in visited:
+                        continue
+                    visited.add(neighbour)
+                    new_frontier.add(neighbour)
+                    relation_type_by_doc_id.setdefault(neighbour, row.relation_type)
             frontier = new_frontier
 
         neighbour_doc_ids = visited - seed_doc_ids
@@ -148,20 +157,44 @@ async def graph_expand(
             if chunk.id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk.id)
+            relation_type = relation_type_by_doc_id.get(doc.id)
+            reason = "图谱关联扩展"
+            if relation_type:
+                reason = f"图谱关联扩展（{relation_type}）"
             extra.append(
                 {
                     "chunk_id": chunk.id,
                     "document_id": doc.id,
                     "title": doc.title or "",
+                    "source_name": doc.source_name or "",
                     "source_type": doc.source_type or "",
                     "equipment_type": doc.equipment_type or "",
                     "equipment_model": doc.equipment_model or "",
                     "fault_type": doc.fault_type or "",
                     "content": chunk.content or "",
-                    "excerpt": (chunk.content or "")[:200],
-                    "score": 0.0,  # graph-expanded results start at 0
-                    "reason": "图谱关联扩展",
+                    "excerpt": _build_excerpt(chunk.content or ""),
+                    "section_reference": chunk.section_reference or doc.section_reference,
+                    "section_path": getattr(chunk, "section_path", None),
+                    "step_anchor": getattr(chunk, "step_anchor", None),
+                    "page_reference": chunk.page_reference or doc.page_reference,
+                    "image_anchor": getattr(chunk, "image_anchor", None),
+                    "source_modality": getattr(chunk, "source_modality", None),
+                    "ocr_text": getattr(chunk, "ocr_text", None),
+                    "image_caption": getattr(chunk, "image_caption", None),
+                    "evidence_summary": getattr(chunk, "evidence_summary", None),
+                    "expanded_content": None,
+                    "recommendation_reason": reason,
+                    "score": float(base_score),
+                    "retrieval_score": float(base_score),
+                    "rerank_score": float(base_score),
+                    "reason": reason,
                     "graph_source": True,
+                    "graph_relation_type": relation_type,
+                    "_content": chunk.content or "",
+                    "_heading": getattr(chunk, "heading", None),
+                    "_document_updated_at": getattr(doc, "updated_at", None),
+                    "_retrieval_channel": "graph_expand",
+                    "_retrieval_path": ["graph_expand"],
                 }
             )
             if len(extra) >= max_extra_chunks:

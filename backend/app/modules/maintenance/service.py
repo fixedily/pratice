@@ -1,4 +1,4 @@
-"""Standardized maintenance service facade."""
+﻿"""Standardized maintenance service facade."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.models.maintenance import (
-    ApprovalTask,
     AuditLog,
     Device,
     Escalation,
@@ -23,7 +22,6 @@ from app.modules.maintenance.application.attachment_service import MaintenanceAt
 from app.modules.maintenance.application.audit_service import MaintenanceAuditService
 from app.modules.maintenance.application.annotation_service import MaintenanceAnnotationService
 from app.modules.maintenance.application.auth_service import MaintenanceAuthService
-from app.modules.maintenance.application.approval_service import MaintenanceApprovalService
 from app.modules.maintenance.application.device_service import MaintenanceDeviceService
 from app.modules.maintenance.application.escalation_service import MaintenanceEscalationService
 from app.modules.maintenance.application.flow_template_service import MaintenanceFlowTemplateService
@@ -63,7 +61,7 @@ class MaintenanceService:
         )
         self.device_service = MaintenanceDeviceService(session, self._audit)
         self.flow_template_service = MaintenanceFlowTemplateService(session)
-        self.system_config_service = MaintenanceSystemConfigService(session)
+        self.system_config_service = MaintenanceSystemConfigService(session, settings)
         self.work_order_message_service = MaintenanceWorkOrderMessageService(
             session,
             self.work_order_service,
@@ -73,11 +71,6 @@ class MaintenanceService:
             self._audit,
             self.work_order_service,
             self.device_service,
-        )
-        self.approval_service = MaintenanceApprovalService(
-            session,
-            self._audit,
-            self.work_order_service,
         )
         self.escalation_service = MaintenanceEscalationService(
             session,
@@ -118,8 +111,28 @@ class MaintenanceService:
             )
         )
 
-    async def login(self, username: str, password: str) -> dict[str, Any]:
-        return await self.auth_service.login(username, password)
+    async def login(
+        self,
+        username: str,
+        password: str,
+        *,
+        captcha_id: str | None = None,
+        captcha_code: str | None = None,
+        client_ip: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.auth_service.login(
+            username,
+            password,
+            captcha_id=captcha_id,
+            captcha_code=captcha_code,
+            client_ip=client_ip,
+        )
+
+    async def register(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self.auth_service.register(body)
+
+    async def forgot_password(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self.auth_service.forgot_password(body)
 
     async def get_me(self, ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.auth_service.get_me(ctx)
@@ -308,6 +321,15 @@ class MaintenanceService:
     async def action_enter_maintenance(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.work_order_execution_service.action_enter_maintenance(work_order_id, ctx)
 
+    async def action_accept_work_order(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
+        return await self.work_order_execution_service.action_accept_work_order(work_order_id, ctx)
+
+    async def action_suspend_work_order(self, work_order_id: int, body: dict[str, Any], ctx: CurrentUserCtx) -> dict[str, Any]:
+        return await self.work_order_execution_service.action_suspend_work_order(work_order_id, body, ctx)
+
+    async def action_resume_work_order(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
+        return await self.work_order_execution_service.action_resume_work_order(work_order_id, ctx)
+
     async def action_complete_maintenance(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.work_order_execution_service.action_complete_maintenance(work_order_id, ctx)
 
@@ -319,17 +341,6 @@ class MaintenanceService:
 
     async def post_filling(self, work_order_id: int, body: dict[str, Any], ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.work_order_execution_service.post_filling(work_order_id, body, ctx)
-
-    async def list_approval_tasks(self, ctx: CurrentUserCtx) -> dict[str, Any]:
-        return await self.approval_service.list_approval_tasks(ctx)
-
-    async def resolve_approval(
-        self,
-        approval_task_id: int,
-        body: dict[str, Any],
-        ctx: CurrentUserCtx,
-    ) -> dict[str, Any]:
-        return await self.approval_service.resolve_approval(approval_task_id, body, ctx)
 
     async def create_escalation(self, work_order_id: int, body: dict[str, Any], ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.escalation_service.create_escalation(work_order_id, body, ctx)
@@ -416,6 +427,12 @@ class MaintenanceService:
 
     async def patch_system_config(self, key: str, body: dict[str, Any], ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.system_config_service.patch_system_config(key, body, ctx)
+
+    async def check_model_connectivity(self, body: dict[str, Any], ctx: CurrentUserCtx) -> dict[str, Any]:
+        return await self.system_config_service.check_model_connectivity(body, ctx)
+
+    async def get_settings_overview(self, ctx: CurrentUserCtx) -> dict[str, Any]:
+        return await self.system_config_service.get_settings_overview(ctx)
 
     async def admin_list_users(self, page: int, page_size: int) -> dict[str, Any]:
         return await self.auth_service.admin_list_users(page, page_size)

@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   WorkbenchOverview,
   MaintenanceTaskHistoryResponse,
   MaintenanceTaskDetail,
@@ -281,4 +281,3 @@ export function demoCaseDetail(caseId: number): MaintenanceCaseDetail {
     ],
   }
 }
-

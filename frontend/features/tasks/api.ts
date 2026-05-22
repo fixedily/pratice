@@ -1,4 +1,4 @@
-export {
+﻿export {
   createMaintenanceDevice,
   createMaintenanceTask,
   createWorkOrder,
@@ -10,10 +10,12 @@ export {
   fetchTaskExport,
   getApiBase,
   listMaintenanceDevices,
+  normalizeMaintenanceLevelOption,
   postAgentAssist,
   retryMaintenanceTask,
   saveMaintenanceTaskExecutionTimeline,
   type MaintenanceDeviceItem,
+  type MaintenanceLevelOption,
   type MaintenanceTaskDetail,
   type MaintenanceTaskHistoryItem,
 } from "@/shared/lib/http";

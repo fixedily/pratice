@@ -8,10 +8,14 @@ import {
   createMaintenanceTask,
   deleteMaintenanceTask,
   fetchHealth,
+  normalizeMaintenanceLevelOption,
   postAgentAssist,
+  type MaintenanceLevelOption,
   type MaintenanceTaskHistoryItem,
   type MaintenanceTaskDetail,
 } from "@/features/tasks/api";
+import { uploadMaintenanceAttachment } from "@/features/tickets/api";
+import { getMaintenanceToken } from "@/features/auth/lib/token-store";
 import {
   Search,
   Filter,
@@ -27,7 +31,6 @@ import {
   MoreHorizontal,
   ExternalLink,
   Trash2,
-  ListFilter,
   Calendar,
   Cpu,
   FileText,
@@ -35,12 +38,14 @@ import {
   FileUp,
   X,
 } from "lucide-react";
+import {
+  DiagnosisTaskWorkbench,
+  type DiagnosisMode,
+} from "@/features/tasks/components/diagnosis-task-workbench";
 import { Header } from "@/shared/components/brand/app-header";
 import { formatDateTimeLocal, formatDurationBetween } from "@/shared/lib/utils";
 import { generateMockAssetCode } from "@/features/tasks/lib/mock-asset-code";
 import { Button } from "@/shared/components/ui/button";
-import { cn } from "@/shared/lib/utils";
-import { DEMO_MODE_CHANGED_EVENT } from "@/shared/lib/demo-mode";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,10 +72,9 @@ import {
 } from "@/shared/components/ui/select";
 
 // 状态类型
-type TaskStatus = "running" | "completed" | "failed" | "pending";
+type TaskStatus = "running" | "diagnosis_completed" | "completed" | "failed" | "pending";
 type PageState = "normal" | "loading" | "empty" | "error";
 
-type MaintenanceLevelOption = "routine" | "standard" | "emergency";
 type DiagnosePhase = "idle" | "running" | "result";
 
 // 任务数据类型
@@ -85,6 +89,50 @@ interface Task {
   maintenanceLevel: MaintenanceLevelOption;
 }
 
+const TASK_STATUS_META: Record<
+  TaskStatus,
+  {
+    label: string;
+    badgeClassName: string;
+    cardColorClassName: string;
+    icon: React.ElementType;
+    animateIcon?: boolean;
+  }
+> = {
+  running: {
+    label: "进行中",
+    badgeClassName: "bg-blue-500/10 border-blue-500/30 text-blue-400",
+    cardColorClassName: "bg-blue-500/20 text-blue-400",
+    icon: Loader2,
+    animateIcon: true,
+  },
+  diagnosis_completed: {
+    label: "诊断完成",
+    badgeClassName: "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 dark:text-cyan-300",
+    cardColorClassName: "bg-cyan-500/20 text-cyan-500 dark:text-cyan-300",
+    icon: CheckCircle2,
+  },
+  completed: {
+    label: "已完成",
+    badgeClassName: "bg-emerald-500/10 border-emerald-500/30 text-emerald-400",
+    cardColorClassName: "bg-emerald-500/20 text-emerald-400",
+    icon: CheckCircle2,
+  },
+  failed: {
+    label: "失败",
+    badgeClassName: "bg-red-500/10 border-red-500/30 text-red-400",
+    cardColorClassName: "bg-red-500/20 text-red-400",
+    icon: XCircle,
+  },
+  pending: {
+    label: "待处理",
+    badgeClassName: "bg-amber-500/10 border-amber-500/30 text-amber-400",
+    cardColorClassName: "bg-amber-500/20 text-amber-400",
+    icon: Clock,
+  },
+};
+
+// 根据任务历史记录推导适合列表展示的耗时文本。
 function deriveTaskDuration(h: MaintenanceTaskHistoryItem) {
   if (h.run_started_at && h.run_finished_at) {
     return formatDurationBetween(h.run_started_at, h.run_finished_at) || "--";
@@ -95,26 +143,25 @@ function deriveTaskDuration(h: MaintenanceTaskHistoryItem) {
   return formatDurationBetween(h.created_at, h.updated_at) || "--";
 }
 
+// 将后端任务历史记录映射为前端列表展示模型。
 function mapHistoryToTask(h: MaintenanceTaskHistoryItem): Task {
   const st = (h.status || "").toLowerCase();
+  const workflowTotal = h.workflow_total > 0 ? h.workflow_total : 5;
+  const workflowCompleted = Math.max(0, Math.min(h.workflow_completed ?? 0, workflowTotal));
   let status: TaskStatus = "pending";
   if (st === "in_progress") status = "running";
-  else if (st === "completed") status = "completed";
-  else if (st === "skipped") status = "failed";
-  if (h.total_steps > 0 && h.completed_steps >= h.total_steps) {
-    status = "completed";
-  }
-  const rawLevel = String(h.maintenance_level || "standard").toLowerCase();
-  const maintenanceLevel: MaintenanceLevelOption =
-    rawLevel === "routine" || rawLevel === "emergency" ? rawLevel : "standard";
+  else if (st === "completed") status = workflowCompleted >= workflowTotal ? "completed" : "diagnosis_completed";
+  else if (st === "skipped" || st === "failed") status = "failed";
+  const maintenanceLevel: MaintenanceLevelOption = normalizeMaintenanceLevelOption(h.maintenance_level);
   const c = formatDateTimeLocal(h.created_at);
   const u = formatDateTimeLocal(h.updated_at);
   const timeRange = u !== c && u !== "--" ? `${c} → ${u}` : c;
+  const progress = `${workflowCompleted}/${workflowTotal}`;
   return {
     id: String(h.id),
     timeRange,
     symptom: h.title || h.equipment_type,
-    progress: `${h.completed_steps}/${h.total_steps} 步`,
+    progress,
     status,
     duration: deriveTaskDuration(h),
     createdAt: c,
@@ -122,6 +169,7 @@ function mapHistoryToTask(h: MaintenanceTaskHistoryItem): Task {
   };
 }
 
+// 渲染检修等级标签。
 function MaintenanceLevelTag({ level }: { level: MaintenanceLevelOption }) {
   const meta = {
     emergency: {
@@ -147,68 +195,43 @@ function MaintenanceLevelTag({ level }: { level: MaintenanceLevelOption }) {
 }
 
 // 状态标签组件
+// 渲染任务状态标签。
 function StatusTag({ status }: { status: TaskStatus }) {
-  const config = {
-    running: {
-      bg: "bg-blue-500/10",
-      border: "border-blue-500/30",
-      text: "text-blue-400",
-      label: "进行中",
-      icon: Loader2,
-      animate: true,
-    },
-    completed: {
-      bg: "bg-emerald-500/10",
-      border: "border-emerald-500/30",
-      text: "text-emerald-400",
-      label: "已完成",
-      icon: CheckCircle2,
-      animate: false,
-    },
-    failed: {
-      bg: "bg-red-500/10",
-      border: "border-red-500/30",
-      text: "text-red-400",
-      label: "失败",
-      icon: XCircle,
-      animate: false,
-    },
-    pending: {
-      bg: "bg-amber-500/10",
-      border: "border-amber-500/30",
-      text: "text-amber-400",
-      label: "等待中",
-      icon: Clock,
-      animate: false,
-    },
-  };
-
-  const { bg, border, text, label, icon: Icon, animate } = config[status];
+  const { badgeClassName, label, icon: Icon, animateIcon } = TASK_STATUS_META[status];
 
   return (
-    <span
-      className={`app-badge ${bg} ${border} ${text}`}
-    >
-      <Icon className={`w-3 h-3 ${animate ? "animate-spin" : ""}`} />
+    <span className={`app-badge ${badgeClassName}`}>
+      <Icon className={`w-3 h-3 ${animateIcon ? "animate-spin" : ""}`} />
       {label}
     </span>
   );
 }
 
 // 统计卡片组件
+// 渲染任务统计卡片。
 function StatCard({
   label,
   value,
   icon: Icon,
   color,
+  active,
+  onClick,
 }: {
   label: string;
   value: number;
   icon: React.ElementType;
   color: string;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="app-kpi-card flex items-center gap-3 px-4 py-3">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`app-kpi-card flex w-full items-center gap-3 px-4 py-3 text-left transition-all duration-200 ${
+        active ? "border-[#5e6ad2]/35 bg-[#5e6ad2]/8" : "hover:bg-muted/75"
+      }`}
+    >
       <div
         className={`flex items-center justify-center w-9 h-9 rounded-lg ${color}`}
       >
@@ -218,11 +241,12 @@ function StatCard({
         <div className="text-xl font-semibold text-foreground">{value}</div>
         <div className="text-xs text-muted-foreground">{label}</div>
       </div>
-    </div>
+    </button>
   );
 }
 
 // 骨架行组件
+// 渲染任务表格的骨架行。
 function SkeletonRow() {
   return (
     <tr className="border-b border-border">
@@ -240,31 +264,43 @@ function SkeletonRow() {
 }
 
 // 空状态组件
-function EmptyState({ onCreate }: { onCreate?: () => void }) {
+// 渲染任务列表的空状态内容。
+function EmptyState({
+  onCreate,
+  filtered = false,
+}: {
+  onCreate?: () => void;
+  filtered?: boolean;
+}) {
   return (
     <div className="flex flex-col items-center justify-center py-16">
       <div className="app-empty-icon mb-4 h-16 w-16 rounded-full">
         <FileText className="w-7 h-7" />
       </div>
       <h3 className="mb-2 text-lg font-medium text-foreground">
-        暂无诊断任务
+        {filtered ? "当前筛选下暂无任务" : "暂无诊断任务"}
       </h3>
       <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">
-        创建首个诊断任务，开始分析传感器数据并生成诊断报告
+        {filtered
+          ? "请切换任务状态卡片或调整搜索关键词后再查看结果。"
+          : "创建首个诊断任务，开始分析传感器数据并生成诊断报告"}
       </p>
-      <button
-        type="button"
-        onClick={onCreate}
-        className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#5e6ad2] hover:bg-[#7170ff] text-white text-sm font-medium rounded-md transition-colors"
-      >
-        <Plus className="w-4 h-4" />
-        创建首个诊断任务
-      </button>
+      {!filtered ? (
+        <button
+          type="button"
+          onClick={onCreate}
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#5e6ad2] hover:bg-[#7170ff] text-white text-sm font-medium rounded-md transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          创建首个诊断任务
+        </button>
+      ) : null}
     </div>
   );
 }
 
 // 错误状态组件
+// 渲染任务列表的错误状态提示。
 function ErrorState({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex items-center justify-between px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg">
@@ -289,6 +325,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 }
 
 // 任务行操作菜单
+// 渲染单条任务的操作菜单。
 function TaskRowActions({
   taskId,
   onDelete,
@@ -298,14 +335,12 @@ function TaskRowActions({
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          aria-label="任务操作"
-        >
-          <MoreHorizontal className="w-4 h-4" />
-        </button>
+      <DropdownMenuTrigger
+        type="button"
+        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="任务操作"
+      >
+        <MoreHorizontal className="w-4 h-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
@@ -336,6 +371,7 @@ function TaskRowActions({
 }
 
 // 分页组件
+// 渲染任务列表分页器。
 function Pagination({
   currentPage,
   totalPages,
@@ -388,80 +424,18 @@ function Pagination({
   );
 }
 
-// 筛选器下拉组件（应用时请求 /api/v1/history）
-function FilterDropdown({
-  onApply,
-}: {
-  onApply: (apiStatus: string | undefined) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [statusSel, setStatusSel] = useState("");
+export type TaskListMode = "all" | "create" | "history";
 
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
-      >
-        <ListFilter className="w-4 h-4" />
-        <span className="hidden sm:inline">筛选</span>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-10 z-20 w-56 p-3 app-overlay-panel">
-            <div className="mb-3">
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                任务状态
-              </label>
-              <select
-                value={statusSel}
-                onChange={(e) => setStatusSel(e.target.value)}
-                className="app-select w-full py-2"
-              >
-                <option value="">全部状态</option>
-                <option value="in_progress">进行中</option>
-                <option value="completed">已完成</option>
-                <option value="skipped">已跳过</option>
-                <option value="pending">等待中</option>
-              </select>
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setStatusSel("");
-                  onApply(undefined);
-                  setOpen(false);
-                }}
-                className="flex-1 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
-              >
-                重置
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onApply(statusSel || undefined);
-                  setOpen(false);
-                }}
-                className="app-btn-primary flex-1 px-3 py-1.5"
-              >
-                应用
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// 主页面组件
-export default function TasksPage() {
+// 渲染任务列表页内容，并承载诊断发起、列表筛选和删除流程。
+export function TaskListPageContent({ mode = "all" }: { mode?: TaskListMode }) {
+  const showCreatePanel = mode !== "history";
+  const showHistoryPanel = mode !== "create";
+  const showHistoryCreateShortcut = mode === "all";
+  const isHistoryMode = mode === "history";
   const router = useRouter();
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const logInputRef = useRef<HTMLInputElement | null>(null);
+  const recordInputRef = useRef<HTMLInputElement | null>(null);
   const [pageState, setPageState] = useState<PageState>("normal");
   const [currentPage, setCurrentPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
@@ -471,15 +445,19 @@ export default function TasksPage() {
   const [diagEquipmentType, setDiagEquipmentType] = useState("");
   const [diagAssetCode, setDiagAssetCode] = useState("");
   const [diagLevel, setDiagLevel] = useState<MaintenanceLevelOption>("standard");
+  const [diagRegion, setDiagRegion] = useState("");
+  const [diagMode, setDiagMode] = useState<DiagnosisMode>("multi_agent");
+  const [diagAutoWorkOrder, setDiagAutoWorkOrder] = useState(true);
   const [diagSubmitting, setDiagSubmitting] = useState(false);
   const [diagError, setDiagError] = useState<string | null>(null);
   const [diagImageFile, setDiagImageFile] = useState<File | null>(null);
   const [diagLogFile, setDiagLogFile] = useState<File | null>(null);
+  const [diagRecordFile, setDiagRecordFile] = useState<File | null>(null);
   const [latestTaskId, setLatestTaskId] = useState<number | null>(null);
   const [latestAdvice, setLatestAdvice] = useState<string | null>(null);
   const [latestSourceRefs, setLatestSourceRefs] = useState<MaintenanceTaskDetail["source_refs"]>([]);
   const [diagPhase, setDiagPhase] = useState<DiagnosePhase>("idle");
-  const [diagStepIndex, setDiagStepIndex] = useState(0);
+  const [diagProgressHasAttachment, setDiagProgressHasAttachment] = useState(false);
 
   const [createTaskOpen, setCreateTaskOpen] = useState(false);
   const [createTaskSubmitting, setCreateTaskSubmitting] = useState(false);
@@ -501,32 +479,23 @@ export default function TasksPage() {
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // 拉取任务列表并同步页面状态。
   const loadTasks = useCallback(async () => {
     try {
       const r = await fetchMaintenanceHistory({
         limit: 50,
-        status: apiStatusFilter,
       });
       setListTasks(r.tasks.map(mapHistoryToTask));
       setPageState(r.tasks.length ? "normal" : "empty");
     } catch {
       setPageState("error");
     }
-  }, [apiStatusFilter]);
+  }, []);
 
   useEffect(() => {
+    if (!showHistoryPanel) return;
     void loadTasks();
-  }, [loadTasks]);
-
-  useEffect(() => {
-    const handleModeChanged = () => {
-      void loadTasks();
-    };
-    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener);
-    return () => {
-      window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleModeChanged as EventListener);
-    };
-  }, [loadTasks]);
+  }, [loadTasks, showHistoryPanel]);
 
   useEffect(() => {
     if (!createTaskOpen) return;
@@ -538,6 +507,7 @@ export default function TasksPage() {
     setSymptomDescription("");
   }, [createTaskOpen]);
 
+  // 以文本形式读取上传文件内容。
   const readFileAsText = useCallback((file: File) => {
     return new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -547,6 +517,7 @@ export default function TasksPage() {
     });
   }, []);
 
+  // 以 Data URL 形式读取上传文件内容。
   const readFileAsDataUrl = useCallback((file: File) => {
     return new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -556,6 +527,7 @@ export default function TasksPage() {
     });
   }, []);
 
+  // 处理诊断图片文件选择并校验文件类型。
   const handleDiagImagePick = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
@@ -568,6 +540,7 @@ export default function TasksPage() {
     setDiagError(null);
   };
 
+  // 处理诊断日志文件选择。
   const handleDiagLogPick = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
@@ -575,6 +548,14 @@ export default function TasksPage() {
     setDiagError(null);
   };
 
+  const handleDiagRecordPick = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    setDiagRecordFile(file);
+    setDiagError(null);
+  };
+
+  // 校验表单并创建新的诊断任务。
   const submitCreateTask = () => {
     const et = equipmentType.trim();
     const sym = symptomDescription.trim();
@@ -611,6 +592,7 @@ export default function TasksPage() {
     })();
   };
 
+  // 发起智能诊断流程，并在需要时携带日志或图片附件。
   const runSmartDiagnose = useCallback(() => {
     const sym = diagSymptom.trim()
     const et = diagEquipmentType.trim()
@@ -630,30 +612,67 @@ export default function TasksPage() {
     void (async () => {
       setDiagSubmitting(true)
       setDiagPhase("running")
-      setDiagStepIndex(0)
-      const phaseTimer = window.setInterval(() => {
-        setDiagStepIndex((prev) => (prev < 4 ? prev + 1 : prev))
-      }, 700)
+      const hasAttachment = Boolean(diagImageFile || diagLogFile || diagRecordFile);
+      setDiagProgressHasAttachment(hasAttachment);
       try {
         let composedSymptom = sym;
-        if (diagLogFile) {
-          const rawLog = await readFileAsText(diagLogFile);
-          const compactLog = rawLog.replace(/\r/g, "").trim();
-          if (compactLog) {
-            composedSymptom = `${sym}\n\n[现场日志：${diagLogFile.name}]\n${compactLog.slice(0, 4000)}`;
-          }
+        if (diagRegion.trim()) {
+          composedSymptom = `${composedSymptom}\n\n[所属区域：${diagRegion.trim()}]`;
         }
-
         let sourceChunkIds: number[] = [];
-        if (diagImageFile || diagLogFile) {
+
+        if (hasAttachment) {
           let imageBase64: string | undefined;
           let imageMimeType: string | undefined;
           let imageFilename: string | undefined;
+          let attachmentIds: number[] = [];
+          if (diagLogFile) {
+            const rawLog = await readFileAsText(diagLogFile);
+            const compactLog = rawLog.replace(/\r/g, "").trim();
+            if (compactLog) {
+              composedSymptom = `${composedSymptom}\n\n[现场日志：${diagLogFile.name}]\n${compactLog.slice(0, 4000)}`;
+            }
+          }
+          if (diagRecordFile) {
+            const isTextLike =
+              diagRecordFile.type.startsWith("text/") ||
+              /\.(txt|csv|log)$/i.test(diagRecordFile.name);
+            if (isTextLike) {
+              try {
+                const rawRecord = await readFileAsText(diagRecordFile);
+                const compactRecord = rawRecord.replace(/\r/g, "").trim();
+                if (compactRecord) {
+                  composedSymptom = `${composedSymptom}\n\n[维修记录：${diagRecordFile.name}]\n${compactRecord.slice(0, 4000)}`;
+                }
+              } catch {
+                composedSymptom = `${composedSymptom}\n\n[维修记录附件：${diagRecordFile.name}]`;
+              }
+            } else {
+              composedSymptom = `${composedSymptom}\n\n[维修记录附件：${diagRecordFile.name}]`;
+            }
+          }
           if (diagImageFile) {
-            const dataUrl = await readFileAsDataUrl(diagImageFile);
-            imageBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
-            imageMimeType = diagImageFile.type || "image/png";
-            imageFilename = diagImageFile.name;
+            const token = getMaintenanceToken();
+            if (token) {
+              try {
+                const uploaded = await uploadMaintenanceAttachment(token, {
+                  file: diagImageFile,
+                  biz_type: "diagnosis_image",
+                });
+                attachmentIds = [uploaded.id];
+                imageFilename = diagImageFile.name;
+              } catch {
+                const dataUrl = await readFileAsDataUrl(diagImageFile);
+                imageBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+                imageMimeType = diagImageFile.type || "image/png";
+                imageFilename = diagImageFile.name;
+              }
+            } else {
+              const dataUrl = await readFileAsDataUrl(diagImageFile);
+              imageBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+              imageMimeType = diagImageFile.type || "image/png";
+              imageFilename = diagImageFile.name;
+            }
           }
           const assistResult = await postAgentAssist({
             query: composedSymptom,
@@ -662,6 +681,7 @@ export default function TasksPage() {
             maintenance_level: diagLevel,
             limit: 5,
             selected_chunk_ids: [],
+            attachment_ids: attachmentIds,
             image_base64: imageBase64,
             image_mime_type: imageMimeType,
             image_filename: imageFilename,
@@ -681,19 +701,32 @@ export default function TasksPage() {
           symptom_description: composedSymptom,
           source_chunk_ids: sourceChunkIds,
         })
-        await loadTasks()
         router.push(`/tasks/${created.id}?action=process`)
         return
       } catch (e) {
         setDiagError(e instanceof Error ? e.message : "诊断失败，请稍后重试")
         setDiagPhase("idle")
       } finally {
-        window.clearInterval(phaseTimer)
         setDiagSubmitting(false)
       }
     })()
-  }, [diagAssetCode, diagEquipmentType, diagImageFile, diagLevel, diagLogFile, diagSymptom, loadTasks, readFileAsDataUrl, readFileAsText, router])
+  }, [
+    diagAssetCode,
+    diagAutoWorkOrder,
+    diagEquipmentType,
+    diagImageFile,
+    diagLevel,
+    diagLogFile,
+    diagMode,
+    diagRecordFile,
+    diagRegion,
+    diagSymptom,
+    readFileAsDataUrl,
+    readFileAsText,
+    router,
+  ])
 
+  // 打开删除确认弹窗并记录当前待删除任务。
   const handleDeleteTask = useCallback(
     async (taskId: string) => {
       const id = Number(taskId);
@@ -705,6 +738,7 @@ export default function TasksPage() {
     [loadTasks],
   );
 
+  // 执行任务删除并在成功后刷新列表。
   const confirmDelete = useCallback(async () => {
     if (!deleteTargetId) return;
     const id = Number(deleteTargetId);
@@ -725,8 +759,8 @@ export default function TasksPage() {
 
   /** 存在待处理或进行中任务时定时拉取，便于状态同步到最新结果 */
   const hasActiveInList = useMemo(
-    () => listTasks.some((t) => t.status === "running" || t.status === "pending"),
-    [listTasks],
+    () => showHistoryPanel && listTasks.some((t) => t.status === "running" || t.status === "pending"),
+    [listTasks, showHistoryPanel],
   );
 
   useEffect(() => {
@@ -744,6 +778,11 @@ export default function TasksPage() {
   const displayTasks = useMemo(() => {
     const base = listTasks;
     return base.filter((task) => {
+      if (apiStatusFilter === "in_progress" && task.status !== "running") return false;
+      if (apiStatusFilter === "pending" && task.status !== "pending" && task.status !== "running") return false;
+      if (apiStatusFilter === "completed" && task.status !== "completed") return false;
+      if (apiStatusFilter === "diagnosis_completed" && task.status !== "diagnosis_completed") return false;
+      if (apiStatusFilter === "skipped" && task.status !== "failed") return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       return (
@@ -751,13 +790,14 @@ export default function TasksPage() {
         task.symptom.toLowerCase().includes(q)
       );
     });
-  }, [listTasks, searchQuery]);
+  }, [apiStatusFilter, listTasks, searchQuery]);
 
   const stats = useMemo(() => {
     const src = listTasks;
     return {
       today: src.length,
-      running: src.filter((t) => t.status === "running").length,
+      running: src.filter((t) => t.status === "running" || t.status === "pending").length,
+      diagnosisCompleted: src.filter((t) => t.status === "diagnosis_completed").length,
       completed: src.filter((t) => t.status === "completed").length,
       failed: src.filter((t) => t.status === "failed").length,
     };
@@ -768,286 +808,173 @@ export default function TasksPage() {
     const start = (currentPage - 1) * 10;
     return displayTasks.slice(start, start + 10);
   }, [displayTasks, currentPage]);
-  const diagnoseSteps = [
-    "正在解析故障描述",
-    "正在召回相关知识",
-    "正在重排序证据",
-    "正在生成诊断建议",
-    "正在校验输出完整性",
-  ] as const;
+  const runningDiagMessage = useMemo(() => {
+    if (diagProgressHasAttachment) {
+      return {
+        title: "多智能体正在分析附件与故障信息…",
+        description: "感知、检索、诊断、规划与审核智能体依次处理输入，完成后进入任务详情页。",
+      };
+    }
+    return {
+      title: "多智能体正在协同诊断…",
+      description: "系统正在整理故障录入信息，并准备进入诊断详情页展示完整结果。",
+    };
+  }, [diagProgressHasAttachment]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
+    <>
+      {showCreatePanel ? (
+        <div className="mb-8">
+          <DiagnosisTaskWorkbench
+            diagSymptom={diagSymptom}
+            onSymptomChange={setDiagSymptom}
+            diagEquipmentType={diagEquipmentType}
+            onEquipmentTypeChange={setDiagEquipmentType}
+            diagAssetCode={diagAssetCode}
+            onAssetCodeChange={setDiagAssetCode}
+            diagRegion={diagRegion}
+            onRegionChange={setDiagRegion}
+            diagLevel={diagLevel}
+            onLevelChange={setDiagLevel}
+            diagMode={diagMode}
+            onModeChange={setDiagMode}
+            diagAutoWorkOrder={diagAutoWorkOrder}
+            onAutoWorkOrderChange={setDiagAutoWorkOrder}
+            diagImageFile={diagImageFile}
+            diagLogFile={diagLogFile}
+            diagRecordFile={diagRecordFile}
+            onClearImage={() => {
+              setDiagImageFile(null);
+              if (imageInputRef.current) imageInputRef.current.value = "";
+            }}
+            onClearLog={() => {
+              setDiagLogFile(null);
+              if (logInputRef.current) logInputRef.current.value = "";
+            }}
+            onClearRecord={() => {
+              setDiagRecordFile(null);
+              if (recordInputRef.current) recordInputRef.current.value = "";
+            }}
+            imageInputRef={imageInputRef}
+            logInputRef={logInputRef}
+            recordInputRef={recordInputRef}
+            onImagePick={handleDiagImagePick}
+            onLogPick={handleDiagLogPick}
+            onRecordPick={handleDiagRecordPick}
+            diagSubmitting={diagSubmitting}
+            diagError={diagError}
+            diagPhase={diagPhase}
+            runningTitle={runningDiagMessage.title}
+            runningDescription={runningDiagMessage.description}
+            onSubmit={runSmartDiagnose}
+            hasResult={latestTaskId !== null}
+            onViewDetail={
+              latestTaskId
+                ? () => {
+                    window.location.href = `/tasks/${latestTaskId}`;
+                  }
+                : undefined
+            }
+          />
+        </div>
+      ) : null}
 
-      <main className="app-main">
-        {/* 智能诊断输入区 */}
-        <section className="app-card p-5 mb-6">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      {showHistoryPanel ? (
+        <>
+        {/* 操作栏 */}
+        <div
+          id="diagnosis-records"
+          className={
+            isHistoryMode
+              ? "mb-6 max-w-md"
+              : "mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+          }
+        >
+          {!isHistoryMode ? (
             <div>
-              <h1 className="text-xl font-semibold text-foreground">智能检修助手</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                输入故障现象、选择设备或上传材料，系统将检索相关知识并生成诊断建议。
+              <h2 className="text-base font-semibold text-foreground">诊断任务记录</h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                历史任务用于复盘与沉淀知识，完成诊断后可在详情页继续生成工单和知识案例
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleDiagImagePick}
-              />
-              <input
-                ref={logInputRef}
-                type="file"
-                accept=".log,.txt,.json,.csv,text/plain,application/json,text/csv"
-                className="hidden"
-                onChange={handleDiagLogPick}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9"
-                onClick={() => imageInputRef.current?.click()}
-              >
-                <ImagePlus className="h-4 w-4" />
-                上传图片
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9"
-                onClick={() => logInputRef.current?.click()}
-              >
-                <FileUp className="h-4 w-4" />
-                上传日志
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 lg:grid-cols-12">
-            <div className="lg:col-span-7">
-                <Textarea
-                  value={diagSymptom}
-                  onChange={(e) => setDiagSymptom(e.target.value)}
-                  rows={3}
-                  placeholder="请输入故障描述，如：压缩机 ERR-102 报错，伴随异常振动"
-                  className="min-h-[88px]"
-                />
-              </div>
-            <div className="lg:col-span-3 space-y-3">
-              <Input
-                value={diagEquipmentType}
-                onChange={(e) => setDiagEquipmentType(e.target.value)}
-                placeholder="设备类型（如：压缩机）"
-              />
-                <Input
-                  value={diagAssetCode}
-                  onChange={(e) => setDiagAssetCode(e.target.value)}
-                  placeholder="设备编号（如：CMP-102，留空将自动生成）"
-                />
-            </div>
-            <div className="lg:col-span-2 space-y-3">
-              <Select
-                value={diagLevel}
-                onValueChange={(v) => setDiagLevel(v as MaintenanceLevelOption)}
-              >
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="检修等级" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="routine">例行</SelectItem>
-                  <SelectItem value="standard">标准</SelectItem>
-                  <SelectItem value="emergency">紧急</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                className="h-10 w-full"
-                onClick={runSmartDiagnose}
-                disabled={diagSubmitting}
-              >
-                {diagSubmitting ? "诊断中…" : "开始检修"}
-              </Button>
-            </div>
-          </div>
-
-          {diagImageFile || diagLogFile ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {diagImageFile ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-foreground">
-                  <ImagePlus className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="max-w-[220px] truncate">{diagImageFile.name}</span>
-                  <button
-                    type="button"
-                    className="text-muted-foreground transition-colors hover:text-foreground"
-                    onClick={() => {
-                      setDiagImageFile(null);
-                      if (imageInputRef.current) imageInputRef.current.value = "";
-                    }}
-                    aria-label="移除图片"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ) : null}
-              {diagLogFile ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-foreground">
-                  <FileUp className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="max-w-[220px] truncate">{diagLogFile.name}</span>
-                  <button
-                    type="button"
-                    className="text-muted-foreground transition-colors hover:text-foreground"
-                    onClick={() => {
-                      setDiagLogFile(null);
-                      if (logInputRef.current) logInputRef.current.value = "";
-                    }}
-                    aria-label="移除日志"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ) : null}
-            </div>
           ) : null}
-
-          {diagError ? (
-            <p className="mt-3 text-sm text-red-400" role="alert">
-              {diagError}
-            </p>
-          ) : null}
-
-          {/* 输入 → 诊断中 → 结果 三态 */}
-          <div className="mt-5 grid gap-4 lg:grid-cols-12">
-            {diagPhase === "running" ? (
-              <div className="lg:col-span-12 app-subpanel p-4">
-                <div className="text-sm font-medium text-foreground">诊断中</div>
-                <div className="mt-3 space-y-2">
-                  {diagnoseSteps.map((step, idx) => (
-                    <div key={step} className="flex items-center gap-2 text-sm">
-                      <span
-                        className={cn(
-                          "inline-flex h-2.5 w-2.5 rounded-full",
-                          idx < diagStepIndex ? "bg-emerald-400" : idx === diagStepIndex ? "bg-blue-400 animate-pulse" : "bg-zinc-500",
-                        )}
-                      />
-                      <span className={idx <= diagStepIndex ? "text-foreground" : "text-muted-foreground"}>{step}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : diagPhase === "result" ? (
-              <>
-                <div className="lg:col-span-8 app-subpanel p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium text-foreground">诊断结果</div>
-                    {latestTaskId ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={() => (window.location.href = `/tasks/${latestTaskId}`)}
-                      >
-                        查看任务详情
-                      </Button>
-                    ) : null}
-                  </div>
-                  <div className="mt-3 space-y-3 text-sm text-muted-foreground">
-                    {latestAdvice ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-xs leading-6 text-muted-foreground">
-                        <div className="mb-1 font-medium text-foreground">智能建议</div>
-                        {latestAdvice}
-                      </div>
-                    ) : (
-                      <p>诊断任务已创建，请进入任务详情页查看完整诊断流程。</p>
-                    )}
-                  </div>
-                </div>
-                <div className="lg:col-span-4 app-subpanel p-4">
-                  <div className="text-sm font-medium text-foreground">引用知识</div>
-                  {latestSourceRefs && latestSourceRefs.length > 0 ? (
-                    <ul className="mt-2 space-y-2 text-sm text-muted-foreground">
-                      {latestSourceRefs.map((ref) => (
-                        <li key={ref.chunk_id}>
-                          [{ref.source_name}] 《{ref.title}》
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-sm text-muted-foreground">暂无引用知识</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="lg:col-span-12 app-subpanel p-4 text-sm text-muted-foreground">
-                点击「开始检修」后，将直接跳转到诊断详情页，并进入检索与推理流程。
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* 操作栏 */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">诊断任务记录</h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              历史任务用于复盘与沉淀知识，可从详情页生成工单/归档案例
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 sm:flex-none">
+          <div
+            className={
+              isHistoryMode ? "relative w-full" : "flex flex-wrap items-center gap-3"
+            }
+          >
+            <div className={isHistoryMode ? "relative w-full" : "relative flex-1 sm:flex-none"}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="搜索任务ID或故障描述..."
+                placeholder="搜索任务编号、故障现象或设备关键词..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="app-input w-full py-2 pl-9 pr-4 sm:w-64"
+                className={
+                  isHistoryMode
+                    ? "app-input w-full py-2 pl-9 pr-4"
+                    : "app-input w-full py-2 pl-9 pr-4 sm:w-64"
+                }
               />
             </div>
-            <FilterDropdown
-              onApply={(st) => {
-                setApiStatusFilter(st);
-              }}
-            />
-            <button
-              type="button"
-              className="app-btn-primary whitespace-nowrap"
-              onClick={() => setCreateTaskOpen(true)}
-            >
-              <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">新建诊断任务</span>
-            </button>
+            {showHistoryCreateShortcut ? (
+              <button
+                type="button"
+                className="app-btn-secondary whitespace-nowrap"
+                onClick={() => setCreateTaskOpen(true)}
+              >
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline">新建诊断任务</span>
+              </button>
+            ) : null}
           </div>
         </div>
 
         {/* 统计指标条 */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
           <StatCard
-            label="今日任务"
+            label="全部任务"
             value={stats.today}
             icon={Calendar}
             color="bg-[#5e6ad2]/20 text-[#7170ff]"
+            active={!apiStatusFilter}
+            onClick={() => {
+              setApiStatusFilter(undefined);
+              setCurrentPage(1);
+            }}
           />
           <StatCard
-            label="进行中"
+            label={TASK_STATUS_META.pending.label}
             value={stats.running}
-            icon={Loader2}
-            color="bg-blue-500/20 text-blue-400"
+            icon={TASK_STATUS_META.pending.icon}
+            color={TASK_STATUS_META.pending.cardColorClassName}
+            active={apiStatusFilter === "in_progress" || apiStatusFilter === "pending"}
+            onClick={() => {
+              setApiStatusFilter("pending");
+              setCurrentPage(1);
+            }}
           />
           <StatCard
-            label="已完成"
+            label={TASK_STATUS_META.diagnosis_completed.label}
+            value={stats.diagnosisCompleted}
+            icon={TASK_STATUS_META.diagnosis_completed.icon}
+            color={TASK_STATUS_META.diagnosis_completed.cardColorClassName}
+            active={apiStatusFilter === "diagnosis_completed"}
+            onClick={() => {
+              setApiStatusFilter("diagnosis_completed");
+              setCurrentPage(1);
+            }}
+          />
+          <StatCard
+            label={TASK_STATUS_META.completed.label}
             value={stats.completed}
-            icon={CheckCircle2}
-            color="bg-emerald-500/20 text-emerald-400"
-          />
-          <StatCard
-            label="失败"
-            value={stats.failed}
-            icon={XCircle}
-            color="bg-red-500/20 text-red-400"
+            icon={TASK_STATUS_META.completed.icon}
+            color={TASK_STATUS_META.completed.cardColorClassName}
+            active={apiStatusFilter === "completed"}
+            onClick={() => {
+              setApiStatusFilter("completed");
+              setCurrentPage(1);
+            }}
           />
         </div>
 
@@ -1066,7 +993,9 @@ export default function TasksPage() {
         {/* 任务表格 */}
         <div className="app-card overflow-visible">
           {pageState === "empty" ? (
-            <EmptyState onCreate={() => setCreateTaskOpen(true)} />
+            <EmptyState onCreate={showHistoryCreateShortcut ? () => setCreateTaskOpen(true) : undefined} />
+          ) : pageState !== "loading" && displayTasks.length === 0 ? (
+            <EmptyState filtered />
           ) : (
             <>
               {/* 桌面端表格 */}
@@ -1084,7 +1013,7 @@ export default function TasksPage() {
                         故障描述
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
-                        任务进度
+                        链路环节完成数
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">
                         状态
@@ -1217,8 +1146,10 @@ export default function TasksPage() {
             </>
           )}
         </div>
-      </main>
+        </>
+      ) : null}
 
+      {showHistoryCreateShortcut ? (
       <Dialog open={createTaskOpen} onOpenChange={setCreateTaskOpen}>
         <DialogContent
           showCloseButton
@@ -1360,7 +1291,9 @@ export default function TasksPage() {
           </form>
         </DialogContent>
       </Dialog>
+      ) : null}
 
+      {showHistoryPanel ? (
       <Dialog
         open={deleteDialogOpen}
         onOpenChange={(v) => {
@@ -1414,7 +1347,20 @@ export default function TasksPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+      ) : null}
+    </>
   );
 }
 
+// 主页面组件
+// 渲染兼容的任务列表页，并承载诊断发起与历史记录。
+export default function TasksPage({ mode = "all" }: { mode?: TaskListMode }) {
+  return (
+    <div className="min-h-screen bg-background">
+      <Header />
+      <main className="app-main">
+        <TaskListPageContent mode={mode} />
+      </main>
+    </div>
+  );
+}

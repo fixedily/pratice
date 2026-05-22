@@ -1,4 +1,4 @@
-"""Phase 14: 知识库与知识检索主体测试."""
+﻿"""Phase 14: 知识库与知识检索主体测试."""
 import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -6,10 +6,15 @@ import builtins
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_session
 from app.main import app
-from app.schemas.knowledge import KnowledgeSearchRequest
+from app.models.base import Base
+from app.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeRelation
+from app.schemas.knowledge import KnowledgeDocumentCreate, KnowledgeSearchRequest
+from app.services.graph_rag_service import graph_expand
 from app.services.image_analysis_service import FaultImageAnalysisService, ImageAnalysisResult
 from app.services.knowledge_chunking import split_text_into_chunks
 from app.services.knowledge_service import KnowledgeService
@@ -348,6 +353,47 @@ def test_search_request_accepts_image_only():
     assert request.image_base64 == "ZmFrZV9pbWFnZQ=="
 
 
+def test_search_request_accepts_attachment_only():
+    """附件 ID 可单独作为多模态检索入口。"""
+    request = KnowledgeSearchRequest(
+        attachment_ids=[7],
+        equipment_type="摩托车发动机",
+    )
+
+    assert request.attachment_ids == [7]
+
+
+@pytest.mark.asyncio
+async def test_search_multimodal_resolves_image_from_attachment(tmp_path):
+    """多模态检索可从附件系统读取图片，而不要求前端直传 base64。"""
+    image_path = tmp_path / "fault.png"
+    image_path.write_bytes(b"fake-image-bytes")
+    session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(id=7, mime_type="image/png", storage_key="1/fault.png")))
+    service = KnowledgeService(session=session)
+    service.search = AsyncMock(return_value=[])
+    service.image_analysis_service.analyze = AsyncMock(
+        return_value=ImageAnalysisResult(
+            summary="疑似火花塞积碳。",
+            keywords=["火花塞", "积碳"],
+            source="vision_model",
+        )
+    )
+
+    with patch.object(service, "_attachment_storage_path", return_value=image_path):
+        payload = await service.search_multimodal(
+            KnowledgeSearchRequest(
+                attachment_ids=[7],
+                equipment_type="摩托车发动机",
+                query="看图判断故障",
+            )
+        )
+
+    assert payload["multimodal_context"]["used_attachment_ids"] == [7]
+    assert payload["multimodal_context"]["image_input_source"] == "attachment"
+    assert "attachment" in payload["input_modalities"]
+    assert payload["image_analysis"]["source"] == "vision_model"
+
+
 @pytest.mark.asyncio
 async def test_search_multimodal_marks_ungrounded_when_no_results():
     """低命中场景应返回 grounded=false 和补充提示。"""
@@ -525,3 +571,212 @@ async def test_search_multimodal_fuses_query_variants_globally():
 
     assert [item["chunk_id"] for item in payload["results"][:3]] == [12, 11, 13]
     assert set(payload["results"][0]["_retrieval_path"]) == {"sql", "vector"}
+
+
+@pytest.mark.asyncio
+async def test_graph_expand_supports_knowledge_document_relations():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            primary_document = KnowledgeDocument(
+                title="启动困难诊断",
+                source_name="primary.pdf",
+                source_type="manual",
+                equipment_type="摩托车发动机",
+                equipment_model="LX200",
+                fault_type="启动困难",
+                content="发动机启动困难时先检查火花塞。",
+                status="published",
+            )
+            related_document = KnowledgeDocument(
+                title="相关故障案例",
+                source_name="related.pdf",
+                source_type="case",
+                equipment_type="摩托车发动机",
+                equipment_model="LX200",
+                fault_type="怠速不稳",
+                content="同型号设备还应排查怠速阀与供油系统。",
+                status="published",
+            )
+            session.add_all([primary_document, related_document])
+            await session.flush()
+
+            seed_chunk = KnowledgeChunk(
+                document_id=primary_document.id,
+                chunk_index=1,
+                content="发动机启动困难时先检查火花塞。",
+                equipment_type=primary_document.equipment_type,
+                equipment_model=primary_document.equipment_model,
+                fault_type=primary_document.fault_type,
+            )
+            related_chunk = KnowledgeChunk(
+                document_id=related_document.id,
+                chunk_index=1,
+                content="同型号设备还应排查怠速阀与供油系统。",
+                equipment_type=related_document.equipment_type,
+                equipment_model=related_document.equipment_model,
+                fault_type=related_document.fault_type,
+            )
+            relation = KnowledgeRelation(
+                source_kind="knowledge_document",
+                source_id=primary_document.id,
+                target_kind="knowledge_document",
+                target_id=related_document.id,
+                relation_type="similar_fault",
+            )
+            session.add_all([seed_chunk, related_chunk, relation])
+            await session.commit()
+
+            extra = await graph_expand(
+                session,
+                [seed_chunk.id],
+                max_hops=1,
+                max_extra_chunks=3,
+                base_score=0.75,
+            )
+
+        assert len(extra) == 1
+        assert extra[0]["chunk_id"] == related_chunk.id
+        assert extra[0]["document_id"] == related_document.id
+        assert extra[0]["source_name"] == "related.pdf"
+        assert extra[0]["score"] == pytest.approx(0.75)
+        assert extra[0]["graph_relation_type"] == "similar_fault"
+        assert extra[0]["_retrieval_channel"] == "graph_expand"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_search_multimodal_uses_graph_rag_score_and_neighbor_limit():
+    service = KnowledgeService(session=SimpleNamespace())
+    service._build_semantic_graph_context = AsyncMock(
+        return_value={"matched_entities": [], "enhanced_keywords": [], "expanded_relations": []}
+    )
+    service._load_semantic_graph_evidence_results = AsyncMock(return_value=[])
+    service._attach_expanded_context = AsyncMock(side_effect=lambda results: results)
+    service.search = AsyncMock(
+        return_value=[
+            {
+                "chunk_id": 11,
+                "document_id": 5,
+                "title": "发动机拆卸步骤 A",
+                "source_name": "manual.pdf",
+                "source_type": "manual",
+                "equipment_type": "摩托车发动机",
+                "excerpt": "步骤 1：排放机油。",
+                "score": 1.8,
+                "rerank_score": 1.8,
+                "retrieval_score": 1.5,
+                "_retrieval_path": ["vector"],
+            },
+            {
+                "chunk_id": 12,
+                "document_id": 5,
+                "title": "发动机拆卸步骤 B",
+                "source_name": "manual.pdf",
+                "source_type": "manual",
+                "equipment_type": "摩托车发动机",
+                "excerpt": "步骤 2：拆下托架固定螺栓。",
+                "score": 0.9,
+                "rerank_score": 0.9,
+                "retrieval_score": 0.8,
+                "_retrieval_path": ["sql"],
+            },
+        ]
+    )
+
+    settings_stub = SimpleNamespace(
+        enable_graph_rag=True,
+        graph_rag_max_neighbors=3,
+        enable_search_cache=False,
+        search_cache_ttl=300,
+        search_cache_maxsize=1000,
+        vector_store_backend="pgvector",
+        embedding_model="bge-m3:latest",
+        enable_reranker=False,
+        reranker_model="BAAI/bge-reranker-v2-m3",
+        reranker_top_k=20,
+        reranker_batch_size=32,
+    )
+    graph_result = {
+        "chunk_id": 99,
+        "document_id": 9,
+        "title": "关联故障案例",
+        "source_name": "case.pdf",
+        "source_type": "case",
+        "equipment_type": "摩托车发动机",
+        "excerpt": "补充排查怠速阀和供油系统。",
+        "score": 0.45,
+        "retrieval_score": 0.45,
+        "rerank_score": 0.45,
+        "_retrieval_channel": "graph_expand",
+        "_retrieval_path": ["graph_expand"],
+    }
+
+    with patch(
+        "app.core.config.get_settings",
+        return_value=settings_stub,
+    ), patch(
+        "app.services.query_rewrite_service.generate_multi_queries",
+        new=AsyncMock(return_value=["拆卸发动机步骤"]),
+    ), patch(
+        "app.services.graph_rag_service.graph_expand",
+        new=AsyncMock(return_value=[graph_result]),
+    ) as mocked_graph_expand, patch(
+        "app.modules.knowledge.application.search_service.build_grounding_assessment",
+        return_value={"answer_confidence": 0.93, "coverage_warnings": [], "grounded": True},
+    ):
+        payload = await service.search_multimodal(
+            KnowledgeSearchRequest(
+                query="拆卸发动机步骤",
+                equipment_type="摩托车发动机",
+                limit=5,
+            )
+        )
+
+    kwargs = mocked_graph_expand.await_args.kwargs
+    assert kwargs["max_extra_chunks"] == 3
+    assert kwargs["base_score"] == pytest.approx(0.45)
+    assert payload["results"][-1]["chunk_id"] == 99
+    assert "graph_expand" in payload["retrieval_path"]
+
+
+@pytest.mark.asyncio
+async def test_create_document_clears_search_cache():
+    mock_session = SimpleNamespace(
+        add=lambda document: setattr(document, "id", 321),
+        flush=AsyncMock(),
+        add_all=lambda rows: None,
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    service = KnowledgeService(session=mock_session)
+
+    with patch(
+        "app.modules.knowledge.application.search_service.refresh_document_indices",
+        new=AsyncMock(),
+    ), patch(
+        "app.modules.knowledge.application.search_service.KnowledgeService._create_semantic_extraction_candidates",
+        new=AsyncMock(),
+    ), patch("app.services.cache_service.clear") as mocked_cache_clear:
+        document, chunk_count = await service.create_document(
+            data=KnowledgeDocumentCreate(
+                title="维修手册",
+                source_name="manual.pdf",
+                source_type="manual",
+                equipment_type="摩托车发动机",
+                content="发动机启动困难时，应先检查火花塞和供油系统，然后确认点火正时是否偏差。",
+            )
+        )
+
+    assert document.id == 321
+    assert chunk_count >= 1
+    mocked_cache_clear.assert_called_once()

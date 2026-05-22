@@ -1,4 +1,4 @@
-"""merge notification and performance heads
+﻿"""merge notification and performance heads
 
 Revision ID: fc9d7e1b2a34
 Revises: f1e2d3c4b5a6, fb4c8d2e1a9b

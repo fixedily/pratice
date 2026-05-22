@@ -1,4 +1,4 @@
-"""Phase 21: 检索 rerank 逻辑测试."""
+﻿"""Phase 21: 检索 rerank 逻辑测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

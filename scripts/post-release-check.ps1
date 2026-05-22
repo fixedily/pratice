@@ -1,4 +1,4 @@
-# 发布后运行状态快照（可重复执行，建议 T+1h/T+4h/T+8h/T+24h）
+﻿# 发布后运行状态快照（可重复执行，建议 T+1h/T+4h/T+8h/T+24h）
 # 用法：
 #   .\scripts\post-release-check.ps1
 #   .\scripts\post-release-check.ps1 -BaseUrl "http://127.0.0.1:8000"

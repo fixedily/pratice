@@ -1,4 +1,4 @@
-"""Knowledge base APIs for the maintenance knowledge system."""
+﻿"""Knowledge base APIs for 公开演示检修知识系统."""
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
@@ -22,7 +22,9 @@ from app.modules.knowledge.schemas.imports import (
 from app.modules.knowledge.schemas.search import (
     KnowledgeDocumentCreate,
     KnowledgeDocumentResponse,
+    KnowledgeGraphContext,
     KnowledgeImageAnalysis,
+    KnowledgeReasoningChain,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
@@ -405,14 +407,21 @@ async def search_knowledge(
     logger.info(
         "knowledge_search query_present=%s image_present=%s equipment_type=%s equipment_model=%s fault_type=%s limit=%s",
         bool((request.query or "").strip()),
-        bool((request.image_base64 or "").strip()),
+        bool((request.image_base64 or "").strip()) or bool(request.attachment_ids),
         request.equipment_type or "",
         request.equipment_model or "",
         request.fault_type or "",
         request.limit,
     )
     service = KnowledgeService(session)
-    response_payload = await service.search_multimodal(request)
+    try:
+        response_payload = await service.search_multimodal(request)
+    except ValueError as exc:
+        raise AppError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="knowledge_search_invalid_request",
+            message=str(exc),
+        ) from exc
 
     return KnowledgeSearchResponse(
         query=response_payload["query"],
@@ -427,6 +436,16 @@ async def search_knowledge(
         image_analysis=(
             KnowledgeImageAnalysis(**response_payload["image_analysis"])
             if response_payload["image_analysis"] is not None
+            else None
+        ),
+        graph_context=(
+            KnowledgeGraphContext(**response_payload["graph_context"])
+            if response_payload.get("graph_context") is not None
+            else None
+        ),
+        reasoning_chain=(
+            KnowledgeReasoningChain(**response_payload["reasoning_chain"])
+            if response_payload.get("reasoning_chain") is not None
             else None
         ),
         total=len(response_payload["results"]),

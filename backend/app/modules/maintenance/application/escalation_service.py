@@ -1,4 +1,4 @@
-"""Escalation operations for maintenance."""
+﻿"""Escalation operations for maintenance."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.maintenance import ApprovalTask, Escalation, WorkOrderMessage
+from app.db.models.maintenance import Escalation, WorkOrderMessage
 from app.modules.maintenance.application.device_service import MaintenanceDeviceService
 from app.modules.maintenance.application.work_order_service import (
     MaintenanceWorkOrderService,
@@ -145,30 +145,13 @@ class MaintenanceEscalationService:
         escalation.conclusion_text = conclusion
         escalation.resolved_at = utc_now_naive()
         escalation.updated_at = utc_now_naive()
-        if high_risk:
-            await self.work_order_service.transition(
-                work_order,
-                "S6",
-                event_type="escalation_high_risk",
-                actor_user_id=ctx.user_id,
-            )
-            step_no = work_order.current_step_no or 2
-            self.session.add(
-                ApprovalTask(
-                    work_order_id=work_order.id,
-                    step_no=step_no,
-                    status="pending",
-                    created_at=utc_now_naive(),
-                    updated_at=utc_now_naive(),
-                )
-            )
-        else:
-            await self.work_order_service.transition(
-                work_order,
-                "S7",
-                event_type="escalation_resolved",
-                actor_user_id=ctx.user_id,
-            )
+        await self.work_order_service.transition(
+            work_order,
+            "S7",
+            event_type="escalation_resolved",
+            actor_user_id=ctx.user_id,
+            payload={"high_risk": high_risk} if high_risk else None,
+        )
         await self._audit(
             "escalation.resolved",
             "escalation",

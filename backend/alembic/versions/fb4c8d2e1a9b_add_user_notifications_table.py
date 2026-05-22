@@ -1,4 +1,4 @@
-"""add user notifications table
+﻿"""add user notifications table
 
 Revision ID: fb4c8d2e1a9b
 Revises: fa3b7c9d1e2f

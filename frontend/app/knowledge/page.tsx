@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 
 import KnowledgeListPage from "@/features/knowledge/screens/knowledge-list-page";
 

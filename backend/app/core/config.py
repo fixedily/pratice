@@ -1,4 +1,4 @@
-# File: app/core/config.py
+﻿# File: app/core/config.py
 """Application configuration management.
 
 统一由 Pydantic Settings 管理环境变量，避免手动读取环境变量与
@@ -46,11 +46,33 @@ class Settings(BaseSettings):
     db_pool_recycle: int = Field(default=1800, alias="DB_POOL_RECYCLE")
 
     # LLM 配置
+    default_llm_provider: str = Field(default="zhipu", alias="DEFAULT_LLM_PROVIDER")
+    default_text_model: str = Field(default="glm-4.5", alias="DEFAULT_TEXT_MODEL")
+    default_vision_model: str = Field(default="glm-4.5v", alias="DEFAULT_VISION_MODEL")
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_api_base: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_API_BASE")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_api_base: str | None = Field(default=None, alias="OPENAI_API_BASE")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    zhipu_api_key: str | None = Field(default=None, alias="ZHIPU_API_KEY")
+    zhipu_api_base: str = Field(default="https://open.bigmodel.cn/api/paas/v4", alias="ZHIPU_API_BASE")
+    zhipu_text_model: str = Field(default="glm-4.5", alias="ZHIPU_TEXT_MODEL")
+    zhipu_vision_model: str = Field(default="glm-4.5v", alias="ZHIPU_VISION_MODEL")
+    zhipu_ocr_model: str = Field(default="glm-ocr", alias="ZHIPU_OCR_MODEL")
+    dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY")
+    dashscope_api_base: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        alias="DASHSCOPE_API_BASE",
+    )
+    dashscope_embedding_model: str = Field(
+        default="text-embedding-v4",
+        alias="DASHSCOPE_EMBEDDING_MODEL",
+    )
+    dashscope_rerank_model: str = Field(default="gte-rerank-v2", alias="DASHSCOPE_RERANK_MODEL")
+    dashscope_vl_rerank_model: str = Field(
+        default="qwen3-vl-rerank",
+        alias="DASHSCOPE_VL_RERANK_MODEL",
+    )
     hf_endpoint: str | None = Field(default=None, alias="HF_ENDPOINT")
 
     # CORS 配置
@@ -72,8 +94,22 @@ class Settings(BaseSettings):
         alias="ATTACHMENT_SIGN_SECRET",
     )
 
+    # Redis（验证码、登录锁定、后续会话/限流/检索缓存）
+    redis_enabled: bool = Field(default=True, alias="REDIS_ENABLED")
+    redis_host: str = Field(default="localhost", alias="REDIS_HOST")
+    redis_port: int = Field(default=6379, alias="REDIS_PORT")
+    redis_password: str | None = Field(default=None, alias="REDIS_PASSWORD")
+    redis_db: int = Field(default=0, alias="REDIS_DB")
+    redis_prefix: str = Field(default="dachuang", alias="REDIS_PREFIX")
+    redis_socket_timeout: int = Field(default=3, alias="REDIS_SOCKET_TIMEOUT")
+    captcha_ttl_seconds: int = Field(default=60, alias="CAPTCHA_TTL_SECONDS")
+    login_fail_max: int = Field(default=5, alias="LOGIN_FAIL_MAX")
+    login_lock_seconds: int = Field(default=60, alias="LOGIN_LOCK_SECONDS")
+    login_fail_window_seconds: int = Field(default=300, alias="LOGIN_FAIL_WINDOW_SECONDS")
+
     # Embedding / 向量检索
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    embedding_provider: str = Field(default="dashscope", alias="EMBEDDING_PROVIDER")
     embedding_model: str = Field(default="bge-m3:latest", alias="EMBEDDING_MODEL")
     embedding_dim: int = Field(default=1024, alias="EMBEDDING_DIM")
     faiss_index_path: str = Field(default="data/faiss_index", alias="FAISS_INDEX_PATH")
@@ -83,19 +119,22 @@ class Settings(BaseSettings):
 
     # Reranker 配置
     enable_reranker: bool = Field(default=True, alias="ENABLE_RERANKER")
+    reranker_provider: str = Field(default="dashscope", alias="RERANKER_PROVIDER")
     reranker_model: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RERANKER_MODEL")
     reranker_top_k: int = Field(default=20, alias="RERANKER_TOP_K")
     reranker_batch_size: int = Field(default=32, alias="RERANKER_BATCH_SIZE")
+    ocr_provider: str = Field(default="zhipu", alias="OCR_PROVIDER")
+    image_analysis_provider: str = Field(default="zhipu", alias="IMAGE_ANALYSIS_PROVIDER")
+    query_rewrite_provider: str = Field(default="zhipu", alias="QUERY_REWRITE_PROVIDER")
 
     # 搜索结果缓存配置
     enable_search_cache: bool = Field(default=True, alias="ENABLE_SEARCH_CACHE")
     search_cache_ttl: int = Field(default=300, alias="SEARCH_CACHE_TTL")
     search_cache_maxsize: int = Field(default=1000, alias="SEARCH_CACHE_MAXSIZE")
 
-    # 检索结果缓存配置
-    enable_search_cache: bool = Field(default=True, alias="ENABLE_SEARCH_CACHE")
-    search_cache_ttl: int = Field(default=300, alias="SEARCH_CACHE_TTL")
-    search_cache_maxsize: int = Field(default=1000, alias="SEARCH_CACHE_MAXSIZE")
+    # Graph RAG 配置
+    enable_graph_rag: bool = Field(default=False, alias="ENABLE_GRAPH_RAG")
+    graph_rag_max_neighbors: int = Field(default=3, alias="GRAPH_RAG_MAX_NEIGHBORS")
 
     @field_validator("debug", mode="before")
     @classmethod

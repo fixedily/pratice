@@ -1,4 +1,4 @@
-"""add_structured_step_fields
+﻿"""add_structured_step_fields
 
 Revision ID: a7c3d5e9f0b1
 Revises: f2a6b7c8d9e1

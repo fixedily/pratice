@@ -1,4 +1,4 @@
-"""Per-request context helpers for logs and structured error responses."""
+﻿"""Per-request context helpers for logs and structured error responses."""
 from __future__ import annotations
 
 from contextvars import ContextVar, Token

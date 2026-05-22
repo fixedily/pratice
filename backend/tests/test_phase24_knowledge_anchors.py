@@ -1,4 +1,4 @@
-"""Phase 24: 层级化知识锚点与可定位检索测试."""
+﻿"""Phase 24: 层级化知识锚点与可定位检索测试."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -69,6 +69,32 @@ def test_build_anchored_chunk_payloads_prefers_procedural_grouping_for_step_manu
     assert payloads[0]["step_anchor"] == "1. 关闭点火开关并等待发动机冷却。"
     assert "3.1 拆卸步骤" in (payloads[0]["section_path"] or "")
     assert "关闭点火开关" in (payloads[0]["content"] or "")
+
+
+def test_build_anchored_chunk_payloads_recognizes_markdown_chapter_headings_from_scanned_ocr():
+    content = """
+    [第 10 页 OCR]
+
+    # 第 5 章 Windows 操作系统启动与关机故障维修 63
+
+    了解 Windows 操作系统启动步骤 64
+
+    开机报错故障一般解决方法 64
+
+    无法启动 Windows 操作系统故障一般解决方法 66
+    """.strip()
+
+    payloads = build_anchored_chunk_payloads(
+        content,
+        title="台式电脑维修完全手册",
+        page_reference="P10",
+        max_chars=220,
+    )
+
+    assert payloads
+    assert payloads[0]["section_reference"] == "第 5 章 Windows 操作系统启动与关机故障维修 63"
+    assert payloads[0]["section_path"] == "第 5 章 Windows 操作系统启动与关机故障维修 63"
+    assert "#" not in (payloads[0]["section_path"] or "")
 
 
 def test_build_anchored_chunk_payloads_formats_install_engine_step_blocks():
@@ -153,6 +179,59 @@ def test_build_anchored_chunk_payloads_splits_dense_inline_inspection_items():
     assert inspection_payloads[0]["step_anchor"] == "（ 1 ）检查拨叉 检查部位： 拨叉凸轮从动件（标记 1 ） 拨叉卡爪（标记 2 ） 如有弯曲、损坏或裂纹 → 更换拨叉"
     assert inspection_payloads[1]["step_anchor"] == "（ 2 ）检查传动主轴与副轴 检查传动主轴与副轴转动是否灵活： 若不灵活 → 重新安装"
     assert inspection_payloads[2]["step_anchor"] == "（ 3 ）检查换挡是否顺畅 装上 换档星形凸轮，检查换档是否顺畅： 若不顺畅 → 重新安装传动装置"
+
+
+def test_build_anchored_chunk_payloads_preserves_subtitles_bullets_and_notice_blocks():
+    content = """
+    六、右曲轴箱盖、离合器、机油泵、水泵
+
+    6.7 换挡星形凸轮
+
+    拆卸星形凸轮
+
+    1. 用8#套筒松开 M6×30 螺栓，取下：
+
+    ○ 换挡星形凸轮
+
+    ○ φ3×10 圆柱销
+
+    安装星形凸轮
+
+    2. 依次放入：
+
+    ○ φ3×10 圆柱销
+
+    ○ 换挡星形凸轮
+
+    ○ 螺栓
+
+    4. 检查各档位转换是否灵活。
+
+    注意：小心放置圆柱销，防止其掉入箱体内。
+    """.strip()
+
+    payloads = build_anchored_chunk_payloads(
+        content,
+        title="摩托车发动机维修手册",
+        page_reference="P42",
+        max_chars=220,
+    )
+
+    disassembly = next(payload for payload in payloads if payload.get("step_anchor", "").startswith("1. 用8#"))
+    assert disassembly["section_path"] == "六、右曲轴箱盖、离合器、机油泵、水泵 > 6.7 换挡星形凸轮 > 拆卸星形凸轮"
+    assert disassembly["content"].splitlines()[0] == "1. 用8#套筒松开 M6×30 螺栓，取下："
+    assert "- 换挡星形凸轮" in (disassembly["content"] or "")
+    assert "- φ3×10 圆柱销" in (disassembly["content"] or "")
+
+    installation = next(payload for payload in payloads if payload.get("step_anchor", "").startswith("2. 依次放入"))
+    assert installation["section_path"] == "六、右曲轴箱盖、离合器、机油泵、水泵 > 6.7 换挡星形凸轮 > 安装星形凸轮"
+    assert installation["content"].splitlines()[0] == "2. 依次放入："
+    assert "- φ3×10 圆柱销" in (installation["content"] or "")
+    assert "- 换挡星形凸轮" in (installation["content"] or "")
+    assert "- 螺栓" in (installation["content"] or "")
+
+    warning = next(payload for payload in payloads if payload.get("step_anchor", "").startswith("4. 检查各档位"))
+    assert "注意： 小心放置圆柱销，防止其掉入箱体内。" in (warning["content"] or "")
 
 
 def test_infer_query_profile_marks_procedural_queries_with_step_bias():

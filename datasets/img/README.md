@@ -1,4 +1,4 @@
-# Multimodal Demo Image Notes
+﻿# Multimodal Demo Image Notes
 
 This public repository does not bundle proprietary manual screenshots or local fault photos.
 

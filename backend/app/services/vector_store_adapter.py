@@ -1,4 +1,4 @@
-"""Vector store adapter: ABC + FAISS implementation."""
+﻿"""Vector store adapter: ABC + FAISS implementation."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

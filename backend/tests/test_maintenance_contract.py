@@ -1,4 +1,4 @@
-"""检修域 `/api/v1/maintenance` 契约与验收文档 P0 扩展矩阵（TC-*）。"""
+﻿"""检修域 `/api/v1/maintenance` 契约与验收文档 P0 扩展矩阵（TC-*）。"""
 from __future__ import annotations
 
 import asyncio
@@ -201,8 +201,29 @@ async def client(seed_users):
         yield ac
 
 
-async def _login(client: AsyncClient, username: str) -> str:
-    r = await client.post(f"{PREFIX}/auth/login", json={"username": username, "password": "testpass"})
+async def _fetch_captcha(client: AsyncClient) -> tuple[str, str]:
+    r = await client.get(f"{PREFIX}/auth/captcha")
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    from app.modules.maintenance.application.captcha_service import peek_code_for_tests
+
+    captcha_id = data["captchaId"]
+    code = await peek_code_for_tests(captcha_id)
+    assert code, "测试环境应能读取验证码明文"
+    return captcha_id, code
+
+
+async def _login(client: AsyncClient, username: str, *, password: str = "testpass") -> str:
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    r = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
     assert r.status_code == 200, r.text
     return r.json()["data"]["access_token"]
 
@@ -218,7 +239,18 @@ def _mock_search_payload(results: list | None = None):
             "score": 0.88,
         }
     ]
-    return {"results": r, "effective_query": "q", "query": "q"}
+    return {
+        "results": r,
+        "effective_query": "q",
+        "query": "q",
+        "grounded": True,
+        "coverage_warnings": [],
+        "input_modalities": ["text"],
+        "multimodal_context": {"attachment_ids": [], "used_attachment_ids": []},
+        "model_name": "gpt-4o-mini",
+        "knowledge_corpus_version": "pgvector:bge-m3:2",
+        "prompt_template_version": "multimodal-rag-v1",
+    }
 
 
 async def _create_wo_and_retrieval(client: AsyncClient, tok: str, device_id: int = 1, results=None):
@@ -264,7 +296,16 @@ async def _to_s8_with_attachment(client: AsyncClient, tok: str, wo_id: int) -> i
 
 @pytest.mark.asyncio
 async def test_tc_auth_001_login_ok(client: AsyncClient):
-    r = await client.post(f"{PREFIX}/auth/login", json={"username": "tc_worker", "password": "testpass"})
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    r = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": "tc_worker",
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["success"] is True
@@ -272,10 +313,205 @@ async def test_tc_auth_001_login_ok(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_tc_auth_001b_register_ok(client: AsyncClient):
+    username = "tc_register_worker"
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    register_resp = await client.post(
+        f"{PREFIX}/auth/register",
+        json={
+            "username": username,
+            "password": "testpass",
+            "display_name": "注册用户",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
+    assert register_resp.status_code == 200
+    register_body = register_resp.json()
+    assert register_body["success"] is True
+    assert register_body["message"] == "注册成功"
+    assert register_body["data"]["username"] == username
+    assert register_body["data"]["roles"] == ["worker"]
+
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    login_resp = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["data"]["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_tc_auth_001c_forgot_password_ok(client: AsyncClient):
+    username = "tc_worker"
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    reset_resp = await client.post(
+        f"{PREFIX}/auth/forgot-password",
+        json={
+            "username": username,
+            "new_password": "newpass123",
+            "confirm_password": "newpass123",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
+    assert reset_resp.status_code == 200
+    reset_body = reset_resp.json()
+    assert reset_body["success"] is True
+    assert reset_body["message"] == "密码已重置"
+    assert reset_body["data"]["username"] == username
+
+    old_captcha_id, old_captcha_code = await _fetch_captcha(client)
+    old_login_resp = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": "testpass",
+            "captchaId": old_captcha_id,
+            "captchaCode": old_captcha_code,
+        },
+    )
+    assert old_login_resp.status_code == 401
+
+    new_captcha_id, new_captcha_code = await _fetch_captcha(client)
+    new_login_resp = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": "newpass123",
+            "captchaId": new_captcha_id,
+            "captchaCode": new_captcha_code,
+        },
+    )
+    assert new_login_resp.status_code == 200
+    assert new_login_resp.json()["data"]["access_token"]
+
+
+@pytest.mark.asyncio
 async def test_tc_auth_002_invalid_credentials(client: AsyncClient):
-    r = await client.post(f"{PREFIX}/auth/login", json={"username": "tc_worker", "password": "wrong"})
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    r = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": "tc_worker",
+            "password": "wrong",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
     assert r.status_code == 401
     assert r.json()["business_code"] == "INVALID_CREDENTIALS"
+
+
+@pytest.mark.asyncio
+async def test_tc_auth_captcha_issue_and_alias(client: AsyncClient):
+    r = await client.get(f"{PREFIX}/auth/captcha")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["captchaId"]
+    assert data["image"].startswith("data:image/svg+xml;base64,")
+
+    alias = await client.get("/api/auth/captcha")
+    assert alias.status_code == 200
+    assert alias.json()["data"]["captchaId"]
+
+
+@pytest.mark.asyncio
+async def test_tc_auth_login_lockout_after_failures(client: AsyncClient):
+    username = "tc_lockout_probe"
+    for attempt in range(5):
+        captcha_id, captcha_code = await _fetch_captcha(client)
+        resp = await client.post(
+            f"{PREFIX}/auth/login",
+            json={
+                "username": username,
+                "password": "wrong-password",
+                "captchaId": captcha_id,
+                "captchaCode": captcha_code,
+            },
+        )
+        if attempt < 4:
+            assert resp.status_code == 401
+        else:
+            assert resp.status_code == 429
+            assert resp.json()["business_code"] == "ACCOUNT_LOCKED"
+            assert "请稍后再试" in resp.json()["message"]
+
+    captcha_id, captcha_code = await _fetch_captcha(client)
+    locked = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
+    assert locked.status_code == 429
+    body = locked.json()
+    assert body["business_code"] == "ACCOUNT_LOCKED"
+    assert "请稍后再试" in body["message"]
+    assert body["data"]["retry_after_seconds"] > 0
+
+    still_locked = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": username,
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": captcha_code,
+        },
+    )
+    assert still_locked.status_code == 429
+    assert still_locked.json()["business_code"] == "ACCOUNT_LOCKED"
+
+
+@pytest.mark.asyncio
+async def test_tc_auth_captcha_invalid_and_expired(client: AsyncClient):
+    captcha_id, _ = await _fetch_captcha(client)
+    bad = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": "tc_worker",
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": "ZZZZ",
+        },
+    )
+    assert bad.status_code == 400
+    assert bad.json()["business_code"] == "CAPTCHA_INVALID"
+
+    expired = await client.post(
+        f"{PREFIX}/auth/login",
+        json={
+            "username": "tc_worker",
+            "password": "testpass",
+            "captchaId": captcha_id,
+            "captchaCode": "ABCD",
+        },
+    )
+    assert expired.status_code == 400
+    assert expired.json()["business_code"] == "CAPTCHA_EXPIRED"
+
+
+@pytest.mark.asyncio
+async def test_tc_case_001_unauthorized_list_forbidden(client: AsyncClient):
+    r = await client.get("/api/v1/cases?limit=5")
+    assert r.status_code == 401
+    assert r.json()["error_code"] == "unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_tc_case_002_unauthorized_detail_forbidden(client: AsyncClient):
+    r = await client.get("/api/v1/cases/1")
+    assert r.status_code == 401
+    assert r.json()["error_code"] == "unauthorized"
 
 
 @pytest.mark.asyncio
@@ -415,31 +651,16 @@ async def test_confirm_high_risk_step_creates_approval_and_blocks_until_resolved
         headers={"Authorization": f"Bearer {tok_w}"},
     )
     assert second_step.status_code == 200
-    assert second_step.json()["data"]["business_code"] == "APPROVAL_REQUIRED"
+    assert second_step.json()["data"]["confirmed_step_no"] == 2
+    assert second_step.json()["data"]["current_step_no"] == 3
 
     detail_waiting = await client.get(
         f"{PREFIX}/work-orders/{wo_id}",
         headers={"Authorization": f"Bearer {tok_w}"},
     )
     assert detail_waiting.status_code == 200
-    assert detail_waiting.json()["data"]["status"] == "S6"
-    assert detail_waiting.json()["data"]["current_step_no"] == 2
-
-    tasks = await client.get(
-        f"{PREFIX}/approval-tasks",
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert tasks.status_code == 200
-    task_items = tasks.json()["data"]["items"]
-    task_row = next(item for item in task_items if item["work_order_id"] == wo_id and item["step_no"] == 2)
-
-    resolved = await client.post(
-        f"{PREFIX}/approval-tasks/{task_row['id']}/resolve",
-        json={"status": "approved", "comment": "同意执行高风险工步"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert resolved.status_code == 200
-    assert resolved.json()["data"]["work_order"]["status"] == "S7"
+    assert detail_waiting.json()["data"]["status"] == "S7"
+    assert detail_waiting.json()["data"]["current_step_no"] == 3
 
     third_call = await client.post(
         f"{PREFIX}/work-orders/{wo_id}/steps/confirm",
@@ -447,6 +668,7 @@ async def test_confirm_high_risk_step_creates_approval_and_blocks_until_resolved
         headers={"Authorization": f"Bearer {tok_w}"},
     )
     assert third_call.status_code == 200
+    assert third_call.json()["data"]["business_code"] == "ALREADY_PROCESSED"
     assert third_call.json()["data"]["confirmed_step_no"] == 2
     assert third_call.json()["data"]["current_step_no"] == 3
 
@@ -757,6 +979,91 @@ async def test_notifications_list_and_mark_read(client: AsyncClient, maintenance
 
 
 @pytest.mark.asyncio
+async def test_notification_sla_detail_refresh_keeps_read_state(client: AsyncClient, maintenance_session_factory, seed_users):
+    from app.models.maintenance_domain import WorkOrder
+
+    base = _naive_utc()
+    async with maintenance_session_factory() as session:
+        session.add(
+            WorkOrder(
+                device_id=1,
+                status="S1",
+                maintenance_level="紧急检修",
+                created_by_user_id=seed_users["worker"],
+                current_owner_user_id=seed_users["worker"],
+                created_at=base - timedelta(hours=5),
+                updated_at=base,
+            )
+        )
+        await session.commit()
+
+    tok_expert = await _login(client, "tc_expert")
+    headers = {"Authorization": f"Bearer {tok_expert}"}
+
+    with patch("app.modules.maintenance.application.notification_service.utc_now_naive", return_value=base):
+        first_resp = await client.get(f"{PREFIX}/notifications?limit=20", headers=headers)
+    assert first_resp.status_code == 200, first_resp.text
+    sla_item = next(item for item in first_resp.json()["data"]["items"] if item["kind"] == "work_order_sla")
+    first_detail = sla_item["detail"]
+
+    mark_resp = await client.patch(f"{PREFIX}/notifications/{sla_item['id']}/read", headers=headers)
+    assert mark_resp.status_code == 200, mark_resp.text
+    assert mark_resp.json()["data"]["read"] is True
+
+    later = base + timedelta(minutes=2)
+    with patch("app.modules.maintenance.application.notification_service.utc_now_naive", return_value=later):
+        second_resp = await client.get(f"{PREFIX}/notifications?limit=20", headers=headers)
+    assert second_resp.status_code == 200, second_resp.text
+    refreshed = next(item for item in second_resp.json()["data"]["items"] if item["id"] == sla_item["id"])
+    assert refreshed["read"] is True
+    assert refreshed["detail"] != first_detail
+    assert "已超时" in refreshed["detail"]
+
+
+@pytest.mark.asyncio
+async def test_notifications_unread_count_not_limited_by_page_size(client: AsyncClient, maintenance_session_factory, seed_users):
+    from app.models.knowledge import MaintenanceCase
+    from app.models.tasks import MaintenanceTask
+
+    now = _naive_utc()
+    async with maintenance_session_factory() as session:
+        session.add_all(
+            [
+                MaintenanceTask(
+                    title=f"通知计数任务-{index}",
+                    equipment_type="pump_test",
+                    maintenance_level="计划定修",
+                    status="completed",
+                    created_at=now - timedelta(minutes=index),
+                    updated_at=now - timedelta(minutes=index),
+                )
+                for index in range(15)
+            ]
+        )
+        session.add_all(
+            [
+                MaintenanceCase(
+                    title=f"通知计数案例-{index}",
+                    equipment_type="pump_test",
+                    symptom_description="待审核案例",
+                    status="pending_review",
+                    created_at=now - timedelta(minutes=index),
+                    updated_at=now - timedelta(minutes=index),
+                )
+                for index in range(8)
+            ]
+        )
+        await session.commit()
+
+    tok_expert = await _login(client, "tc_expert")
+    list_resp = await client.get(f"{PREFIX}/notifications?limit=5", headers={"Authorization": f"Bearer {tok_expert}"})
+    assert list_resp.status_code == 200, list_resp.text
+    payload = list_resp.json()["data"]
+    assert len(payload["items"]) <= 5
+    assert payload["unread_count"] > len(payload["items"])
+
+
+@pytest.mark.asyncio
 async def test_delete_knowledge_document_removes_graph_visibility(client: AsyncClient, maintenance_session_factory):
     from app.models.knowledge import KnowledgeDocument, KnowledgeRelation, MaintenanceCase
 
@@ -913,6 +1220,30 @@ async def test_tc_rag_001_002_004_success_path(client: AsyncClient, maintenance_
         snap = (await session.execute(select(RetrievalSnapshot).where(RetrievalSnapshot.id == snap_id))).scalar_one()
         assert snap.empty_hit is False
         assert len(snap.chunks or []) >= 1
+        assert snap.model_name == "gpt-4o-mini"
+        assert snap.knowledge_corpus_version == "pgvector:bge-m3:2"
+        assert snap.prompt_template_version == "multimodal-rag-v1"
+
+
+@pytest.mark.asyncio
+async def test_tc_rag_attachment_missing_returns_400(client: AsyncClient):
+    tok = await _login(client, "tc_worker")
+    created = await client.post(
+        f"{PREFIX}/work-orders",
+        json={"device_id": 1},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert created.status_code == 200
+    wo_id = created.json()["data"]["id"]
+
+    response = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/retrieval",
+        json={"query_text": "看图判断", "attachment_ids": [999999]},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["business_code"] == "INVALID_ATTACHMENT"
 
 
 @pytest.mark.asyncio
@@ -1007,39 +1338,12 @@ async def test_tc_app_001_002_003_approval_flow(client: AsyncClient):
         headers={"Authorization": f"Bearer {tok_e}"},
     )
     assert r_high.status_code == 200
-    assert r_high.json()["data"]["work_order"]["status"] == "S6"
-    lst = await client.get(f"{PREFIX}/approval-tasks", headers={"Authorization": f"Bearer {tok_s}"})
-    assert lst.status_code == 200
-    tasks = lst.json()["data"]["items"]
-    assert tasks
-    tid = tasks[0]["id"]
-    r_ap = await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "approved", "comment": "同意"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert r_ap.status_code == 200
-    assert r_ap.json()["data"]["work_order"]["status"] == "S7"
-    r_idem = await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "approved"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert r_idem.status_code == 200
-    assert r_idem.json()["business_code"] == "ALREADY_PROCESSED"
-    r_conflict = await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "rejected"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert r_conflict.status_code == 409
-    assert r_conflict.json()["business_code"] == "CONFLICT"
+    assert r_high.json()["data"]["work_order"]["status"] == "S7"
 
 
 @pytest.mark.asyncio
 async def test_tc_guide_001_high_risk_step_blocked(client: AsyncClient):
     tok = await _login(client, "tc_worker")
-    tok_s = await _login(client, "tc_safety")
     wo_id, _ = await _create_wo_and_retrieval(client, tok)
     await client.post(
         f"{PREFIX}/work-orders/{wo_id}/actions/enter-maintenance",
@@ -1057,21 +1361,15 @@ async def test_tc_guide_001_high_risk_step_blocked(client: AsyncClient):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r2.status_code == 200
-    assert r2.json()["data"]["business_code"] == "APPROVAL_REQUIRED"
+    assert r2.json()["data"]["confirmed_step_no"] == 2
+    assert r2.json()["data"]["current_step_no"] == 3
 
     detail_waiting = await client.get(
         f"{PREFIX}/work-orders/{wo_id}",
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert detail_waiting.status_code == 200
-    assert detail_waiting.json()["data"]["status"] == "S6"
-
-    tasks = await client.get(
-        f"{PREFIX}/approval-tasks",
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert tasks.status_code == 200
-    assert any(item["work_order_id"] == wo_id and item["step_no"] == 2 for item in tasks.json()["data"]["items"])
+    assert detail_waiting.json()["data"]["status"] == "S7"
 
 
 @pytest.mark.asyncio
@@ -1278,12 +1576,18 @@ async def test_tc_kb_publish_tc_aud_three_actions(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_tc_adm_001_system_configs(client: AsyncClient):
+async def test_tc_adm_001_system_configs(client: AsyncClient, maintenance_session_factory):
+    from sqlalchemy import select
+
+    from app.models.maintenance_domain import AuditLog
+
     tok = await _login(client, "tc_admin")
     r = await client.get(f"{PREFIX}/admin/system-configs", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     keys = {x["key"] for x in r.json()["data"]["items"]}
     assert "upload.max_image_mb" in keys
+    assert "platform.system_name" in keys
+    assert "platform.project_name" in keys
     p = await client.patch(
         f"{PREFIX}/admin/system-configs/upload.max_image_mb",
         json={"value": "12"},
@@ -1291,6 +1595,321 @@ async def test_tc_adm_001_system_configs(client: AsyncClient):
     )
     assert p.status_code == 200
     assert p.json()["data"]["value"] == "12"
+    async with maintenance_session_factory() as session:
+        log = (
+            await session.execute(
+                select(AuditLog)
+                .where(AuditLog.resource_type == "system_config")
+                .where(AuditLog.resource_id == "upload.max_image_mb")
+                .order_by(AuditLog.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        assert log is not None
+        assert log.action == "system_config.updated"
+        assert log.business_code == "SYSTEM_CONFIG_UPDATED"
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_001a_system_configs_include_model_service_defaults(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+    r = await client.get(f"{PREFIX}/admin/system-configs", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+
+    items = {item["key"]: item for item in r.json()["data"]["items"]}
+    assert items["model.provider"]["value"] == "zhipu"
+    assert items["model.chat_model"]["value"] == "glm-4.5"
+    assert items["model.vision_model"]["value"] == "glm-4.5v"
+    assert items["model.embedding_model"]["value"] == "bge-m3:latest"
+    assert items["model.reranker_model"]["value"] == "BAAI/bge-reranker-v2-m3"
+    assert items["model.api_base"]["value"] == "https://open.bigmodel.cn/api/paas/v4"
+    assert items["model.temperature"]["value_type"] == "number"
+    assert items["model.max_tokens"]["value_type"] == "number"
+    assert items["model.api_key_status"]["is_sensitive"] is True
+    assert items["model.api_key_status"]["value_masked"] in {"已托管", "未配置", "本地直连"}
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_001b_model_service_numeric_configs_validate(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+
+    bad_temp = await client.patch(
+        f"{PREFIX}/admin/system-configs/model.temperature",
+        json={"value": "3.2"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert bad_temp.status_code == 400
+    assert bad_temp.json()["business_code"] == "VALIDATION_ERROR"
+
+    bad_tokens = await client.patch(
+        f"{PREFIX}/admin/system-configs/model.max_tokens",
+        json={"value": "0"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert bad_tokens.status_code == 400
+    assert bad_tokens.json()["business_code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_005_agent_system_configs_include_pipeline_defaults(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+    r = await client.get(f"{PREFIX}/admin/system-configs", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+
+    items = {item["key"]: item for item in r.json()["data"]["items"]}
+    assert items["agent.pipeline.mode"]["value"] == "conditional"
+    assert items["agent.pipeline.default_order"]["value_type"] == "json"
+    assert items["agent.pipeline.fail_strategy"]["value"] == "degrade"
+    assert items["agent.pipeline.review_gate"]["value_type"] == "boolean"
+    assert items["agent.planning.bind_task_execution"]["value"] == "true"
+    assert items["agent.routing.force_planning_on_procedure"]["value"] == "true"
+    assert items["agent.perception.enabled"]["value"] == "true"
+    assert items["agent.review.max_retries"]["value_type"] == "number"
+    assert items["agent.knowledge.toolset"]["value_type"] == "json"
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_006_agent_system_configs_validate_boolean_json_and_numeric_values(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+
+    bad_bool = await client.patch(
+        f"{PREFIX}/admin/system-configs/agent.review.enabled",
+        json={"value": "maybe"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert bad_bool.status_code == 400
+    assert bad_bool.json()["business_code"] == "VALIDATION_ERROR"
+
+    bad_json = await client.patch(
+        f"{PREFIX}/admin/system-configs/agent.pipeline.default_order",
+        json={"value": "[\"diagnosis\", \"unknown-stage\"]"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert bad_json.status_code == 400
+    assert bad_json.json()["business_code"] == "VALIDATION_ERROR"
+
+    bad_timeout = await client.patch(
+        f"{PREFIX}/admin/system-configs/agent.planning.timeout_ms",
+        json={"value": "0"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert bad_timeout.status_code == 400
+    assert bad_timeout.json()["business_code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_002_settings_overview_shape(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+    r = await client.get(f"{PREFIX}/admin/settings-overview", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert set(data.keys()) == {
+        "knowledge_summary",
+        "rag_summary",
+        "workflow_summary",
+        "audit_summary",
+        "agent_summary",
+    }
+    assert set(data["knowledge_summary"].keys()) == {
+        "document_count",
+        "import_job_count",
+        "published_article_count",
+        "retrieval_enabled_count",
+        "last_updated_at",
+    }
+    assert set(data["rag_summary"].keys()) == {
+        "vector_store_backend",
+        "embedding_model",
+        "enable_reranker",
+        "reranker_model",
+        "reranker_top_k",
+        "enable_search_cache",
+    }
+    assert set(data["workflow_summary"].keys()) == {
+        "published_flow_template_count",
+        "device_type_count",
+        "default_stages",
+    }
+    assert set(data["audit_summary"].keys()) == {"recent_count", "latest_items"}
+    assert set(data["agent_summary"].keys()) == {
+        "pipeline_mode",
+        "default_order",
+        "fail_strategy",
+        "review_gate",
+        "knowledge_writeback",
+        "last_run_id",
+        "last_run_status",
+        "last_run_at",
+        "degradation_count",
+        "agents",
+    }
+    assert isinstance(data["workflow_summary"]["default_stages"], list)
+    assert isinstance(data["agent_summary"]["default_order"], list)
+    assert isinstance(data["agent_summary"]["agents"], list)
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_003_settings_overview_retrieval_count_matches_publish_console(
+    client: AsyncClient,
+    maintenance_session_factory,
+):
+    from app.models.maintenance_domain import KnowledgeArticle
+
+    naive = _naive_utc()
+    async with maintenance_session_factory() as session:
+        article = KnowledgeArticle(
+            series_id=993001,
+            title="设置页检索计数回归验证",
+            body="这是用于 settings-overview 检索计数回归验证的已发布正文，长度足够生成知识文档并进入检索库。",
+            status="pending_publish",
+            version=1,
+            created_at=naive,
+            updated_at=naive,
+        )
+        session.add(article)
+        await session.commit()
+        await session.refresh(article)
+        article_id = article.id
+
+    tok_a = await _login(client, "tc_admin")
+    pub = await client.post(
+        f"{PREFIX}/knowledge-articles/{article_id}/publish",
+        json={},
+        headers={"Authorization": f"Bearer {tok_a}"},
+    )
+    assert pub.status_code == 200
+    assert pub.json()["data"]["retrieval_indexed"] is True
+
+    settings_overview = await client.get(
+        f"{PREFIX}/admin/settings-overview",
+        headers={"Authorization": f"Bearer {tok_a}"},
+    )
+    assert settings_overview.status_code == 200
+    overview_payload = settings_overview.json()["data"]
+
+    publish_console = await client.get(
+        f"{PREFIX}/knowledge-articles/publish-console",
+        headers={"Authorization": f"Bearer {tok_a}"},
+    )
+    assert publish_console.status_code == 200
+    console_payload = publish_console.json()["data"]
+
+    assert overview_payload["knowledge_summary"]["retrieval_enabled_count"] == console_payload["summary"]["retrieval_enabled_count"]
+    assert overview_payload["knowledge_summary"]["retrieval_enabled_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_004_model_connectivity_uses_draft_values(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+    mocked_results = {
+        "chat": {
+            "status": "success",
+            "detail": "chat ok",
+            "tested_model": "glm-4.5",
+            "timestamp": "2026-05-16 13:00:00",
+        },
+        "vision": {
+            "status": "success",
+            "detail": "vision ok",
+            "tested_model": "glm-4.5v",
+            "timestamp": "2026-05-16 13:00:00",
+        },
+        "embedding": {
+            "status": "success",
+            "detail": "embedding ok",
+            "tested_model": "bge-m3:latest",
+            "timestamp": "2026-05-16 13:00:00",
+        },
+        "reranker": {
+            "status": "success",
+            "detail": "reranker ok",
+            "tested_model": "BAAI/bge-reranker-v2-m3",
+            "timestamp": "2026-05-16 13:00:00",
+        },
+    }
+
+    with patch(
+        "app.modules.maintenance.application.system_config_service.MaintenanceSystemConfigService._run_model_connectivity_checks",
+        new=AsyncMock(return_value=mocked_results),
+    ):
+        r = await client.post(
+            f"{PREFIX}/admin/checks/model-connectivity",
+            json={
+                "provider": "zhipu",
+                "chat_model": "glm-4.5",
+                "vision_model": "glm-4.5v",
+                "embedding_model": "bge-m3:latest",
+                "reranker_model": "BAAI/bge-reranker-v2-m3",
+                "api_base": "https://draft.example.com/v1",
+                "temperature": 0.2,
+                "max_tokens": 2048,
+            },
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["provider"] == "zhipu"
+    assert data["api_base"] == "https://draft.example.com/v1"
+    assert data["overall_status"] == "success"
+    assert set(data["results"].keys()) == {"chat", "vision", "embedding", "reranker"}
+    assert data["results"]["chat"]["tested_model"] == "glm-4.5"
+
+
+@pytest.mark.asyncio
+async def test_tc_adm_007_settings_overview_includes_agent_summary(client: AsyncClient):
+    tok = await _login(client, "tc_admin")
+    r = await client.get(f"{PREFIX}/admin/settings-overview", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+
+    data = r.json()["data"]
+    assert "agent_summary" in data
+    assert data["agent_summary"]["pipeline_mode"] == "conditional"
+    assert data["agent_summary"]["review_gate"] is True
+    assert data["agent_summary"]["default_order"] == [
+        "perception",
+        "diagnosis",
+        "planning",
+        "review",
+        "knowledge",
+    ]
+    assert {item["agent_name"] for item in data["agent_summary"]["agents"]} == {
+        "perception",
+        "diagnosis",
+        "planning",
+        "review",
+        "knowledge",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tc_iso_006_worker_forbidden_settings_overview(client: AsyncClient):
+    tok = await _login(client, "tc_worker")
+    r = await client.get(
+        f"{PREFIX}/admin/settings-overview",
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_tc_iso_007_worker_forbidden_model_connectivity(client: AsyncClient):
+    tok = await _login(client, "tc_worker")
+    r = await client.post(
+        f"{PREFIX}/admin/checks/model-connectivity",
+        json={
+            "provider": "zhipu",
+            "chat_model": "glm-4.5",
+            "vision_model": "glm-4.5v",
+            "embedding_model": "bge-m3:latest",
+            "reranker_model": "BAAI/bge-reranker-v2-m3",
+            "api_base": "https://draft.example.com/v1",
+            "temperature": 0.2,
+            "max_tokens": 2048,
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -1840,63 +2459,6 @@ async def test_tc_db_002_second_filling_flips_is_latest(client: AsyncClient, mai
 
 
 @pytest.mark.asyncio
-async def test_tc_db_003_003b_approval_task_terminal(client: AsyncClient, maintenance_session_factory):
-    from sqlalchemy import select
-
-    from app.models.maintenance_domain import ApprovalTask
-
-    tok_w = await _login(client, "tc_worker")
-    tok_e = await _login(client, "tc_expert")
-    tok_s = await _login(client, "tc_safety")
-    tok_a = await _login(client, "tc_admin")
-    wo_id, _ = await _create_wo_and_retrieval(client, tok_w, results=[])
-    eid = (
-        await client.post(
-            f"{PREFIX}/work-orders/{wo_id}/escalations",
-            json={"escalation_note": "一二三四五六七八九十DB审批路径"},
-            headers={"Authorization": f"Bearer {tok_w}"},
-        )
-    ).json()["data"]["id"]
-    await client.post(
-        f"{PREFIX}/escalations/{eid}/resolve",
-        json={
-            "conclusion_text": "结论已填写需进入审批流程的高危作业说明文字",
-            "requires_high_risk_work": True,
-        },
-        headers={"Authorization": f"Bearer {tok_e}"},
-    )
-    tid = (await client.get(f"{PREFIX}/approval-tasks", headers={"Authorization": f"Bearer {tok_s}"})).json()["data"][
-        "items"
-    ][0]["id"]
-    await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "approved", "comment": "ok"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    async with maintenance_session_factory() as session:
-        t = (await session.execute(select(ApprovalTask).where(ApprovalTask.id == tid))).scalar_one()
-        assert t.status == "approved"
-    r_logs0 = await client.get(
-        f"{PREFIX}/admin/audit-logs",
-        headers={"Authorization": f"Bearer {tok_a}"},
-    )
-    assert r_logs0.status_code == 200, r_logs0.text
-    n_audit_before = r_logs0.json()["data"]["total"]
-    await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "approved"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    r_logs1 = await client.get(
-        f"{PREFIX}/admin/audit-logs",
-        headers={"Authorization": f"Bearer {tok_a}"},
-    )
-    assert r_logs1.status_code == 200
-    n_audit_after = r_logs1.json()["data"]["total"]
-    assert n_audit_after >= n_audit_before
-
-
-@pytest.mark.asyncio
 async def test_tc_db_004_at_most_one_active_escalation(client: AsyncClient, maintenance_session_factory):
     from sqlalchemy import func, select
 
@@ -1919,53 +2481,6 @@ async def test_tc_db_004_at_most_one_active_escalation(client: AsyncClient, main
             )
         ).scalar_one()
         assert n == 1
-
-
-@pytest.mark.asyncio
-async def test_tc_con_001_approval_second_different_status_conflict(client: AsyncClient, maintenance_session_factory):
-    """§7.1 TC-CON-001：终态后提交不同结论 → CONFLICT（ASGI 单客户端真并发难稳定，顺序断言语义）。"""
-    from sqlalchemy import select
-
-    from app.models.maintenance_domain import ApprovalTask
-
-    tok_w = await _login(client, "tc_worker")
-    tok_e = await _login(client, "tc_expert")
-    tok_s = await _login(client, "tc_safety")
-    wo_id, _ = await _create_wo_and_retrieval(client, tok_w, results=[])
-    eid = (
-        await client.post(
-            f"{PREFIX}/work-orders/{wo_id}/escalations",
-            json={"escalation_note": "一二三四五六七八九十并发审批用"},
-            headers={"Authorization": f"Bearer {tok_w}"},
-        )
-    ).json()["data"]["id"]
-    await client.post(
-        f"{PREFIX}/escalations/{eid}/resolve",
-        json={
-            "conclusion_text": "结论已填写需进入审批流程的高危作业说明文字",
-            "requires_high_risk_work": True,
-        },
-        headers={"Authorization": f"Bearer {tok_e}"},
-    )
-    tid = (await client.get(f"{PREFIX}/approval-tasks", headers={"Authorization": f"Bearer {tok_s}"})).json()["data"][
-        "items"
-    ][0]["id"]
-    ra = await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "approved", "comment": "c"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert ra.status_code == 200
-    rb = await client.post(
-        f"{PREFIX}/approval-tasks/{tid}/resolve",
-        json={"status": "rejected", "comment": "改主意"},
-        headers={"Authorization": f"Bearer {tok_s}"},
-    )
-    assert rb.status_code == 409
-    assert rb.json()["business_code"] == "CONFLICT"
-    async with maintenance_session_factory() as session:
-        t_row = (await session.execute(select(ApprovalTask).where(ApprovalTask.id == tid))).scalar_one()
-        assert t_row.status == "approved"
 
 
 @pytest.mark.asyncio

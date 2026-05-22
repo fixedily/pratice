@@ -1,5 +1,6 @@
-"""Maintenance case upload, review and correction APIs for TODO-SB-5."""
+﻿"""Maintenance case upload, review and correction APIs for TODO-SB-5."""
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.modules.cases.schemas import (
     MaintenanceCaseResponse,
     MaintenanceCaseReviewRequest,
 )
+from app.modules.maintenance.deps import CurrentUserCtx, get_current_user_ctx, require_roles
 from app.modules.tasks.schemas import KnowledgeReference
 
 router = APIRouter(prefix="/api/v1", tags=["案例沉淀"])
@@ -62,6 +64,7 @@ def _build_case_response(payload: dict) -> MaintenanceCaseResponse:
 )
 async def create_maintenance_case(
     request: MaintenanceCaseCreate,
+    _ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
     session: AsyncSession = Depends(get_session),
 ) -> MaintenanceCaseResponse:
     logger.info(
@@ -102,6 +105,7 @@ async def list_maintenance_cases(
         description="按优先级过滤：low / medium / high / urgent",
     ),
     work_order_id: str | None = Query(default=None, description="按工单编号模糊过滤"),
+    _ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)] = None,
     session: AsyncSession = Depends(get_session),
 ) -> MaintenanceCaseListResponse:
     service = MaintenanceCaseService(session)
@@ -125,6 +129,7 @@ async def list_maintenance_cases(
 )
 async def get_maintenance_case(
     case_id: int,
+    _ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
     session: AsyncSession = Depends(get_session),
 ) -> MaintenanceCaseResponse:
     service = MaintenanceCaseService(session)
@@ -146,6 +151,7 @@ async def get_maintenance_case(
 )
 async def delete_maintenance_case(
     case_id: int,
+    _ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     logger.info("maintenance_case_delete case_id=%s", case_id)
@@ -171,6 +177,7 @@ async def delete_maintenance_case(
 async def add_maintenance_case_correction(
     case_id: int,
     request: MaintenanceCaseCorrectionCreate,
+    _ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
     session: AsyncSession = Depends(get_session),
 ) -> MaintenanceCaseResponse:
     logger.info(
@@ -200,13 +207,16 @@ async def add_maintenance_case_correction(
 async def review_maintenance_case(
     case_id: int,
     request: MaintenanceCaseReviewRequest,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("expert", "admin"))],
     session: AsyncSession = Depends(get_session),
 ) -> MaintenanceCaseResponse:
+    reviewer_name = ctx.display_name or ctx.username
+    request = request.model_copy(update={"reviewer_name": reviewer_name})
     logger.info(
         "maintenance_case_review case_id=%s action=%s reviewer=%s",
         case_id,
         request.action,
-        request.reviewer_name or "",
+        reviewer_name,
     )
     service = MaintenanceCaseService(session)
     try:

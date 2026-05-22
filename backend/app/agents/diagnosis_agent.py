@@ -1,4 +1,4 @@
-# File: app/agents/diagnosis_agent.py
+﻿# File: app/agents/diagnosis_agent.py
 """诊断专家智能体模块
 
 本模块实现了一个基于 LangGraph 的工业设备故障诊断专家智能体。
@@ -147,6 +147,24 @@ def _create_openai_llm(model_name: str | None) -> Any | None:
     )
 
 
+def _create_zhipu_llm(model_name: str | None) -> Any | None:
+    """创建智谱 GLM OpenAI-compatible LLM 实例。"""
+    if LangChainOpenAI is None:
+        return None
+
+    settings = get_settings()
+    if not settings.zhipu_api_key:
+        return None
+
+    actual_model = model_name or settings.zhipu_text_model or settings.default_text_model
+    return LangChainOpenAI(
+        model=actual_model,
+        api_key=settings.zhipu_api_key,
+        base_url=settings.zhipu_api_base,
+        temperature=0.1,
+    )
+
+
 def _create_anthropic_llm(model_name: str | None) -> Any | None:
     """创建 Anthropic Claude LLM 实例
 
@@ -187,11 +205,21 @@ def create_llm(model_provider: str, model_name: str | None = None) -> Any | None
     Returns:
         LLM 实例，不可用的返回 None
     """
-    if model_provider == "anthropic":
+    normalized_provider = model_provider.strip().lower() if isinstance(model_provider, str) else ""
+    if normalized_provider == "anthropic":
         return _create_anthropic_llm(model_name)
-    else:
-        # 默认为 openai（兼容 DeepSeek）
+    if normalized_provider == "zhipu":
+        return _create_zhipu_llm(model_name)
+    if normalized_provider in {"openai", "deepseek", ""}:
         return _create_openai_llm(model_name)
+
+    settings = get_settings()
+    fallback_provider = (settings.default_llm_provider or "openai").strip().lower()
+    if fallback_provider == "zhipu":
+        return _create_zhipu_llm(model_name)
+    if fallback_provider == "anthropic":
+        return _create_anthropic_llm(model_name)
+    return _create_openai_llm(model_name)
 
 
 class DiagnosisAgent:

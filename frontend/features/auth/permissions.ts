@@ -1,7 +1,6 @@
-import type { MaintenanceRole, MaintenanceUser } from "@/shared/lib/http";
+﻿import type { MaintenanceRole, MaintenanceUser } from "@/shared/lib/http";
 
 const WORK_ORDER_ROLES: MaintenanceRole[] = ["worker", "expert", "admin"];
-const APPROVAL_ROLES: MaintenanceRole[] = ["safety", "admin"];
 const ACCEPTANCE_ROLES: MaintenanceRole[] = ["expert", "admin"];
 const ADMIN_ROLES: MaintenanceRole[] = ["admin"];
 const KNOWLEDGE_REVIEW_ROLES: MaintenanceRole[] = ["expert"];
@@ -23,6 +22,14 @@ export function canEnterMaintenance(user: MaintenanceUser | null | undefined, st
   return canOperateWorkOrder(user) && ["S1", "S3", "S5"].includes(String(status || "").toUpperCase());
 }
 
+export function canRequestEscalation(user: MaintenanceUser | null | undefined, status?: string | null) {
+  return canOperateWorkOrder(user) && ["S2", "S3"].includes(String(status || "").toUpperCase());
+}
+
+export function canAcceptWorkOrder(user: MaintenanceUser | null | undefined, status?: string | null) {
+  return canOperateWorkOrder(user) && String(status || "").toUpperCase() === "S3";
+}
+
 export function canCompleteMaintenance(user: MaintenanceUser | null | undefined, status?: string | null) {
   return canOperateWorkOrder(user) && String(status || "").toUpperCase() === "S7";
 }
@@ -41,10 +48,6 @@ export function canAcceptFillReview(user: MaintenanceUser | null | undefined, st
 
 export function canCreateKnowledgeDraft(user: MaintenanceUser | null | undefined, status?: string | null) {
   return hasAnyRole(user, ACCEPTANCE_ROLES) && String(status || "").toUpperCase() === "S10";
-}
-
-export function canResolveApproval(user: MaintenanceUser | null | undefined) {
-  return hasAnyRole(user, APPROVAL_ROLES);
 }
 
 export function canAccessKnowledgeReview(user: MaintenanceUser | null | undefined) {

@@ -1,10 +1,19 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef, useMemo } from "react"
+import { useEffect, useState, useCallback, useMemo } from "react"
 import Link from "next/link"
-import dynamic from "next/dynamic"
 import { ArrowLeft, RefreshCw, Filter, Network, Sparkles } from "lucide-react"
 import { Header } from "@/shared/components/brand/app-header"
+import KnowledgeGraphG6Canvas from "@/features/knowledge/components/knowledge-graph-g6-canvas"
+import { useAppTheme } from "@/shared/theme/app-theme"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/shared/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/components/ui/tabs"
 import {
   fetchKnowledgeGraph,
   fetchKnowledgeGraphStats,
@@ -12,8 +21,12 @@ import {
   type GraphEdge,
   type GraphStatsResponse,
 } from "@/features/knowledge/api"
-
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false })
+import {
+  getDominantKind,
+  getDominantRelation,
+  getFilterSummary,
+  getSelectionSummary,
+} from "@/features/knowledge/screens/knowledge-graph-view-model"
 
 const KIND_COLORS: Record<string, string> = {
   maintenance_case: "#f59e0b",
@@ -38,15 +51,17 @@ const RELATION_LABELS: Record<string, string> = {
   published_into: "发布为",
 }
 
+const ALL_KIND_COLORS: Record<string, string> = { ...KIND_COLORS }
+
 type GraphNodeLevel = 0 | 1 | 2 | 3
+type GraphMode = "business"
 
 type VisualNode = GraphNode & {
   color: string
   degree: number
   level: GraphNodeLevel
   branchKey: string
-  x?: number
-  y?: number
+  combo?: string
 }
 
 type VisualLink = {
@@ -62,34 +77,120 @@ type VisualLink = {
 interface GraphData {
   nodes: VisualNode[]
   links: VisualLink[]
+  combos: { id: string; label: string; color: string; kind: string; count: number }[]
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const normalized = hex.replace("#", "")
-  const value =
-    normalized.length === 3
-      ? normalized
-          .split("")
-          .map((char) => `${char}${char}`)
-          .join("")
-      : normalized
-  const num = Number.parseInt(value, 16)
-  const r = (num >> 16) & 255
-  const g = (num >> 8) & 255
-  const b = num & 255
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+type OverviewCard = {
+  label: string
+  value: string
+  meta: string
+  accent: string
 }
 
-function polarToXY(radius: number, angle: number) {
+type UnifiedGraphStats = {
+  totalNodes: number
+  totalEdges: number
+  nodesByKind: Record<string, number>
+  edgesByType: Record<string, number>
+}
+
+function getModeTitle() {
+  return "检索证据图谱"
+}
+
+function getModeBadge() {
+  return "证据溯源视角"
+}
+
+function getModeDescription() {
+  return "展示答案来自哪些案例、工单、手册与知识分段，突出证据来源、引用链路与知识沉淀。"
+}
+
+function toUnifiedStats(stats: GraphStatsResponse | null): UnifiedGraphStats | null {
+  if (!stats) return null
+  const graphStats = stats
   return {
-    x: Math.cos(angle) * radius,
-    y: Math.sin(angle) * radius,
+    totalNodes: graphStats.total_nodes,
+    totalEdges: graphStats.total_edges,
+    nodesByKind: graphStats.nodes_by_kind ?? {},
+    edgesByType: graphStats.edges_by_type ?? {},
   }
+}
+
+function toBusinessGraphData(graph: { nodes: GraphNode[]; edges: GraphEdge[] }) {
+  return buildGraphData(graph.nodes, graph.edges)
+}
+
+function truncateLabel(value: string, maxChars: number) {
+  return value.length > maxChars ? `${value.slice(0, maxChars)}...` : value
+}
+
+function computeConnectedComponents(nodes: GraphNode[], adjacency: Map<string, Set<string>>) {
+  const visited = new Set<string>()
+  const components: string[][] = []
+  for (const node of nodes) {
+    if (visited.has(node.id)) continue
+    const queue = [node.id]
+    const component: string[] = []
+    visited.add(node.id)
+    while (queue.length > 0) {
+      const current = queue.shift()
+      if (!current) continue
+      component.push(current)
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (visited.has(neighbor)) continue
+        visited.add(neighbor)
+        queue.push(neighbor)
+      }
+    }
+    components.push(component)
+  }
+  return components.sort((left, right) => right.length - left.length)
+}
+
+function deriveNodeHierarchy(componentNodeIds: string[], adjacency: Map<string, Set<string>>, degree: Map<string, number>) {
+  const levels = new Map<string, GraphNodeLevel>()
+  const branchKeys = new Map<string, string>()
+  const sortedNodes = [...componentNodeIds].sort((a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0))
+  const centerId = sortedNodes[0] ?? componentNodeIds[0]
+  const centerNeighbors = [...(adjacency.get(centerId) ?? new Set<string>())].sort(
+    (a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0),
+  )
+
+  levels.set(centerId, 0)
+  branchKeys.set(centerId, centerId)
+  centerNeighbors.forEach((nodeId) => {
+    levels.set(nodeId, 1)
+    branchKeys.set(nodeId, nodeId)
+  })
+
+  const queue = [...centerNeighbors]
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+    const currentLevel = levels.get(current) ?? 1
+    if (currentLevel >= 3) continue
+    for (const neighbor of adjacency.get(current) ?? []) {
+      if (!componentNodeIds.includes(neighbor) || levels.has(neighbor)) continue
+      const nextLevel = Math.min(3, currentLevel + 1) as GraphNodeLevel
+      levels.set(neighbor, nextLevel)
+      branchKeys.set(neighbor, branchKeys.get(current) ?? current)
+      queue.push(neighbor)
+    }
+  }
+
+  for (const nodeId of componentNodeIds) {
+    if (!levels.has(nodeId)) {
+      levels.set(nodeId, componentNodeIds.length <= 2 ? 1 : 3)
+      branchKeys.set(nodeId, centerNeighbors[0] ?? centerId)
+    }
+  }
+  return { levels, branchKeys, centerId }
 }
 
 function buildGraphData(nodes: GraphNode[], edges: GraphEdge[]): GraphData {
   if (nodes.length === 0) {
-    return { nodes: [], links: [] }
+    return { nodes: [], links: [], combos: [] }
   }
 
   const byId = new Map(nodes.map((node) => [node.id, node]))
@@ -107,143 +208,39 @@ function buildGraphData(nodes: GraphNode[], edges: GraphEdge[]): GraphData {
     degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
   }
 
-  const sortedNodes = [...nodes].sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
-  const centerId = sortedNodes[0]?.id ?? nodes[0].id
-  const centerNeighbors = [...(adjacency.get(centerId) ?? new Set<string>())].sort(
-    (a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0),
-  )
-
-  const levels = new Map<string, GraphNodeLevel>()
-  const branchKeys = new Map<string, string>()
-  levels.set(centerId, 0)
-  branchKeys.set(centerId, centerId)
-
-  centerNeighbors.forEach((nodeId) => {
-    levels.set(nodeId, 1)
-    branchKeys.set(nodeId, nodeId)
-  })
-
-  const queue = [...centerNeighbors]
-  while (queue.length > 0) {
-    const current = queue.shift()
-    if (!current) continue
-    const currentLevel = levels.get(current) ?? 1
-    if (currentLevel >= 3) continue
-
-    for (const neighbor of adjacency.get(current) ?? []) {
-      if (!levels.has(neighbor)) {
-        const nextLevel = Math.min(3, currentLevel + 1) as GraphNodeLevel
-        levels.set(neighbor, nextLevel)
-        branchKeys.set(neighbor, branchKeys.get(current) ?? current)
-        queue.push(neighbor)
-      }
-    }
-  }
-
-  for (const node of nodes) {
-    if (!levels.has(node.id)) {
-      levels.set(node.id, 3)
-      branchKeys.set(node.id, centerNeighbors[0] ?? centerId)
-    }
-  }
-
-  const positionedNodes = new Map<string, VisualNode>()
-  const centerNode = byId.get(centerId) ?? nodes[0]
-  positionedNodes.set(centerId, {
-    ...centerNode,
-    color: KIND_COLORS[centerNode.kind] || "#64748b",
-    degree: degree.get(centerId) ?? 0,
-    level: 0,
-    branchKey: centerId,
-    x: 0,
-    y: 0,
-  })
-
-  const branchAngles = new Map<string, number>()
-  const primaryRadius = nodes.length <= 6 ? 150 : 205
-  const secondaryRadius = nodes.length <= 10 ? 260 : 330
-  const tertiaryRadius = nodes.length <= 14 ? 390 : 455
-  const baseAngle = -Math.PI / 2
-  const angleStep = (Math.PI * 2) / Math.max(centerNeighbors.length, 1)
-
-  centerNeighbors.forEach((nodeId, index) => {
-    const node = byId.get(nodeId)
-    if (!node) return
-    const angle = baseAngle + angleStep * index
-    const point = polarToXY(primaryRadius, angle)
-    branchAngles.set(nodeId, angle)
-    positionedNodes.set(nodeId, {
-      ...node,
-      color: KIND_COLORS[node.kind] || "#64748b",
-      degree: degree.get(nodeId) ?? 0,
-      level: 1,
-      branchKey: nodeId,
-      x: point.x,
-      y: point.y,
-    })
-  })
-
-  const grouped = new Map<string, string[]>()
-  for (const node of nodes) {
-    if (node.id === centerId || centerNeighbors.includes(node.id)) continue
-    const branchKey = branchKeys.get(node.id) ?? centerId
-    const bucket = grouped.get(branchKey) ?? []
-    bucket.push(node.id)
-    grouped.set(branchKey, bucket)
-  }
-
-  for (const [branchKey, nodeIds] of grouped.entries()) {
-    const baseBranchAngle = branchAngles.get(branchKey) ?? baseAngle
-    const sorted = nodeIds.sort((a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0))
-    const spread = Math.min(Math.PI / 2.5, 0.38 + sorted.length * 0.07)
-    const innerDenominator = Math.max(sorted.length - 1, 1)
-
-    sorted.forEach((nodeId, index) => {
-      const node = byId.get(nodeId)
-      if (!node) return
-      const level = levels.get(nodeId) ?? 3
-      const offset =
-        sorted.length === 1 ? 0 : -spread / 2 + (spread * index) / innerDenominator
-      const angle = baseBranchAngle + offset
-      const radius = level === 2 ? secondaryRadius : tertiaryRadius
-      const point = polarToXY(radius, angle)
-      positionedNodes.set(nodeId, {
-        ...node,
-        color: KIND_COLORS[node.kind] || "#64748b",
-        degree: degree.get(nodeId) ?? 0,
-        level,
-        branchKey,
-        x: point.x,
-        y: point.y,
+  const components = computeConnectedComponents(nodes, adjacency)
+  const hierarchyById = new Map<string, { level: GraphNodeLevel; branchKey: string }>()
+  components.forEach((componentNodeIds) => {
+    const hierarchy = deriveNodeHierarchy(componentNodeIds, adjacency, degree)
+    componentNodeIds.forEach((nodeId) => {
+      hierarchyById.set(nodeId, {
+        level: hierarchy.levels.get(nodeId) ?? 3,
+        branchKey: hierarchy.branchKeys.get(nodeId) ?? hierarchy.centerId,
       })
     })
-  }
-
-  const visualNodes = nodes.map((node) => {
-    const fallbackAngle = (Math.PI * 2 * nodes.findIndex((item) => item.id === node.id)) / Math.max(nodes.length, 1)
-    const fallbackPoint = polarToXY(secondaryRadius, fallbackAngle)
-    return (
-      positionedNodes.get(node.id) ?? {
-        ...node,
-        color: KIND_COLORS[node.kind] || "#64748b",
-        degree: degree.get(node.id) ?? 0,
-        level: 3,
-        branchKey: centerNeighbors[0] ?? centerId,
-        x: fallbackPoint.x,
-        y: fallbackPoint.y,
-      }
-    )
   })
 
+  const comboCounts = new Map<string, number>()
+  const visualNodes = nodes.map((node) => {
+    const hierarchy = hierarchyById.get(node.id)
+    const combo = `kind:${node.kind}`
+    comboCounts.set(combo, (comboCounts.get(combo) ?? 0) + 1)
+    return {
+      ...node,
+      color: ALL_KIND_COLORS[node.kind] || "#64748b",
+      degree: degree.get(node.id) ?? 0,
+      level: hierarchy?.level ?? 3,
+      branchKey: hierarchy?.branchKey ?? node.id,
+      combo,
+    }
+  })
   const nodeById = new Map(visualNodes.map((node) => [node.id, node]))
   const visualLinks = edges.map((edge) => {
     const sourceNode = nodeById.get(edge.source)
     const targetNode = nodeById.get(edge.target)
     const branchKey =
-      sourceNode?.level === 0
-        ? targetNode?.branchKey
-        : sourceNode?.branchKey || targetNode?.branchKey || centerId
-    const branchNode = nodeById.get(branchKey ?? centerId)
+      sourceNode?.level === 0 ? targetNode?.branchKey : sourceNode?.branchKey || targetNode?.branchKey || edge.source
+    const branchNode = nodeById.get(branchKey ?? edge.source)
     return {
       id: edge.id,
       source: edge.source,
@@ -255,27 +252,76 @@ function buildGraphData(nodes: GraphNode[], edges: GraphEdge[]): GraphData {
     }
   })
 
-  return { nodes: visualNodes, links: visualLinks }
+  const combos = Array.from(comboCounts.entries()).map(([comboId, count]) => {
+    const kind = comboId.replace("kind:", "")
+    return {
+      id: comboId,
+      label: truncateLabel((KIND_LABELS[kind] || kind) as string, 16),
+      color: ALL_KIND_COLORS[kind] || "#64748b",
+      kind,
+      count,
+    }
+  })
+
+  return { nodes: visualNodes, links: visualLinks, combos }
 }
 
-function getNodeRadius(node: VisualNode, selectedId?: string | null): number {
-  const isSelected = selectedId === node.id
-  if (node.level === 0) return isSelected ? 34 : 30
-  if (node.level === 1) return isSelected ? 16 : 13
-  const degreeBoost = Math.min(node.degree, 4) * 0.7
-  return (isSelected ? 10 : 7) + degreeBoost
+function buildOverviewCards(
+  stats: UnifiedGraphStats | null,
+  filterSummary: string,
+  dominantRelation: { key: string; count: number },
+  dominantKind: { key: string; count: number },
+  relationLabels: Record<string, string>,
+  kindLabels: Record<string, string>,
+): OverviewCard[] {
+  return [
+    {
+      label: "节点总数",
+      value: String(stats?.totalNodes ?? 0),
+      meta: filterSummary,
+      accent:
+        "border-sky-200/80 bg-sky-50 text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200",
+    },
+    {
+      label: "关系总数",
+      value: String(stats?.totalEdges ?? 0),
+      meta: "覆盖案例、文档、工单与知识分段",
+      accent:
+        "border-amber-200/80 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200",
+    },
+      {
+        label: "热点关系",
+        value: String(dominantRelation.count),
+        meta:
+          dominantRelation.count > 0
+          ? `当前最高频关系：${relationLabels[dominantRelation.key] ?? dominantRelation.key} (${dominantRelation.key})`
+          : "等待关系沉淀",
+        accent:
+          "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200",
+      },
+    {
+      label: "活跃类型",
+      value: String(dominantKind.count),
+        meta:
+          dominantKind.count > 0
+          ? `当前最活跃类型：${kindLabels[dominantKind.key] ?? dominantKind.key}`
+          : "等待知识沉淀",
+      accent:
+        "border-violet-200/80 bg-violet-50 text-violet-800 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-violet-200",
+    },
+  ]
 }
 
 export default function KnowledgeGraphPage() {
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] })
+  const { resolvedTheme } = useAppTheme()
+  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [], combos: [] })
   const [stats, setStats] = useState<GraphStatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedNode, setSelectedNode] = useState<VisualNode | null>(null)
   const [filterKind, setFilterKind] = useState<string>("")
   const [filterRelation, setFilterRelation] = useState<string>("")
-  const containerRef = useRef<HTMLDivElement>(null)
-  const graphRef = useRef<any>(null)
-  const [dimensions, setDimensions] = useState({ width: 960, height: 700 })
+  const [sidebarTab, setSidebarTab] = useState<"stats" | "detail">("stats")
+  const graphMode: GraphMode = "business"
 
   const loadGraph = useCallback(async () => {
     setLoading(true)
@@ -288,7 +334,7 @@ export default function KnowledgeGraphPage() {
         }),
         fetchKnowledgeGraphStats(),
       ])
-      const data = buildGraphData(graph.nodes, graph.edges)
+      const data = toBusinessGraphData(graph as { nodes: GraphNode[]; edges: GraphEdge[] })
       setStats(s)
       setGraphData(data)
       setSelectedNode((current) => {
@@ -306,35 +352,49 @@ export default function KnowledgeGraphPage() {
     void loadGraph()
   }, [loadGraph])
 
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(([entry]) => {
-      setDimensions({ width: entry.contentRect.width, height: entry.contentRect.height })
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  useEffect(() => {
-    if (!graphRef.current || graphData.nodes.length === 0) return
-    const timer = window.setTimeout(() => {
-      graphRef.current.d3Force("charge")?.strength(-55)
-      graphRef.current.d3Force("collide")?.radius((node: VisualNode) => getNodeRadius(node) + 28)
-      graphRef.current.d3Force("link")?.distance((link: VisualLink) => {
-        const source = typeof link.source === "object" ? link.source : graphData.nodes.find((node) => node.id === link.source)
-        const target = typeof link.target === "object" ? link.target : graphData.nodes.find((node) => node.id === link.target)
-        if (!source || !target) return 115
-        if (source.level === 0 || target.level === 0) return 118
-        if (source.level === 1 || target.level === 1) return 96
-        return 84
-      })
-      graphRef.current.zoomToFit(450, 88)
-    }, 100)
-    return () => window.clearTimeout(timer)
-  }, [graphData])
-
   const selectedNodeId = selectedNode?.id ?? null
+  const labelMaps = useMemo(
+    () => ({
+      kindLabels: KIND_LABELS,
+      relationLabels: RELATION_LABELS,
+      kindColors: KIND_COLORS,
+    }),
+    [],
+  )
+  const normalizedStats = useMemo(() => toUnifiedStats(stats), [stats])
+  const dominantKind = useMemo(() => getDominantKind(stats), [stats])
+  const dominantRelation = useMemo(() => getDominantRelation(stats), [stats])
+  const selectedKindLabel = filterKind ? (labelMaps.kindLabels[filterKind] ?? filterKind) : "全部类型"
+  const selectedRelationLabel = filterRelation
+    ? (labelMaps.relationLabels[filterRelation] ?? filterRelation)
+    : "全部关系"
+  const filterSummary = getFilterSummary(selectedKindLabel, selectedRelationLabel)
+  const isDark = resolvedTheme === "dark"
+  const selectedLevelLabel = selectedNode
+    ? selectedNode.level === 0
+      ? "证据核心"
+      : selectedNode.level === 1
+        ? "一级证据分支"
+        : "证据节点"
+    : null
+  const selectionSummary = getSelectionSummary(
+    selectedNode
+      ? {
+          label: selectedNode.label,
+          kindLabel: labelMaps.kindLabels[selectedNode.kind] || selectedNode.kind,
+          degree: selectedNode.degree,
+          levelLabel: selectedLevelLabel,
+        }
+      : null,
+  )
+  const overviewCards = buildOverviewCards(
+    normalizedStats,
+    filterSummary,
+    dominantRelation,
+    dominantKind,
+    labelMaps.relationLabels,
+    labelMaps.kindLabels,
+  )
 
   const selectedRelations = useMemo(() => {
     if (!selectedNodeId) return []
@@ -351,71 +411,97 @@ export default function KnowledgeGraphPage() {
         const neighbor = graphData.nodes.find((node) => node.id === neighborId)
         return {
           id: link.id,
-          relationType: RELATION_LABELS[link.relation_type] || link.relation_type,
+          neighborId,
+          relationType: labelMaps.relationLabels[link.relation_type] || link.relation_type,
           neighborLabel: neighbor?.label || neighborId,
-          neighborKind: neighbor ? KIND_LABELS[neighbor.kind] || neighbor.kind : "关联节点",
+          neighborKind: neighbor ? labelMaps.kindLabels[neighbor.kind] || neighbor.kind : "关联节点",
           color: neighbor?.color || link.color,
         }
       })
-  }, [graphData, selectedNodeId])
+  }, [graphData, selectedNodeId, labelMaps.kindLabels, labelMaps.relationLabels])
+  const selectedNeighborIds = useMemo(() => {
+    return new Set(selectedRelations.map((item) => item.neighborId))
+  }, [selectedRelations])
+  const selectedNeighborIdsArray = useMemo(() => Array.from(selectedNeighborIds), [selectedNeighborIds])
+  const handleNodeSelection = useCallback(
+    (nodeId: string) => {
+      const node = graphData.nodes.find((item) => item.id === nodeId)
+      if (!node) return
+      setSelectedNode(node)
+      setSidebarTab("detail")
+    },
+    [graphData.nodes],
+  )
+
+  const graphHasData = graphData.nodes.length > 0
+  const canvasStateTitle = loading ? "正在构建知识关系视图" : "暂无图谱数据"
+  const canvasStateDescription = loading
+    ? "正在同步节点、关系和热点统计，请稍候。"
+    : "可先通过审核案例或创建检修任务生成关系网络。"
 
   return (
     <div className="min-h-screen bg-background">
       <Header />
       <main className="app-main app-main-wide">
-        <section className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-4">
+        <section className="mb-4 flex flex-col gap-4 border-b border-border/80 pb-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex items-start gap-4">
             <Link
               href="/knowledge"
-              className="inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <ArrowLeft className="h-4 w-4" />
               返回知识库
             </Link>
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs text-cyan-700">
-                <Network className="h-3.5 w-3.5" />
-                关系结构视图
-              </div>
-              <h1 className="mt-2 text-xl font-semibold text-foreground">知识图谱</h1>
+                <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200">
+                  <Network className="h-3.5 w-3.5" />
+                  {getModeBadge()}
+                </div>
+              <h1 className="mt-2 text-2xl font-semibold text-foreground">知识图谱工作台</h1>
+              <div className="mt-2 text-lg font-medium text-foreground">{getModeTitle()}</div>
               <p className="mt-1 text-sm text-muted-foreground">
-                以中心辐射方式查看任务、案例、文档与知识分段之间的连接关系
+                {getModeDescription()}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <select
-                className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
-                value={filterKind}
-                onChange={(e) => setFilterKind(e.target.value)}
+              <Select value={filterKind || "all"} onValueChange={(value) => setFilterKind(value === "all" ? "" : value)}>
+                <SelectTrigger className="h-8 min-w-[136px] bg-background">
+                  <SelectValue placeholder="全部类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部类型</SelectItem>
+                  {Object.entries(labelMaps.kindLabels).map(([k, v]) => (
+                    <SelectItem key={k} value={k}>
+                      {v}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={filterRelation || "all"}
+                onValueChange={(value) => setFilterRelation(value === "all" ? "" : value)}
               >
-                <option value="">全部类型</option>
-                {Object.entries(KIND_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
-                value={filterRelation}
-                onChange={(e) => setFilterRelation(e.target.value)}
-              >
-                <option value="">全部关系</option>
-                {Object.entries(RELATION_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-8 min-w-[136px] bg-background">
+                  <SelectValue placeholder="全部关系" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部关系</SelectItem>
+                  {Object.entries(labelMaps.relationLabels).map(([k, v]) => (
+                    <SelectItem key={k} value={k}>
+                      {v}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <button
               onClick={() => void loadGraph()}
               disabled={loading}
-              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               刷新
@@ -423,237 +509,179 @@ export default function KnowledgeGraphPage() {
           </div>
         </section>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.10),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(20,184,166,0.12),transparent_28%),linear-gradient(180deg,#f8fbff_0%,#f1f6fb_100%)]" />
-            <div className="pointer-events-none absolute left-5 top-5 z-10 flex items-center gap-2 rounded-full border border-white/70 bg-white/85 px-3 py-1.5 text-xs text-slate-600 shadow-sm backdrop-blur">
-              <Sparkles className="h-3.5 w-3.5 text-cyan-600" />
-              拖拽节点、滚轮缩放，点击节点查看一跳连接
-            </div>
-
-            <div ref={containerRef} className="relative h-[720px] w-full">
-              {graphData.nodes.length > 0 ? (
-                <ForceGraph2D
-                  ref={graphRef}
-                  width={dimensions.width}
-                  height={dimensions.height}
-                  graphData={graphData as any}
-                  backgroundColor="#f6f9fc"
-                  cooldownTicks={120}
-                  d3AlphaDecay={0.04}
-                  d3VelocityDecay={0.32}
-                  nodeLabel={(node: VisualNode) => `${KIND_LABELS[node.kind] || node.kind}: ${node.label}`}
-                  linkLabel={(link: VisualLink) => RELATION_LABELS[link.relation_type] || link.relation_type}
-                  linkDirectionalArrowLength={3.2}
-                  linkDirectionalArrowRelPos={1}
-                  linkCurvature={(link: VisualLink) => {
-                    const source = typeof link.source === "object" ? link.source : graphData.nodes.find((node) => node.id === link.source)
-                    const target = typeof link.target === "object" ? link.target : graphData.nodes.find((node) => node.id === link.target)
-                    if (!source || !target) return 0.08
-                    if (source.level === 0 || target.level === 0) return 0.18
-                    if (source.branchKey === target.branchKey) return 0.1
-                    return 0.2
-                  }}
-                  linkWidth={(link: VisualLink) => {
-                    const sourceId = typeof link.source === "object" ? link.source.id : link.source
-                    const targetId = typeof link.target === "object" ? link.target.id : link.target
-                    if (selectedNodeId && (sourceId === selectedNodeId || targetId === selectedNodeId)) {
-                      return 2.8
-                    }
-                    return 1.4
-                  }}
-                  linkColor={(link: VisualLink) => {
-                    const sourceId = typeof link.source === "object" ? link.source.id : link.source
-                    const targetId = typeof link.target === "object" ? link.target.id : link.target
-                    if (selectedNodeId && (sourceId === selectedNodeId || targetId === selectedNodeId)) {
-                      return hexToRgba(link.color, 0.65)
-                    }
-                    if (selectedNodeId) {
-                      return "rgba(148,163,184,0.18)"
-                    }
-                    return hexToRgba(link.color, 0.28)
-                  }}
-                  linkDirectionalParticles={(link: VisualLink) => {
-                    const sourceId = typeof link.source === "object" ? link.source.id : link.source
-                    const targetId = typeof link.target === "object" ? link.target.id : link.target
-                    return selectedNodeId && (sourceId === selectedNodeId || targetId === selectedNodeId) ? 2 : 0
-                  }}
-                  linkDirectionalParticleColor={(link: VisualLink) => link.color}
-                  linkDirectionalParticleWidth={2.4}
-                  onNodeClick={(node: VisualNode) => {
-                    setSelectedNode(node)
-                    graphRef.current?.centerAt(node.x ?? 0, node.y ?? 0, 400)
-                    graphRef.current?.zoom(2.1, 400)
-                  }}
-                  onBackgroundClick={() => setSelectedNode(null)}
-                  nodeCanvasObject={(node: VisualNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
-                    const x = node.x ?? 0
-                    const y = node.y ?? 0
-                    const radius = getNodeRadius(node, selectedNodeId)
-                    const label = (node.label || "").trim()
-                    const isSelected = selectedNodeId === node.id
-                    const isDimmed = Boolean(selectedNodeId && !isSelected && !selectedRelations.find((item) => item.neighborLabel === node.label))
-                    const textColor = isDimmed ? "rgba(71,85,105,0.42)" : "rgba(15,23,42,0.92)"
-
-                    ctx.save()
-
-                    ctx.beginPath()
-                    ctx.fillStyle = hexToRgba(node.color, node.level === 0 ? 0.16 : 0.1)
-                    ctx.arc(x, y, radius * (node.level === 0 ? 2.45 : 2.0), 0, Math.PI * 2)
-                    ctx.fill()
-
-                    if (node.level <= 1) {
-                      const fontSize = node.level === 0 ? 17 : 12
-                      ctx.font = `${fontSize}px sans-serif`
-                      const textWidth = ctx.measureText(label).width
-                      const padX = node.level === 0 ? 18 : 10
-                      const padY = node.level === 0 ? 10 : 8
-                      const boxWidth = Math.max(radius * 2, textWidth + padX * 2)
-                      const boxHeight = fontSize + padY * 2
-                      const boxX = x - boxWidth / 2
-                      const boxY = y - boxHeight / 2
-
-                      ctx.beginPath()
-                      ctx.fillStyle = isDimmed ? "rgba(255,255,255,0.45)" : hexToRgba(node.color, node.level === 0 ? 0.92 : 0.88)
-                      ctx.strokeStyle = isSelected ? hexToRgba(node.color, 0.95) : hexToRgba(node.color, 0.35)
-                      ctx.lineWidth = isSelected ? 2.4 : 1.2
-                      const radiusBox = node.level === 0 ? 20 : 12
-                      ctx.moveTo(boxX + radiusBox, boxY)
-                      ctx.lineTo(boxX + boxWidth - radiusBox, boxY)
-                      ctx.quadraticCurveTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + radiusBox)
-                      ctx.lineTo(boxX + boxWidth, boxY + boxHeight - radiusBox)
-                      ctx.quadraticCurveTo(boxX + boxWidth, boxY + boxHeight, boxX + boxWidth - radiusBox, boxY + boxHeight)
-                      ctx.lineTo(boxX + radiusBox, boxY + boxHeight)
-                      ctx.quadraticCurveTo(boxX, boxY + boxHeight, boxX, boxY + boxHeight - radiusBox)
-                      ctx.lineTo(boxX, boxY + radiusBox)
-                      ctx.quadraticCurveTo(boxX, boxY, boxX + radiusBox, boxY)
-                      ctx.closePath()
-                      ctx.shadowColor = hexToRgba(node.color, node.level === 0 ? 0.2 : 0.12)
-                      ctx.shadowBlur = node.level === 0 ? 20 : 10
-                      ctx.fill()
-                      ctx.shadowBlur = 0
-                      ctx.stroke()
-
-                      ctx.fillStyle = node.level === 0 ? "white" : "rgba(255,255,255,0.97)"
-                      ctx.textAlign = "center"
-                      ctx.textBaseline = "middle"
-                      ctx.fillText(label.length > (node.level === 0 ? 14 : 10) ? `${label.slice(0, node.level === 0 ? 14 : 10)}...` : label, x, y + 0.5)
-                    } else {
-                      ctx.beginPath()
-                      ctx.fillStyle = isDimmed ? "rgba(255,255,255,0.45)" : node.color
-                      ctx.shadowColor = hexToRgba(node.color, 0.28)
-                      ctx.shadowBlur = 10
-                      ctx.arc(x, y, radius, 0, Math.PI * 2)
-                      ctx.fill()
-                      ctx.shadowBlur = 0
-
-                      const showLabel = globalScale > 0.9 || node.degree >= 2 || isSelected
-                      if (showLabel && label) {
-                        ctx.font = `${Math.max(10, 12 - Math.log(globalScale + 1))}px sans-serif`
-                        ctx.fillStyle = textColor
-                        ctx.textAlign = x >= 0 ? "left" : "right"
-                        ctx.textBaseline = "middle"
-                        const offset = radius + 8
-                        ctx.fillText(label.length > 16 ? `${label.slice(0, 16)}...` : label, x >= 0 ? x + offset : x - offset, y)
-                      }
-                    }
-
-                    ctx.restore()
-                  }}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  {loading ? "加载图谱中..." : "暂无图谱数据，请先通过审核案例或创建检修任务以生成知识关系"}
+        <section aria-label="图谱态势带" className="mb-4 rounded-md border border-border bg-background">
+          <div className="grid divide-y divide-border sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
+            {overviewCards.map((card) => (
+              <div
+                key={card.label}
+                className="flex min-h-[84px] items-center gap-3 px-4 py-3"
+              >
+                <span className={`inline-flex shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium ${card.accent}`}>
+                  {card.label}
+                </span>
+                <div className="min-w-0">
+                  <div className="text-lg font-semibold text-foreground">{card.value}</div>
+                  <div className="text-xs text-muted-foreground">{card.meta}</div>
                 </div>
-              )}
-            </div>
+              </div>
+            ))}
           </div>
+        </section>
 
-          <aside className="flex flex-col gap-4">
-            <div className="rounded-2xl border border-border bg-card p-4 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
-              <h3 className="text-sm font-medium text-foreground">图谱统计</h3>
-              {stats ? (
-                <div className="mt-4 space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-3">
-                      <div className="text-xs text-cyan-700">节点总数</div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">{stats.total_nodes}</div>
-                    </div>
-                    <div className="rounded-xl border border-violet-100 bg-violet-50 p-3">
-                      <div className="text-xs text-violet-700">关系总数</div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">{stats.total_edges}</div>
-                    </div>
-                  </div>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_360px]">
+          <section className="relative overflow-hidden rounded-md border border-border bg-[linear-gradient(180deg,#f8fbff_0%,#edf4fb_100%)] dark:bg-[linear-gradient(180deg,#08111f_0%,#0f1b2d_100%)]">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.08),transparent_48%)] dark:bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.08),transparent_48%)]" />
+            <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 px-5 py-4 dark:border-white/8">
+              <div>
+                <div className="text-xs uppercase tracking-[0.18em] text-sky-700/80 dark:text-sky-200/70">Graph canvas</div>
+                <div className="mt-1 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                  <Sparkles className="h-3.5 w-3.5 text-sky-600 dark:text-cyan-300" />
+                  沿案例、文档、工单与知识分段拖拽查看证据链路，单击节点后查看右侧来源分析
+                </div>
+              </div>
+              <div className="rounded-md border border-slate-200/80 bg-white/75 px-3 py-1 text-xs text-slate-700 shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/8 dark:text-slate-200">
+                {filterSummary}
+              </div>
+            </div>
 
-                  <div>
-                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">节点类型</div>
-                    <div className="space-y-2">
-                      {Object.entries(stats.nodes_by_kind).map(([key, value]) => (
-                        <div key={key} className="flex items-center justify-between rounded-xl border border-border bg-background/80 px-3 py-2 text-sm">
-                          <span className="flex items-center gap-2 text-muted-foreground">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: KIND_COLORS[key] || "#64748b" }} />
-                            {KIND_LABELS[key] || key}
-                          </span>
-                          <span className="font-medium text-foreground">{value}</span>
-                        </div>
-                      ))}
+            <div className="relative h-[640px] w-full xl:h-[700px]">
+              {graphHasData ? (
+                <KnowledgeGraphG6Canvas
+                  mode={graphMode}
+                  graphData={graphData}
+                  isDark={isDark}
+                  selectedNodeId={selectedNodeId}
+                    selectedNeighborIds={selectedNeighborIdsArray}
+                    kindLabels={labelMaps.kindLabels}
+                    kindColors={labelMaps.kindColors}
+                    relationLabels={labelMaps.relationLabels}
+                    onNodeClick={handleNodeSelection}
+                    onBackgroundClick={() => {
+                      setSelectedNode(null)
+                    }}
+                  />
+              ) : (
+                <div className="flex h-full items-center justify-center px-8">
+                  <div className="w-full max-w-md rounded-md border border-slate-200/80 bg-white/80 p-8 text-center shadow-sm backdrop-blur-sm dark:border-white/10 dark:bg-white/5">
+                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-md border border-sky-300/50 bg-sky-100/80 text-sky-700 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-200">
+                      {loading ? (
+                        <RefreshCw className="h-6 w-6 animate-spin" />
+                      ) : (
+                        <Network className="h-6 w-6" />
+                      )}
                     </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">层级说明</div>
-                    <div className="space-y-2 text-sm">
-                      <div className="rounded-xl border border-border bg-background/80 px-3 py-2">
-                        <div className="font-medium text-foreground">主中心</div>
-                        <div className="mt-1 text-muted-foreground">当前图中连接最密集的核心节点</div>
-                      </div>
-                      <div className="rounded-xl border border-border bg-background/80 px-3 py-2">
-                        <div className="font-medium text-foreground">一级分支</div>
-                        <div className="mt-1 text-muted-foreground">与中心直接相连的知识主题或业务实体</div>
-                      </div>
-                      <div className="rounded-xl border border-border bg-background/80 px-3 py-2">
-                        <div className="font-medium text-foreground">普通知识点</div>
-                        <div className="mt-1 text-muted-foreground">围绕各分支向外展开的具体连接节点</div>
-                      </div>
+                    <div className="mt-5 text-base font-medium text-slate-900 dark:text-white">{canvasStateTitle}</div>
+                    <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{canvasStateDescription}</p>
+                    <div className="mt-5 inline-flex items-center gap-2 rounded-md border border-slate-200/80 bg-slate-50/90 px-3 py-1.5 text-xs text-slate-600 dark:border-white/10 dark:bg-white/8 dark:text-slate-300">
+                      <span className="h-2 w-2 rounded-full bg-sky-500 dark:bg-cyan-300" />
+                      {loading ? "工作台正在同步最新知识态势" : "工作台骨架已保留，可继续查看右侧分析说明"}
                     </div>
                   </div>
                 </div>
-              ) : (
-                <p className="mt-4 text-sm text-muted-foreground">加载中...</p>
               )}
             </div>
+          </section>
 
-            <div className="rounded-2xl border border-border bg-card p-4 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
-              <h3 className="text-sm font-medium text-foreground">节点详情</h3>
-              {selectedNode ? (
-                <div className="mt-4 space-y-3 text-sm">
-                  <div className="rounded-xl border border-border bg-background/80 p-3">
-                    <div className="flex items-center gap-2">
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: selectedNode.color }} />
-                      <span className="font-medium text-foreground">{selectedNode.label}</span>
+          <aside aria-label="图谱分析侧栏" className="min-h-0 xl:h-[780px]">
+            <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-background">
+              <div className="shrink-0 flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+                <h3 className="text-sm font-medium text-foreground">图谱分析侧栏</h3>
+                <span className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] text-sky-800 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-200">
+                  {getModeBadge()}
+                </span>
+              </div>
+
+              <Tabs value={sidebarTab} onValueChange={(value) => setSidebarTab(value as "stats" | "detail")} className="flex min-h-0 flex-1 flex-col p-4">
+                <TabsList className="grid h-10 w-full shrink-0 grid-cols-2">
+                  <TabsTrigger value="stats">统计</TabsTrigger>
+                  <TabsTrigger value="detail">详情</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="stats" className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">图谱统计</h4>
+                    <p className="mt-1 text-xs text-muted-foreground">按节点类型与当前筛选范围汇总画布数据。</p>
+                  </div>
+                  {stats ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-md border border-sky-200 bg-sky-50 p-3 dark:border-sky-500/20 dark:bg-sky-500/10">
+                          <div className="text-xs text-sky-800 dark:text-sky-200">节点总数</div>
+                          <div className="mt-1 text-2xl font-semibold text-foreground">{normalizedStats?.totalNodes ?? 0}</div>
+                        </div>
+                        <div className="rounded-md border border-violet-200 bg-violet-50 p-3 dark:border-violet-500/20 dark:bg-violet-500/10">
+                          <div className="text-xs text-violet-800 dark:text-violet-200">关系总数</div>
+                          <div className="mt-1 text-2xl font-semibold text-foreground">{normalizedStats?.totalEdges ?? 0}</div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {Object.entries(normalizedStats?.nodesByKind ?? {}).map(([key, value]) => (
+                          <div key={key} className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+                            <span className="flex items-center gap-2 text-muted-foreground">
+                              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: labelMaps.kindColors[key] || "#64748b" }} />
+                              {labelMaps.kindLabels[key] || key}
+                            </span>
+                            <span className="font-medium text-foreground">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rounded-md border border-border bg-muted/15 px-4 py-3">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">筛选范围</div>
+                        <div className="mt-2 text-sm font-medium text-foreground">{filterSummary}</div>
+                        <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                          当前画布优先展示证据链路，右侧用于解释节点来源、关联结构与引用上下文。
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-border bg-background/70 px-4 py-4 text-sm text-muted-foreground">
+                      正在同步图谱统计，当前工作台骨架和分析说明保持可用。
                     </div>
-                    <div className="mt-2 text-muted-foreground">{KIND_LABELS[selectedNode.kind] || selectedNode.kind}</div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="detail" className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">节点详情</h4>
+                    <p className="mt-1 text-xs text-muted-foreground">单击画布节点后查看其类型、层级与相邻关系。</p>
+                  </div>
+                  <div className="rounded-md border border-border bg-muted/15 p-4">
+                    <div className="text-base font-medium text-foreground">{selectionSummary.title}</div>
+                    <div className="mt-1 text-sm leading-6 text-muted-foreground">{selectionSummary.description}</div>
+                    <div className="mt-3 text-xs text-muted-foreground">{selectionSummary.meta}</div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-xl border border-border bg-background/80 px-3 py-2">
-                      <div className="text-xs text-muted-foreground">连接数</div>
-                      <div className="mt-1 font-medium text-foreground">{selectedNode.degree}</div>
-                    </div>
-                    <div className="rounded-xl border border-border bg-background/80 px-3 py-2">
-                      <div className="text-xs text-muted-foreground">层级</div>
-                      <div className="mt-1 font-medium text-foreground">
-                        {selectedNode.level === 0 ? "主中心" : selectedNode.level === 1 ? "一级分支" : "普通知识点"}
+                  {selectedNode ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-3 rounded-md border border-border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">节点类型</div>
+                        <div className="mt-1 flex items-center gap-2 font-medium text-foreground">
+                          <span className="h-3 w-3 rounded-full" style={{ backgroundColor: selectedNode.color }} />
+                          {labelMaps.kindLabels[selectedNode.kind] || selectedNode.kind}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">连接数</div>
+                        <div className="mt-1 font-medium text-foreground">{selectedNode.degree}</div>
+                      </div>
+                      <div className="col-span-2 rounded-md border border-border bg-background px-3 py-2">
+                        <div className="text-xs text-muted-foreground">层级</div>
+                        <div className="mt-1 font-medium text-foreground">{selectedLevelLabel}</div>
                       </div>
                     </div>
-                  </div>
+                  ) : null}
 
-                  {selectedRelations.length > 0 ? (
-                    <div>
-                      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">连接方式</div>
-                      <div className="space-y-2">
-                        {selectedRelations.slice(0, 8).map((item) => (
-                          <div key={item.id} className="rounded-xl border border-border bg-background/80 px-3 py-2">
+                    <div className="space-y-2">
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">连接方式</div>
+                      {selectedRelations.length > 0 ? (
+                        selectedRelations.slice(0, 8).map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className="block w-full rounded-md border border-border bg-background px-3 py-2 text-left transition-colors hover:bg-muted/40"
+                          >
                             <div className="flex items-center gap-2 text-foreground">
                               <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
                               <span className="font-medium">{item.neighborLabel}</span>
@@ -661,41 +689,29 @@ export default function KnowledgeGraphPage() {
                             <div className="mt-1 text-xs text-muted-foreground">
                               {item.neighborKind} · {item.relationType}
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="rounded-md border border-dashed border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+                          选中节点后，这里会列出相邻对象与关系类型。
+                        </div>
+                      )}
                     </div>
-                  ) : null}
 
-                  {Object.entries(selectedNode.properties).length > 0 ? (
-                    <div>
-                      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">节点属性</div>
+                    {selectedNode && Object.entries(selectedNode.properties).length > 0 ? (
                       <div className="space-y-2">
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">节点属性</div>
                         {Object.entries(selectedNode.properties).map(([key, value]) => (
-                          <div key={key} className="rounded-xl border border-border bg-background/80 px-3 py-2">
+                          <div key={key} className="rounded-md border border-border bg-background px-3 py-2">
                             <div className="text-xs text-muted-foreground">{key}</div>
                             <div className="mt-1 break-words text-sm text-foreground">{String(value)}</div>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="mt-4 text-sm text-muted-foreground">点击节点后可查看它与其他知识点的连接关系。</p>
-              )}
-            </div>
+                    ) : null}
+                </TabsContent>
 
-            <div className="rounded-2xl border border-border bg-card p-4 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
-              <h3 className="text-sm font-medium text-foreground">关系图例</h3>
-              <div className="mt-4 space-y-2">
-                {Object.entries(KIND_LABELS).map(([key, value]) => (
-                  <div key={key} className="flex items-center gap-2 text-sm">
-                    <span className="h-3 w-3 rounded-full" style={{ backgroundColor: KIND_COLORS[key] || "#64748b" }} />
-                    <span className="text-muted-foreground">{value}</span>
-                  </div>
-                ))}
-              </div>
+              </Tabs>
             </div>
           </aside>
         </div>

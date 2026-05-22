@@ -1,4 +1,4 @@
-import { cn } from "@/shared/lib/utils";
+﻿import { cn } from "@/shared/lib/utils";
 
 export type MetricProps = {
   value: string;
@@ -42,4 +42,3 @@ export function Metric({ value, label, description, featured, className }: Metri
     </div>
   );
 }
-

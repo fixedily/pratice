@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type { ReactNode } from "react";
 
@@ -29,4 +29,3 @@ export function SectionDividerCue({
     </div>
   );
 }
-

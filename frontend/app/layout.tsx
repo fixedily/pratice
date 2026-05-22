@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+﻿import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
@@ -8,8 +8,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: '智诊云 - 工业故障诊断平台',
-  description: '智能化工业设备故障诊断与预测性维护SaaS平台',
+  title: 'FaultDiag - 设备检修知识与作业助手',
+  description: '面向设备检修场景的多模态知识检索、作业指引与案例沉淀系统',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -46,4 +46,3 @@ export default function RootLayout({
     </html>
   )
 }
-

@@ -1,10 +1,19 @@
-# File: app/models/__init__.py
+﻿# File: app/models/__init__.py
 """SQLAlchemy ORM models."""
 from app.models.base import Base
 from app.models.sensor_data import SensorData
 from app.models.knowledge import (
     AgentRun,
     DeviceModel,
+    KgEntity,
+    KgEntityAlias,
+    KgEntityMerge,
+    KgEntityReview,
+    KgExtractedCandidate,
+    KgExtractionJob,
+    KgRelation,
+    KgRelationEvidence,
+    KgRelationReview,
     KnowledgeDocument,
     KnowledgeImportJob,
     KnowledgeChunk,
@@ -44,6 +53,15 @@ __all__ = [
     "SensorData",
     "AgentRun",
     "DeviceModel",
+    "KgEntity",
+    "KgEntityAlias",
+    "KgEntityMerge",
+    "KgEntityReview",
+    "KgExtractedCandidate",
+    "KgExtractionJob",
+    "KgRelation",
+    "KgRelationEvidence",
+    "KgRelationReview",
     "KnowledgeDocument",
     "KnowledgeImportJob",
     "KnowledgeChunk",

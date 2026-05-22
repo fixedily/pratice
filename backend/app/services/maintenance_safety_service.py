@@ -1,4 +1,4 @@
-"""Derived safety guardrails for maintenance planning and execution."""
+﻿"""Derived safety guardrails for maintenance planning and execution."""
 from __future__ import annotations
 
 from typing import Any

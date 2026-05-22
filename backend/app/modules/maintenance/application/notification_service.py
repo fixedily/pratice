@@ -1,10 +1,10 @@
-"""Notification center service for maintenance console."""
+﻿"""Notification center service for maintenance console."""
 from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.maintenance import UserNotification, WorkOrder
@@ -161,11 +161,10 @@ class MaintenanceNotificationService:
                 )
                 continue
             if row.title != item["title"] or row.detail != item["detail"] or row.link_url != item.get("link_url"):
+                # 未读表示「用户是否看过该事件」；仅展示字段（如超时分钟数）变化时不重新打扰。
                 row.title = item["title"]
                 row.detail = item["detail"]
                 row.link_url = item.get("link_url")
-                row.is_read = False
-                row.read_at = None
                 row.updated_at = now
 
         await self.session.commit()
@@ -193,8 +192,14 @@ class MaintenanceNotificationService:
                 .limit(limit)
             )
         ).scalars().all()
+        unread_count = (
+            await self.session.execute(
+                select(func.count())
+                .select_from(UserNotification)
+                .where(UserNotification.user_id == ctx.user_id, UserNotification.is_read.is_(False))
+            )
+        ).scalar_one()
         items = [self._serialize(row) for row in rows]
-        unread_count = sum(1 for item in items if not item["read"])
         return {"items": items, "unread_count": unread_count}
 
     async def mark_read(self, notification_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -16,13 +16,11 @@ import {
   type MaintenanceDeviceItem,
   type MaintenanceUser,
 } from "@/features/tickets/api";
-import { DEMO_MODE_CHANGED_EVENT, isDemoMode } from "@/shared/lib/demo-mode";
 import { getMaintenanceToken } from "@/features/auth/lib/token-store";
 import {
   Search,
   Filter,
   Plus,
-  ChevronDown,
   Clock,
   AlertTriangle,
   CheckCircle2,
@@ -55,6 +53,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/shared/components/ui/select";
 
 // 工单数据类型
 interface Ticket {
@@ -95,67 +100,52 @@ interface Ticket {
 
 type TicketStatusFilter = "all" | "todo" | "active" | "done" | "overdue";
 type AssignmentRoleFilter = "all" | "worker" | "expert" | "safety";
-type AssignmentStateFilter = "all" | "assigned" | "unassigned" | "mine";
+type AssignmentStateFilter = "all" | "assigned" | "unassigned";
+type TicketListMode = "all" | "todos";
 
-const demoTickets: Ticket[] = [
+const ticketPageCopy: Record<
+  TicketListMode,
   {
-    id: "WO-20260424-001",
-    title: "CMP-102 空压机 ERR-102 频繁告警",
-    description: "振动均值上升，温升告警伴随出现；建议优先检查传感器供电与端子紧固。",
-    priority: "emergency",
-    status: "S7",
-    assignee: "张工",
-    currentOwner: null,
-    assignees: { worker: null, expert: null, safety: null },
-    reporter: "系统",
-    createdAt: "2026-04-24 19:40",
-    updatedAt: "2026-04-24 20:12",
-    slaDeadline: "2026-04-24 21:00",
-    tags: ["ERR-102", "压缩机", "振动"],
-    relatedAlerts: 3,
-    sourceTaskId: 1024,
-    sourceLabel: "AI诊断任务 #1024",
-    rawStatus: "S7",
+    title: string;
+    description: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    filteredEmptyTitle: string;
+    filteredEmptyDescription: string;
+    authTitle: string;
+    authDescription: string;
+    errorTitle: string;
+    errorDescription: string;
+    totalLabel: string;
+  }
+> = {
+  all: {
+    title: "检修工单",
+    description: "跟踪从故障诊断到现场处理的完整检修流程，工单需基于已完成的智能诊断任务生成",
+    emptyTitle: "暂无工单",
+    emptyDescription: "当前还没有工单，先从已完成的智能诊断任务进入并创建检修工单。",
+    filteredEmptyTitle: "暂无匹配工单",
+    filteredEmptyDescription: "当前筛选条件下没有找到工单，请尝试调整筛选条件或切换查看范围。",
+    authTitle: "登录已失效",
+    authDescription: "当前检修域登录状态已过期，请重新登录后继续查看工单与设备数据。",
+    errorTitle: "加载失败",
+    errorDescription: "无法加载工单列表，请检查网络连接后重试",
+    totalLabel: "全部工单",
   },
-  {
-    id: "WO-20260424-002",
-    title: "PUMP-07 压力波动与噪声异常",
-    description: "压力曲线呈锯齿波动，疑似旁通阀卡滞；建议复核阀位与压差。",
-    priority: "standard",
-    status: "S1",
-    assignee: "未分配",
-    currentOwner: null,
-    assignees: { worker: null, expert: null, safety: null },
-    reporter: "李工",
-    createdAt: "2026-04-24 18:20",
-    updatedAt: "2026-04-24 19:05",
-    slaDeadline: "2026-04-25 10:00",
-    tags: ["泵组", "压力", "阀门"],
-    relatedAlerts: 1,
-    sourceTaskId: 1021,
-    sourceLabel: "设备告警",
-    rawStatus: "S1",
+  todos: {
+    title: "重点待办",
+    description: "仅展示当前账户创建的工单，并默认聚焦待处理事项，方便持续跟进个人重点检修任务。",
+    emptyTitle: "暂无重点待办",
+    emptyDescription: "当前账户创建的工单里，还没有需要你重点跟进的待办事项。",
+    filteredEmptyTitle: "暂无匹配待办",
+    filteredEmptyDescription: "当前筛选条件下没有找到重点待办，请尝试调整筛选条件。",
+    authTitle: "登录已失效",
+    authDescription: "当前检修域登录状态已过期，请重新登录后继续查看个人重点待办。",
+    errorTitle: "加载失败",
+    errorDescription: "无法加载重点待办，请检查网络连接后重试",
+    totalLabel: "我的工单",
   },
-  {
-    id: "WO-20260423-019",
-    title: "CNC-21 数控机床主轴温升异常",
-    description: "温升速率偏高，建议检查润滑系统与冷却回路；参考历史案例 CASE-033。",
-    priority: "routine",
-    status: "S3",
-    assignee: "李工",
-    currentOwner: null,
-    assignees: { worker: null, expert: null, safety: null },
-    reporter: "人工创建",
-    createdAt: "2026-04-24 16:10",
-    updatedAt: "2026-04-24 18:42",
-    slaDeadline: "2026-04-25 12:00",
-    tags: ["机床", "温升", "润滑"],
-    relatedAlerts: 0,
-    sourceTaskId: 1008,
-    sourceLabel: "人工创建",
-    rawStatus: "S3",
-  },
-];
+};
 
 function isTicketOverdue(ticket: Ticket): boolean {
   if (typeof ticket.isOverdue === "boolean") {
@@ -181,6 +171,22 @@ function matchesStatusFilter(ticket: Ticket, filter: TicketStatusFilter): boolea
   if (filter === "todo") return isTodoTicket(ticket);
   if (filter === "active") return isActiveTicket(ticket);
   return ticket.status === "S10";
+}
+
+function matchesAssignmentRoleFilter(ticket: Ticket, filter: AssignmentRoleFilter): boolean {
+  if (filter === "all") return true;
+  const currentOwnerRoles = ticket.currentOwner?.roles ?? [];
+  return currentOwnerRoles.includes(filter);
+}
+
+function matchesAssignmentStateFilter(
+  ticket: Ticket,
+  filter: AssignmentStateFilter,
+): boolean {
+  if (filter === "all") return true;
+  const assignedUsers = [ticket.assignees.worker, ticket.assignees.expert, ticket.assignees.safety].filter(Boolean);
+  if (filter === "assigned") return assignedUsers.length > 0;
+  return assignedUsers.length === 0;
 }
 
 function mapWorkOrderStatus(status: string): Ticket["status"] {
@@ -626,23 +632,21 @@ function SkeletonRow() {
 function EmptyState({
   onCreate,
   filtered = false,
+  title,
+  description,
 }: {
   onCreate?: () => void;
   filtered?: boolean;
+  title: string;
+  description: string;
 }) {
   return (
     <div className="flex flex-col items-center justify-center px-4 py-14">
       <div className="app-empty-icon mb-4 h-16 w-16">
         <Tag className="w-8 h-8" />
       </div>
-      <h3 className="mb-2 text-lg font-medium text-foreground">
-        {filtered ? "暂无匹配工单" : "暂无工单"}
-      </h3>
-      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">
-        {filtered
-          ? "当前筛选条件下没有找到工单，请尝试调整筛选条件或切换查看范围。"
-          : "当前还没有工单，先从已完成的智能诊断任务进入并创建检修工单。"}
-      </p>
+      <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
+      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">{description}</p>
       {!filtered && onCreate ? (
         <button
           type="button"
@@ -657,16 +661,14 @@ function EmptyState({
   );
 }
 
-function AuthExpiredState() {
+function AuthExpiredState({ title, description }: { title: string; description: string }) {
   return (
     <div className="flex flex-col items-center justify-center px-4 py-14">
       <div className="app-empty-icon mb-4 h-16 w-16">
         <Tag className="w-8 h-8" />
       </div>
-      <h3 className="mb-2 text-lg font-medium text-foreground">登录已失效</h3>
-      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">
-        当前检修域登录状态已过期，请重新登录后继续查看工单与设备数据。
-      </p>
+      <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
+      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">{description}</p>
       <button
         type="button"
         className="app-btn-primary"
@@ -681,16 +683,22 @@ function AuthExpiredState() {
 }
 
 // 错误状态组件
-function ErrorState({ onRetry }: { onRetry: () => void }) {
+function ErrorState({
+  onRetry,
+  title,
+  description,
+}: {
+  onRetry: () => void;
+  title: string;
+  description: string;
+}) {
   return (
     <div className="flex flex-col items-center justify-center px-4 py-14">
       <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
         <XCircle className="w-8 h-8 text-red-400" />
       </div>
-      <h3 className="mb-2 text-lg font-medium text-foreground">加载失败</h3>
-      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">
-        无法加载工单列表，请检查网络连接后重试
-      </p>
+      <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
+      <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">{description}</p>
       <button type="button" onClick={onRetry} className="app-btn-secondary">
         <RefreshCw className="w-4 h-4" />
         重新加载
@@ -699,17 +707,16 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-export default function TicketsPage() {
+export default function TicketsPage({ mode = "all" }: { mode?: TicketListMode }) {
   const { user } = useMaintenanceAuth();
-  const [demoEnabled, setDemoEnabled] = useState(false);
+  const pageCopy = ticketPageCopy[mode];
   const [realTickets, setRealTickets] = useState<Ticket[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Ticket | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const modeTickets = useMemo(() => (demoEnabled ? demoTickets : realTickets), [demoEnabled, realTickets]);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>(mode === "todos" ? "todo" : "all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [assignmentRoleFilter, setAssignmentRoleFilter] = useState<AssignmentRoleFilter>("all");
   const [assignmentStateFilter, setAssignmentStateFilter] = useState<AssignmentStateFilter>("all");
@@ -719,6 +726,11 @@ export default function TicketsPage() {
   >("normal");
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 10;
+
+  useEffect(() => {
+    setStatusFilter(mode === "todos" ? "todo" : "all");
+    setCurrentPage(1);
+  }, [mode]);
 
   const syncWorkOrdersApi = useCallback(async () => {
     const tok = getMaintenanceToken();
@@ -733,7 +745,12 @@ export default function TicketsPage() {
       const [orders, ds] = await Promise.all([
         listWorkOrders(tok, 1, undefined, {
           assignmentRole: assignmentRoleFilter === "all" ? undefined : assignmentRoleFilter,
-          assignmentState: assignmentStateFilter === "all" ? undefined : assignmentStateFilter,
+          assignmentState:
+            mode === "todos"
+              ? "mine"
+              : assignmentStateFilter === "all"
+                ? undefined
+                : assignmentStateFilter,
         }),
         listMaintenanceDevices(tok, 1),
       ]);
@@ -784,7 +801,7 @@ export default function TicketsPage() {
       }
       setPageState("error");
     }
-  }, [assignmentRoleFilter, assignmentStateFilter]);
+  }, [assignmentRoleFilter, assignmentStateFilter, mode]);
 
   const handleDeleteRequest = useCallback((ticket: Ticket) => {
     setDeleteTarget(ticket);
@@ -822,26 +839,8 @@ export default function TicketsPage() {
   }, [deleteTarget, syncWorkOrdersApi]);
 
   useEffect(() => {
-    const syncMode = () => {
-      const demo = isDemoMode();
-      setDemoEnabled(demo);
-      if (demo) {
-        setPageState(demoTickets.length ? "normal" : "empty");
-        return;
-      }
-      void syncWorkOrdersApi();
-    };
-    syncMode();
-    window.addEventListener(DEMO_MODE_CHANGED_EVENT, syncMode as EventListener);
-    return () => {
-      window.removeEventListener(DEMO_MODE_CHANGED_EVENT, syncMode as EventListener);
-    };
-  }, [syncWorkOrdersApi]);
-
-  useEffect(() => {
-    if (demoEnabled) return;
     void syncWorkOrdersApi();
-  }, [assignmentRoleFilter, assignmentStateFilter, demoEnabled, syncWorkOrdersApi]);
+  }, [syncWorkOrdersApi]);
 
   // 筛选 + 排序（最新优先 / 最早优先）
   const filteredTickets = useMemo(() => {
@@ -851,11 +850,13 @@ export default function TicketsPage() {
       return Number.isNaN(timestamp) ? 0 : timestamp;
     };
 
-    const next = modeTickets.filter((ticket) => {
+    const next = realTickets.filter((ticket) => {
       if (!matchesStatusFilter(ticket, statusFilter)) {
         return false;
       }
       if (priorityFilter !== "all" && ticket.priority !== priorityFilter) return false;
+      if (!matchesAssignmentRoleFilter(ticket, assignmentRoleFilter)) return false;
+      if (!matchesAssignmentStateFilter(ticket, assignmentStateFilter)) return false;
       if (
         searchQuery &&
         !ticket.title.toLowerCase().includes(searchQuery.toLowerCase()) &&
@@ -872,7 +873,7 @@ export default function TicketsPage() {
       return sortOrder === "desc" ? tb - ta : ta - tb;
     });
     return next;
-  }, [modeTickets, statusFilter, priorityFilter, searchQuery, sortOrder]);
+  }, [realTickets, statusFilter, priorityFilter, assignmentRoleFilter, assignmentStateFilter, searchQuery, sortOrder]);
 
   const totalPages = Math.max(1, Math.ceil(filteredTickets.length / PAGE_SIZE));
   const pagedTickets = useMemo(() => {
@@ -891,7 +892,7 @@ export default function TicketsPage() {
   }, [currentPage, totalPages]);
 
   const stats = useMemo(() => {
-    const src = modeTickets;
+    const src = realTickets;
     return {
       total: src.length,
       todo: src.filter((t) => matchesStatusFilter(t, "todo")).length,
@@ -899,7 +900,24 @@ export default function TicketsPage() {
       done: src.filter((t) => matchesStatusFilter(t, "done")).length,
       overdue: src.filter((t) => isTicketOverdue(t)).length,
     };
-  }, [modeTickets]);
+  }, [realTickets]);
+  const selectedFilterChips = useMemo(() => {
+    const chips: Array<{ key: string; label: string; clear: () => void }> = [];
+    if (searchQuery.trim()) chips.push({ key: "search", label: `关键词：${searchQuery.trim()}`, clear: () => setSearchQuery("") });
+    if (priorityFilter !== "all") chips.push({ key: "priority", label: `检修等级：${priorityFilter === "emergency" ? "紧急" : priorityFilter === "standard" ? "标准" : priorityFilter === "routine" ? "例行" : "未分级"}`, clear: () => setPriorityFilter("all") });
+    if (assignmentRoleFilter !== "all") chips.push({ key: "role", label: `处理角色：${assignmentRoleFilter === "worker" ? "检修员" : assignmentRoleFilter === "expert" ? "专家" : "安全员"}`, clear: () => setAssignmentRoleFilter("all") });
+    if (assignmentStateFilter !== "all") chips.push({ key: "assign", label: `分配状态：${assignmentStateFilter === "assigned" ? "已分配" : "未分配"}`, clear: () => setAssignmentStateFilter("all") });
+    if (sortOrder !== "desc") chips.push({ key: "sort", label: "排序：最早优先", clear: () => setSortOrder("desc") });
+    return chips;
+  }, [assignmentRoleFilter, assignmentStateFilter, priorityFilter, searchQuery, sortOrder]);
+  const clearAllFilters = useCallback(() => {
+    setSearchQuery("");
+    setStatusFilter(mode === "todos" ? "todo" : "all");
+    setPriorityFilter("all");
+    setAssignmentRoleFilter("all");
+    setAssignmentStateFilter("all");
+    setSortOrder("desc");
+  }, [mode]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -910,10 +928,8 @@ export default function TicketsPage() {
         <section className="app-page-head mb-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-xl font-semibold text-foreground">检修工单</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                跟踪从故障诊断到现场处理的完整检修流程，工单需基于已完成的智能诊断任务生成
-              </p>
+              <h1 className="text-xl font-semibold text-foreground">{pageCopy.title}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">{pageCopy.description}</p>
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -923,7 +939,7 @@ export default function TicketsPage() {
                 onClick={() => void syncWorkOrdersApi()}
               >
                 <RefreshCw className="w-4 h-4" />
-                同步
+                同步数据
               </Button>
             </div>
           </div>
@@ -932,14 +948,13 @@ export default function TicketsPage() {
         {/* 统计卡片 */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
           <StatCard
-            label="全部工单"
+            label={pageCopy.totalLabel}
             value={stats.total}
             icon={Tag}
             color="bg-muted text-foreground"
             active={statusFilter === "all"}
             onClick={() => {
               setStatusFilter("all");
-              void syncWorkOrdersApi();
             }}
           />
           <StatCard
@@ -950,7 +965,6 @@ export default function TicketsPage() {
             active={statusFilter === "todo"}
             onClick={() => {
               setStatusFilter("todo");
-              void syncWorkOrdersApi();
             }}
           />
           <StatCard
@@ -961,7 +975,6 @@ export default function TicketsPage() {
             active={statusFilter === "active"}
             onClick={() => {
               setStatusFilter("active");
-              void syncWorkOrdersApi();
             }}
           />
           <StatCard
@@ -972,7 +985,6 @@ export default function TicketsPage() {
             active={statusFilter === "done"}
             onClick={() => {
               setStatusFilter("done");
-              void syncWorkOrdersApi();
             }}
           />
           <StatCard
@@ -983,7 +995,6 @@ export default function TicketsPage() {
             active={statusFilter === "overdue"}
             onClick={() => {
               setStatusFilter("overdue");
-              void syncWorkOrdersApi();
             }}
           />
         </div>
@@ -996,7 +1007,7 @@ export default function TicketsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="搜索工单编号或标题..."
+                placeholder="搜索工单编号、标题、设备或来源任务..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="app-input app-input-with-icon pr-4"
@@ -1004,55 +1015,54 @@ export default function TicketsPage() {
             </div>
 
             {/* 检修等级筛选 */}
-            <div className="relative">
-              <select
-                value={priorityFilter}
-                onChange={(e) => setPriorityFilter(e.target.value)}
-                className="app-select cursor-pointer appearance-none pl-3 pr-8"
-              >
-                <option value="all">所有检修等级</option>
-                <option value="emergency">紧急检修</option>
-                <option value="standard">标准检修</option>
-                <option value="routine">例行检修</option>
-                <option value="unknown">未分级</option>
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            </div>
+            <Select
+              value={priorityFilter === "all" ? undefined : priorityFilter}
+              onValueChange={(value) => setPriorityFilter(value)}
+            >
+              <SelectTrigger className="h-10 min-w-[132px]">
+                <SelectValue placeholder="检修等级" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="routine">例行</SelectItem>
+                <SelectItem value="standard">标准</SelectItem>
+                <SelectItem value="emergency">紧急</SelectItem>
+              </SelectContent>
+            </Select>
 
-            <div className="relative">
-              <select
-                value={assignmentRoleFilter}
-                onChange={(e) => setAssignmentRoleFilter(e.target.value as AssignmentRoleFilter)}
-                className="app-select cursor-pointer appearance-none pl-3 pr-8"
-              >
-                <option value="all">全部角色</option>
-                <option value="worker">检修员</option>
-                <option value="expert">专家</option>
-                <option value="safety">安全员</option>
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            </div>
+            <Select
+              value={assignmentRoleFilter}
+              onValueChange={(value) => setAssignmentRoleFilter(value as AssignmentRoleFilter)}
+            >
+              <SelectTrigger className="h-10 min-w-[132px]">
+                <SelectValue placeholder="全部角色" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部角色</SelectItem>
+                <SelectItem value="worker">检修员</SelectItem>
+                <SelectItem value="expert">专家</SelectItem>
+                <SelectItem value="safety">安全员</SelectItem>
+              </SelectContent>
+            </Select>
 
-            <div className="relative">
-              <select
-                value={assignmentStateFilter}
-                onChange={(e) => setAssignmentStateFilter(e.target.value as AssignmentStateFilter)}
-                className="app-select cursor-pointer appearance-none pl-3 pr-8"
-              >
-                <option value="all">全部分配状态</option>
-                <option value="assigned">已分配</option>
-                <option value="unassigned">未分配</option>
-                <option value="mine">分配给我</option>
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            </div>
+            <Select
+              value={assignmentStateFilter}
+              onValueChange={(value) => setAssignmentStateFilter(value as AssignmentStateFilter)}
+            >
+              <SelectTrigger className="h-10 min-w-[148px]">
+                <SelectValue placeholder="全部分配状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部分配状态</SelectItem>
+                <SelectItem value="assigned">已分配</SelectItem>
+                <SelectItem value="unassigned">未分配</SelectItem>
+              </SelectContent>
+            </Select>
 
             {/* 排序 */}
             <button
               type="button"
               onClick={() => {
                 setSortOrder(sortOrder === "desc" ? "asc" : "desc");
-                void syncWorkOrdersApi();
               }}
               className="app-btn-secondary h-10 px-3"
             >
@@ -1067,6 +1077,41 @@ export default function TicketsPage() {
             </button>
           </div>
 
+          <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">当前筛选：</span>
+              {selectedFilterChips.length > 0 ? (
+                <>
+                  {selectedFilterChips.map((chip) => (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={chip.clear}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                    >
+                      {chip.label}
+                      <span className="text-muted-foreground">×</span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={clearAllFilters}
+                    className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    清空筛选
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  {mode === "todos" ? "当前账户创建的待处理工单" : "全部工单"}
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              当前结果 <span className="text-foreground">{filteredTickets.length}</span> 条
+            </div>
+          </div>
+
           {/* 表头（桌面端） */}
           <div className="app-table-head hidden border-t border-border px-4 py-3 text-xs font-medium lg:grid lg:grid-cols-12 lg:gap-4">
             <div className="col-span-5">工单信息</div>
@@ -1077,7 +1122,7 @@ export default function TicketsPage() {
           </div>
 
           {/* 工单列表 */}
-          <div className="border-t border-border">
+          <div id="work-order-list" className="border-t border-border">
             {pageState === "loading" ? (
               <>
                 {[...Array(5)].map((_, i) => (
@@ -1086,16 +1131,26 @@ export default function TicketsPage() {
               </>
             ) : pageState === "empty" ? (
               <EmptyState
+                title={pageCopy.emptyTitle}
+                description={pageCopy.emptyDescription}
                 onCreate={() => {
                   window.location.href = "/tasks";
                 }}
               />
             ) : pageState === "error" ? (
-              <ErrorState onRetry={() => void syncWorkOrdersApi()} />
+              <ErrorState
+                onRetry={() => void syncWorkOrdersApi()}
+                title={pageCopy.errorTitle}
+                description={pageCopy.errorDescription}
+              />
             ) : pageState === "auth" ? (
-              <AuthExpiredState />
+              <AuthExpiredState title={pageCopy.authTitle} description={pageCopy.authDescription} />
             ) : filteredTickets.length === 0 ? (
-              <EmptyState filtered />
+              <EmptyState
+                filtered
+                title={pageCopy.filteredEmptyTitle}
+                description={pageCopy.filteredEmptyDescription}
+              />
             ) : (
               pagedTickets.map((ticket) => (
                 <TicketRow
@@ -1237,4 +1292,3 @@ export default function TicketsPage() {
     </div>
   );
 }
-

@@ -1,4 +1,4 @@
-"""add_knowledge_import_jobs_table
+﻿"""add_knowledge_import_jobs_table
 
 Revision ID: e4b7c6d4a9f1
 Revises: c1f4e2ab9d73

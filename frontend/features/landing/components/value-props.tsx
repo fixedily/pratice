@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { TrendingDown, Zap, BookOpen } from "lucide-react";
 import type { ReactNode } from "react";
@@ -81,32 +81,32 @@ function ValueCard({ icon, title, description, highlight, highlightLabel, featur
 const valueProps: Omit<ValueCardProps, "cardIndex">[] = [
   {
     icon: <TrendingDown className="w-7 h-7" />,
-    title: "多模态知识检索功能",
-    description: "支持输入文本、故障图片和设备型号，结合语义检索与跨模态匹配，快速调取检修手册与案例资源。",
-    highlight: "跨模态",
-    highlightLabel: "文本 / 图片 / 型号联合匹配",
+    title: "多模态检修知识检索",
+    description: "支持输入文字、故障图片和设备型号，结合语义检索与跨模态匹配，快速调取维修手册、SOP 与案例片段。",
+    highlight: "可追溯",
+    highlightLabel: "手册 / SOP / 案例联合召回",
     features: [
-      "语义检索与模糊匹配结合",
+      "语义检索与关键词匹配结合",
       "知识出处可追溯展示",
       "支持多类型输入统一检索",
     ],
   },
   {
     icon: <Zap className="w-7 h-7" />,
-    title: "标准化作业指引功能",
-    description: "将检索结果接入检修全流程，生成分步骤操作建议、风险与合规提醒，并按设备类型推送执行预案。",
+    title: "标准化作业指引生成",
+    description: "将检索结果接入检修流程，生成分步骤操作建议、风险提醒与执行预案。",
     highlight: "步骤化",
-    highlightLabel: "检修步骤预案与合规提醒",
+    highlightLabel: "检修步骤预案与风险提醒",
     features: [
       "嵌入标准检修流程",
       "高危步骤风险提示",
-      "支持个性化流程推送",
+      "按设备类型推送流程",
     ],
   },
   {
     icon: <BookOpen className="w-7 h-7" />,
-    title: "知识沉淀与更新功能",
-    description: "支持上传检修案例与经验总结，审核后纳入知识条目，并通过人工标注与修订持续优化系统适配性。",
+    title: "案例沉淀与知识更新",
+    description: "支持上传检修案例与处理结果，审核后纳入知识条目，并通过人工标注与修订持续优化系统适配性。",
     highlight: "可更新",
     highlightLabel: "案例回流、审核发布、持续修正",
     features: [
@@ -124,10 +124,10 @@ export function ValueProps() {
         <Reveal>
           <SectionDividerCue
             badge={<SectionBadge className="mb-4">核心功能</SectionBadge>}
-            title={<h2 className={`${ui.titleH2} mb-4`}>围绕赛题要求构建三项核心能力</h2>}
+            title={<h2 className={`${ui.titleH2} mb-4`}>围绕场景主线构建三项核心能力</h2>}
             description={
               <p className={`${ui.subtitle} mx-auto max-w-2xl`}>
-                保留产品化观感，但把多模态检索、作业指引和知识更新三条能力线说清楚
+                用多模态检索找到依据，用作业指引承接现场处理，用案例回流持续更新知识库
               </p>
             }
           />
@@ -144,4 +144,3 @@ export function ValueProps() {
     </section>
   );
 }
-

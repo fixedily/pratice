@@ -1,31 +1,25 @@
-"use client"
+﻿"use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Search, Settings, HelpCircle, ChevronDown, Menu, LogIn, LogOut, ShieldCheck, Server, Wrench } from "lucide-react"
+import {
+  ChevronDown,
+  HelpCircle,
+  LogIn,
+  LogOut,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react"
+import { toast } from "sonner"
+
 import { useMaintenanceAuth } from "@/features/auth/maintenance-auth"
-import { canAccessAdmin, canAccessKnowledgePublish, canAccessKnowledgeReview, canResolveApproval } from "@/features/auth/permissions"
-import { pingBackendReadiness, fetchHealth, fetchMaintenanceHealth, getApiBase } from "@/features/dashboard/api"
-import { AppLogoLink } from "@/shared/components/brand/app-logo-link"
-import { NotificationMenu } from "@/shared/components/brand/notification-menu"
-import { ROUTES } from "@/shared/lib/routes"
-import {
-  clearMaintenanceToken,
-  MAINTENANCE_AUTH_EXPIRED_EVENT,
-} from "@/features/auth/lib/token-store"
-import { Button } from "@/shared/components/ui/button"
+import { canAccessKnowledgeReview } from "@/features/auth/permissions"
+import { clearMaintenanceToken, MAINTENANCE_AUTH_EXPIRED_EVENT } from "@/features/auth/lib/token-store"
+import { fetchHealth, fetchMaintenanceHealth, getApiBase } from "@/features/dashboard/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@/shared/components/ui/avatar"
-import { Input } from "@/shared/components/ui/input"
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/shared/components/ui/sheet"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/shared/components/ui/dialog"
+import { Button } from "@/shared/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,60 +27,62 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/components/ui/dropdown-menu"
-import { toast } from "sonner"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/shared/components/ui/sheet"
+import { ThemeToggle } from "@/shared/components/ui/theme-toggle"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/components/ui/tooltip"
+import { appNavigation, defaultOpenSidebarGroups, type AppNavItem } from "@/shared/components/brand/app-navigation"
+import { NotificationMenu } from "@/shared/components/brand/notification-menu"
+import { ROUTES } from "@/shared/lib/routes"
+import { cn } from "@/shared/lib/utils"
 
-const baseDashboardNavItems: Array<{ label: string; href: string }> = [
-  { label: "主页", href: ROUTES.marketingHome },
-  { label: "检修总览", href: ROUTES.dashboard },
-  { label: "智能诊断", href: "/tasks" },
-  { label: "检修工单", href: "/tickets" },
-  { label: "知识案例库", href: "/cases" },
-] 
+const SIDEBAR_EXPANDED_WIDTH = "15rem"
+const SIDEBAR_COLLAPSED_WIDTH = "4.5rem"
 
-const baseKnowledgeSubItems: Array<{ label: string; href: string }> = [
-  { label: "知识文档管理", href: "/knowledge" },
-  { label: "知识图谱", href: "/knowledge/graph" },
-] 
+function normalizeHrefPath(href: string) {
+  return href.split("#")[0]?.split("?")[0] || "/"
+}
 
-const marketingNavItem: { label: string; href: string } = { label: "产品官网", href: ROUTES.marketingHome }
+function isRouteActive(pathname: string | null, href: string, exact = false, excludePrefixes: string[] = [], activePath?: string) {
+  if (!pathname) return false
+  const targetPath = activePath || normalizeHrefPath(href)
+  if (excludePrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) return false
+  if (exact) return pathname === targetPath
+  return pathname === targetPath || pathname.startsWith(`${targetPath}/`)
+}
+
+function NavComingSoonBadge({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full border border-border/80 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground",
+        className,
+      )}
+    >
+      即将上线
+    </span>
+  )
+}
 
 export function Header() {
   const router = useRouter()
   const pathname = usePathname()
   const { isLoggedIn, user } = useMaintenanceAuth()
-  const headerRef = useRef<HTMLElement | null>(null)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [searchKeyword, setSearchKeyword] = useState("")
-  const [healthStatus, setHealthStatus] = useState<string>("未检查")
-  const [maintenanceStatus, setMaintenanceStatus] = useState<string>("未检查")
-  const [readinessStatus, setReadinessStatus] = useState<string>("未检查")
-  const dashboardNavItems = useMemo(() => {
-    const items = [...baseDashboardNavItems]
-    if (canResolveApproval(user)) {
-      items.splice(4, 0, { label: "审批任务", href: ROUTES.approvalTasks })
-    }
-    return items
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(defaultOpenSidebarGroups)
+
+  const navigation = useMemo(() => {
+    return appNavigation
+      .map((item) => ({
+        ...item,
+        children: item.children?.filter((child) => {
+          if (child.permission === "knowledgeReview") return canAccessKnowledgeReview(user)
+          return true
+        }),
+      }))
+      .filter((item) => !item.children || item.children.length > 0)
   }, [user])
-  const knowledgeSubItems = useMemo(() => {
-    const items = [...baseKnowledgeSubItems]
-    if (canAccessKnowledgeReview(user)) {
-      items.push({ label: "知识审核", href: ROUTES.knowledgeReview })
-    }
-    if (canAccessKnowledgePublish(user)) {
-      items.push({ label: "知识发布", href: ROUTES.knowledgePublish })
-    }
-    return items
-  }, [user])
-  const managementItems = useMemo(() => {
-    if (!canAccessAdmin(user)) return []
-    return [
-      { label: "用户管理", href: ROUTES.adminUsers },
-      { label: "系统配置", href: ROUTES.adminSystemConfigs },
-      { label: "审计日志", href: ROUTES.adminAuditLogs },
-    ]
-  }, [user])
+
   const roleLabel = useMemo(() => {
     const roles = user?.roles ?? []
     if (roles.includes("admin")) return "管理员"
@@ -95,20 +91,18 @@ export function Header() {
     if (roles.includes("worker")) return "检修员"
     return "访客"
   }, [user])
-  const searchPool = useMemo(
-    () => [...dashboardNavItems, ...knowledgeSubItems, ...managementItems, marketingNavItem],
-    [dashboardNavItems, knowledgeSubItems, managementItems],
-  )
-  const searchResults = useMemo(() => {
-    const q = searchKeyword.trim().toLowerCase()
-    if (!q) return searchPool
-    return searchPool.filter((item) => item.label.toLowerCase().includes(q) || item.href.toLowerCase().includes(q))
-  }, [searchPool, searchKeyword])
 
   useEffect(() => {
-    const handleExpired = () => {
-      setSettingsOpen(false)
+    document.body.classList.add("fd-app-shell")
+    document.body.style.setProperty("--fd-sidebar-offset", sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH)
+    return () => {
+      document.body.classList.remove("fd-app-shell")
+      document.body.style.removeProperty("--fd-sidebar-offset")
     }
+  }, [sidebarCollapsed])
+
+  useEffect(() => {
+    const handleExpired = () => {}
     window.addEventListener(MAINTENANCE_AUTH_EXPIRED_EVENT, handleExpired as EventListener)
     return () => {
       window.removeEventListener(MAINTENANCE_AUTH_EXPIRED_EVENT, handleExpired as EventListener)
@@ -117,558 +111,343 @@ export function Header() {
 
   const handleLogout = () => {
     clearMaintenanceToken()
-    setSettingsOpen(false)
     toast.success("已退出登录")
     router.push(ROUTES.login)
     router.refresh()
   }
 
-  const handleOpenLogin = () => {
-    setSettingsOpen(false)
-    router.push(ROUTES.login)
+  const handleNavigate = (href: string) => {
+    setMobileNavOpen(false)
+    router.push(href)
   }
 
-  const runHealthCheck = async () => {
-    try {
-      const data = await fetchHealth()
-      const status = `${data.status} / DB ${data.database}`
-      setHealthStatus(status)
-      toast.success("系统健康检查完成")
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "检查失败"
-      setHealthStatus(`失败：${message}`)
-      toast.error(message)
-    }
-  }
-
-  const runMaintenanceCheck = async () => {
-    try {
-      const data = await fetchMaintenanceHealth()
-      const status = typeof data?.status === "string" ? data.status : "连通正常"
-      setMaintenanceStatus(status)
-      toast.success("检修域连通检查完成")
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "检查失败"
-      setMaintenanceStatus(`失败：${message}`)
-      toast.error(message)
-    }
-  }
-
-  const runReadinessCheck = async () => {
-    try {
-      await pingBackendReadiness()
-      setReadinessStatus("后端已就绪")
-      toast.success("后端就绪检查完成")
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "检查失败"
-      setReadinessStatus(`失败：${message}`)
-      toast.error(message)
-    }
+  const toggleGroup = (href: string) => {
+    setOpenGroups((current) => ({ ...current, [href]: !(current[href] ?? true) }))
   }
 
   return (
     <>
-      {/* 占位：Header 固定在视口顶部，避免遮挡页面内容 */}
-      <div className="h-[72px]" aria-hidden="true" />
-      <header ref={headerRef as unknown as React.RefObject<HTMLElement>} className="fixed left-0 right-0 top-0 z-50 w-full border-b border-border/70 bg-background/98 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/95">
-        <div className="mx-auto flex h-[72px] max-w-[1200px] items-center justify-between px-4 lg:px-6">
-        {/* Logo & Nav */}
-        <div className="flex items-center gap-6">
-          {/* Mobile menu */}
-          <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-            <SheetTrigger asChild>
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 hidden h-dvh overflow-hidden border-r border-border/80 bg-card/95 shadow-[10px_0_30px_rgba(15,23,42,0.06)] backdrop-blur md:flex md:flex-col",
+          "transition-[width] duration-200 ease-out",
+          sidebarCollapsed ? "w-[4.5rem]" : "w-[15rem]",
+        )}
+      >
+        <SidebarBrand collapsed={sidebarCollapsed} />
+        <nav className="fd-sidebar-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-3">
+          {navigation.map((item) => (
+            <SidebarNavItem
+              key={item.href}
+              item={item}
+              pathname={pathname}
+              collapsed={sidebarCollapsed}
+              groupOpen={openGroups[item.href] ?? true}
+              onToggleGroup={() => toggleGroup(item.href)}
+              onNavigate={handleNavigate}
+              onCloseNav={() => setMobileNavOpen(false)}
+            />
+          ))}
+        </nav>
+        <div className="shrink-0 border-t border-border/80 p-3">
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
-                className="md:hidden h-9 w-9 text-foreground/85 hover:bg-accent hover:text-foreground"
-                aria-label="打开菜单"
+                className={cn("w-full justify-start gap-2", sidebarCollapsed && "justify-center px-0")}
+                onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+                aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
               >
-                <Menu className="h-5 w-5" />
+                {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                <span className={cn("text-sm", sidebarCollapsed && "sr-only")}>{sidebarCollapsed ? "展开" : "折叠"}</span>
               </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="border-border">
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2">
-                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-emerald-600 text-white text-xs font-semibold">
-                    FD
-                  </span>
-                  <span>导航</span>
-                </SheetTitle>
-              </SheetHeader>
-              <div className="px-4 pb-4 space-y-2">
-                {dashboardNavItems.map((item) => {
-                  const active = item.href === ROUTES.marketingHome
-                    ? pathname === ROUTES.marketingHome
-                    : pathname?.startsWith(item.href) ?? false
-                  const isKnowledgeMenu = item.href === "/cases"
-                  return (
-                    <div key={item.href} className="space-y-2">
-                      <button
-                        type="button"
-                        className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                          active
-                            ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
-                            : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
-                        }`}
-                        onClick={() => {
-                          setMobileNavOpen(false)
-                          router.push(item.href)
-                        }}
-                      >
-                        {item.label}
-                      </button>
-                      {isKnowledgeMenu ? (
-                        <div className="ml-3 space-y-2 border-l border-border pl-3">
-                          {knowledgeSubItems.map((subItem) => {
-                            const subActive = pathname?.startsWith(subItem.href) ?? false
-                            return (
-                              <button
-                                key={subItem.href}
-                                type="button"
-                                className={`w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                                  subActive
-                                    ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
-                                    : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
-                                }`}
-                                onClick={() => {
-                                  setMobileNavOpen(false)
-                                  router.push(subItem.href)
-                                }}
-                              >
-                                {subItem.label}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  )
-                })}
-
-                <div className="mt-4 rounded-lg border border-border bg-background p-3">
-                  <div className="text-xs text-muted-foreground">快捷入口</div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                      onClick={() => {
-                        setMobileNavOpen(false)
-                        router.push(ROUTES.marketingHome)
-                      }}
-                    >
-                      产品官网
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                      onClick={() => {
-                        setMobileNavOpen(false)
-                        setSearchOpen(true)
-                      }}
-                    >
-                      全局搜索
-                    </button>
-                    {managementItems.map((item) => (
-                      <button
-                        key={item.href}
-                        type="button"
-                        className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                        onClick={() => {
-                          setMobileNavOpen(false)
-                          router.push(item.href)
-                        }}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </SheetContent>
-          </Sheet>
-
-          <AppLogoLink href={ROUTES.marketingHome} title="返回产品官网" />
-          
-          <nav className="hidden items-center gap-1 md:flex">
-            {dashboardNavItems.map((item) => {
-              const active = item.href === ROUTES.marketingHome
-                ? pathname === ROUTES.marketingHome
-                : pathname?.startsWith(item.href) ?? false
-
-              if (item.href !== "/cases") {
-                return (
-                  <NavItem key={item.href} href={item.href} active={active}>
-                    {item.label}
-                  </NavItem>
-                )
-              }
-
-              const menuActive = active || knowledgeSubItems.some((subItem) => pathname?.startsWith(subItem.href) ?? false)
-              return (
-                <div key={item.href} className="group relative">
-                  <div
-                    className={`inline-flex items-center rounded-md text-sm font-medium transition-colors ${
-                      menuActive
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-                    }`}
-                  >
-                    <Link href={item.href} className="px-3 py-1.5">
-                      {item.label}
-                    </Link>
-                    <span className="pr-2">
-                      <ChevronDown className="h-3.5 w-3.5" />
-                    </span>
-                  </div>
-                  <div className="pointer-events-none absolute left-0 top-full z-50 pt-2 opacity-0 transition-all duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
-                    <div className="w-44 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
-                      {knowledgeSubItems.map((subItem) => (
-                        <Link
-                          key={subItem.href}
-                          href={subItem.href}
-                          className="flex rounded-sm px-2 py-1.5 text-sm text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                        >
-                          {subItem.label}
-                        </Link>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </nav>
+            </TooltipTrigger>
+            <TooltipContent side="right">{sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}</TooltipContent>
+          </Tooltip>
         </div>
+      </aside>
 
-        {/* Right Actions */}
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-foreground/80 hover:bg-accent hover:text-foreground"
-            onClick={() => {
-              setSearchOpen(true)
-            }}
-          >
-            <Search className="h-4 w-4" />
-          </Button>
-
-          <NotificationMenu />
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-foreground/80 hover:bg-accent hover:text-foreground"
-              >
-                <HelpCircle className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44 border-border bg-popover text-popover-foreground">
-              <DropdownMenuItem asChild>
-                <Link
-                  href={ROUTES.marketingHome}
-                  className="cursor-pointer text-foreground focus:bg-accent focus:text-accent-foreground"
-                >
-                  返回产品官网
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-border" />
-              <DropdownMenuItem
-                className="text-foreground focus:bg-accent focus:text-accent-foreground"
-                onClick={() => {
-                  window.open(`${getApiBase()}/docs`, "_blank", "noopener,noreferrer")
-                }}
-              >
-                接口文档
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-foreground focus:bg-accent focus:text-accent-foreground"
-                onClick={() => {
-                  void fetchHealth()
-                }}
-              >
-                系统健康检查
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-foreground focus:bg-accent focus:text-accent-foreground"
-                onClick={() => {
-                  void fetchMaintenanceHealth()
-                }}
-              >
-                检修域连通检查
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="mx-2 h-5 w-px bg-border" />
-
-          {isLoggedIn ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="h-8 gap-2 px-2 hover:bg-accent">
-                  <Avatar className="h-6 w-6">
-                    <AvatarImage src="/placeholder-user.jpg" />
-                    <AvatarFallback className="bg-[#5e6ad2] text-xs text-white">
-                      {(user?.display_name || user?.username || roleLabel).slice(0, 1)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="hidden text-sm text-foreground lg:inline-block">
-                    {user?.display_name || user?.username || roleLabel}
-                  </span>
-                  <ChevronDown className="h-3 w-3 text-foreground/70" />
+      <header className="fixed left-0 right-0 top-0 z-30 border-b border-border/70 bg-background/92 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85 md:left-[var(--fd-sidebar-offset)]">
+        <div className="flex h-16 items-center justify-between gap-3 px-4 lg:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+              <SheetTrigger asChild>
+                <Button type="button" variant="ghost" size="icon" className="md:hidden" aria-label="打开菜单">
+                  <Menu className="h-5 w-5" />
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44 border-border bg-popover text-popover-foreground">
-                <div className="px-2 py-1.5 text-xs text-muted-foreground">{roleLabel}</div>
-                <DropdownMenuSeparator className="bg-border" />
-                <DropdownMenuItem
-                  className="text-foreground focus:bg-accent focus:text-accent-foreground"
-                  onClick={handleLogout}
-                >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  退出登录
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-8 gap-2 px-3 text-foreground hover:bg-accent"
-              onClick={handleOpenLogin}
-            >
-              <LogIn className="h-4 w-4" />
-              <span className="text-sm">前往登录</span>
-            </Button>
-          )}
+              </SheetTrigger>
+              <SheetContent side="left" className="flex h-dvh w-[18rem] flex-col overflow-hidden border-border bg-card p-0">
+                <SheetHeader className="sr-only">
+                  <SheetTitle>应用导航</SheetTitle>
+                </SheetHeader>
+                <SidebarBrand collapsed={false} mobile />
+                <nav className="fd-sidebar-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-3">
+                  {navigation.map((item) => (
+                    <SidebarNavItem
+                      key={item.href}
+                      item={item}
+                      pathname={pathname}
+                      collapsed={false}
+                      groupOpen={openGroups[item.href] ?? true}
+                      onToggleGroup={() => toggleGroup(item.href)}
+                      onNavigate={handleNavigate}
+                      onCloseNav={() => setMobileNavOpen(false)}
+                    />
+                  ))}
+                </nav>
+              </SheetContent>
+            </Sheet>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-foreground">FaultDiag 控制台</div>
+              <div className="hidden truncate text-xs text-muted-foreground sm:block">检修闭环 · 智能诊断 · 知识沉淀</div>
+            </div>
+          </div>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-foreground/80 hover:bg-accent hover:text-foreground"
-            onClick={() => {
-              setSettingsOpen(true)
-            }}
-            aria-label="系统设置"
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
-        </div>
+          <div className="flex items-center gap-2">
+            <ThemeToggle variant="icon" />
+
+            <div className="hidden sm:block">
+              <NotificationMenu />
+            </div>
+
+            <HelpMenu />
+
+            <div className="hidden h-5 w-px bg-border sm:block" />
+
+            {isLoggedIn ? (
+              <UserMenu roleLabel={roleLabel} userName={user?.display_name || user?.username || roleLabel} onLogout={handleLogout} />
+            ) : (
+              <Button type="button" variant="ghost" className="h-8 gap-2 px-3" onClick={() => router.push(ROUTES.login)}>
+                <LogIn className="h-4 w-4" />
+                <span className="hidden text-sm sm:inline">前往登录</span>
+              </Button>
+            )}
+          </div>
         </div>
       </header>
-
-      <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>全局搜索</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <Input
-              autoFocus
-              value={searchKeyword}
-              placeholder="输入页面名称，例如：工单 / 案例 / 监控"
-              onChange={(e) => setSearchKeyword(e.target.value)}
-              className="border-border bg-background text-foreground"
-            />
-            <div className="max-h-60 space-y-1 overflow-auto rounded-md border border-border p-1">
-              {searchResults.length > 0 ? (
-                searchResults.map((item) => (
-                  <button
-                    key={item.href}
-                    type="button"
-                    className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm text-foreground hover:bg-accent"
-                    onClick={() => {
-                      setSearchOpen(false)
-                      setSearchKeyword("")
-                      router.push(item.href)
-                    }}
-                  >
-                    <span>{item.label}</span>
-                    <span className="text-xs text-muted-foreground">{item.href}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="px-2 py-3 text-sm text-muted-foreground">没有匹配结果</div>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>系统设置</DialogTitle>
-            <DialogDescription>
-              这里提供当前登录状态、接口地址和系统连通检查，先把管理台常用设置入口接实。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-border bg-background p-4">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                  <ShieldCheck className="h-4 w-4 text-emerald-500" />
-                  登录状态
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {isLoggedIn ? "当前已登录检修域后台，可访问受控能力。" : "当前未登录，建议先进入登录页获取检修域令牌。"}
-                </div>
-                {user ? (
-                  <div className="mt-3 text-xs text-muted-foreground">
-                    当前账号：{user.display_name || user.username} · {roleLabel}
-                  </div>
-                ) : null}
-              </div>
-              <div className="rounded-lg border border-border bg-background p-4">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                  <Server className="h-4 w-4 text-primary" />
-                  API 地址
-                </div>
-                <div className="break-all text-sm text-muted-foreground">{getApiBase()}</div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
-                <Wrench className="h-4 w-4 text-primary" />
-                系统检查
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runHealthCheck()}
-                >
-                  <div className="text-sm text-foreground">系统健康检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{healthStatus}</div>
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runMaintenanceCheck()}
-                >
-                  <div className="text-sm text-foreground">检修域连通检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{maintenanceStatus}</div>
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:bg-accent/50"
-                  onClick={() => void runReadinessCheck()}
-                >
-                  <div className="text-sm text-foreground">后端就绪检查</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{readinessStatus}</div>
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-background p-4">
-              <div className="mb-3 text-sm font-medium text-foreground">账户操作</div>
-              <div className="flex flex-wrap gap-2">
-                {isLoggedIn ? (
-                  <Button type="button" variant="outline" className="border-border" onClick={handleLogout}>
-                    <LogOut className="mr-2 h-4 w-4" />
-                    退出登录
-                  </Button>
-                ) : (
-                  <Button type="button" variant="outline" className="border-border" onClick={handleOpenLogin}>
-                    <LogIn className="mr-2 h-4 w-4" />
-                    前往登录
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-border"
-                  onClick={() => {
-                    window.open(`${getApiBase()}/docs`, "_blank", "noopener,noreferrer")
-                  }}
-                >
-                  查看接口文档
-                </Button>
-                {canResolveApproval(user) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="border-border"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      router.push(ROUTES.approvalTasks)
-                    }}
-                  >
-                    审批任务
-                  </Button>
-                ) : null}
-                {canAccessKnowledgeReview(user) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="border-border"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      router.push(ROUTES.knowledgeReview)
-                    }}
-                  >
-                    知识审核
-                  </Button>
-                ) : null}
-                {canAccessKnowledgePublish(user) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="border-border"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      router.push(ROUTES.knowledgePublish)
-                    }}
-                  >
-                    知识发布
-                  </Button>
-                ) : null}
-                {managementItems.map((item) => (
-                  <Button
-                    key={item.href}
-                    type="button"
-                    variant="outline"
-                    className="border-border"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      router.push(item.href)
-                    }}
-                  >
-                    {item.label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" className="border-border" onClick={() => setSettingsOpen(false)}>
-              关闭
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }
 
-function NavItem({ children, active = false, href }: { children: React.ReactNode; active?: boolean; href: string }) {
+function SidebarBrand({ collapsed, mobile = false }: { collapsed: boolean; mobile?: boolean }) {
   return (
     <Link
-      href={href}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-        active
-          ? "bg-accent text-foreground"
-          : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-      }`}
+      href={ROUTES.marketingHome}
+      className={cn(
+        "flex h-16 items-center gap-3 border-b border-border/80 px-4 transition-colors hover:bg-accent/40",
+        collapsed && !mobile && "justify-center px-0",
+      )}
+      title="返回产品官网"
     >
-      {children}
+      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand/25 bg-brand/12 text-sm font-bold text-brand-dark">
+        FD
+      </span>
+      <span className={cn("min-w-0", collapsed && !mobile && "sr-only")}>
+        <span className="block truncate text-lg font-semibold leading-tight text-foreground">FaultDiag</span>
+        <span className="block truncate text-xs text-muted-foreground">多模态智能检修</span>
+      </span>
     </Link>
   )
 }
 
+function SidebarNavItem({
+  item,
+  pathname,
+  collapsed,
+  groupOpen,
+  onToggleGroup,
+  onNavigate,
+  onCloseNav,
+}: {
+  item: AppNavItem
+  pathname: string | null
+  collapsed: boolean
+  groupOpen: boolean
+  onToggleGroup: () => void
+  onNavigate: (href: string) => void
+  onCloseNav: () => void
+}) {
+  const Icon = item.icon
+  const childActive =
+    item.children?.some(
+      (child) =>
+        !child.comingSoon &&
+        isRouteActive(pathname, child.href, child.exact, child.excludePrefixes, child.activePath),
+    ) ?? false
+  const active =
+    !item.comingSoon && (isRouteActive(pathname, item.href, item.exact) || childActive)
+  const hasChildren = Boolean(item.children?.length)
+  const expanded = hasChildren && groupOpen && !collapsed
+
+  if (hasChildren && !collapsed) {
+    return (
+      <div>
+        <div
+          className={cn(
+            "flex h-10 w-full items-center rounded-lg text-sm font-medium transition-colors",
+            item.comingSoon
+              ? "cursor-default text-muted-foreground/80"
+              : active
+                ? "bg-brand text-primary-foreground shadow-[0_10px_24px_rgba(24,195,126,0.22)]"
+                : "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
+          )}
+        >
+          {item.comingSoon ? (
+            <div className="flex min-w-0 flex-1 items-center gap-2 px-3" aria-disabled="true" title="监测告警模块即将上线">
+              <Icon className="h-4 w-4 shrink-0 opacity-60" />
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              <NavComingSoonBadge />
+            </div>
+          ) : (
+            <button type="button" className="flex min-w-0 flex-1 items-center gap-3 px-3 text-left" onClick={() => onNavigate(item.href)}>
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="mr-2 rounded p-1 text-current/80 hover:bg-black/5"
+            onClick={onToggleGroup}
+            aria-label={groupOpen ? `收起${item.label}` : `展开${item.label}`}
+          >
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} />
+          </button>
+        </div>
+
+        {expanded ? (
+          <div className="ml-5 mt-1 flex flex-col gap-1 border-l border-border pl-3">
+            {item.children?.map((child) => {
+              const ChildIcon = child.icon
+              const subActive =
+                !child.comingSoon &&
+                isRouteActive(pathname, child.href, child.exact, child.excludePrefixes, child.activePath)
+              if (child.comingSoon) {
+                return (
+                  <div
+                    key={child.href}
+                    className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground/70"
+                    aria-disabled="true"
+                    title="故障告警模块即将上线"
+                  >
+                    <ChildIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                    <span className="min-w-0 flex-1 truncate">{child.label}</span>
+                    <NavComingSoonBadge />
+                  </div>
+                )
+              }
+              return (
+                <Link
+                  key={child.href}
+                  href={child.href}
+                  className={cn(
+                    "flex h-8 items-center gap-2 rounded-md px-2 text-left text-xs transition-colors",
+                    subActive ? "bg-brand/12 text-brand-dark" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                  )}
+                  onClick={onCloseNav}
+                >
+                  <ChildIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{child.label}</span>
+                </Link>
+              )
+            })}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  const button = (
+    <button
+      type="button"
+      disabled={item.comingSoon}
+      className={cn(
+        "flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition-colors",
+        item.comingSoon
+          ? "cursor-not-allowed text-muted-foreground/70 opacity-80"
+          : active
+            ? "bg-brand text-primary-foreground shadow-[0_10px_24px_rgba(24,195,126,0.22)]"
+            : "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
+        collapsed && "justify-center px-0",
+      )}
+      onClick={() => {
+        if (!item.comingSoon) onNavigate(item.href)
+      }}
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className={cn("min-w-0 flex-1 truncate", collapsed && "sr-only")}>{item.label}</span>
+      {item.comingSoon && !collapsed ? <NavComingSoonBadge /> : null}
+    </button>
+  )
+
+  return (
+    <div>
+      {collapsed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{button}</TooltipTrigger>
+          <TooltipContent side="right">{item.comingSoon ? `${item.label}（即将上线）` : item.label}</TooltipContent>
+        </Tooltip>
+      ) : (
+        button
+      )}
+    </div>
+  )
+}
+
+function HelpMenu() {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="hidden h-8 w-8 sm:inline-flex" aria-label="帮助">
+          <HelpCircle className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64 border-border bg-popover text-popover-foreground">
+        <div className="px-2 py-1.5">
+          <div className="text-xs font-medium text-foreground">当前页帮助</div>
+          <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
+            先在智能诊断中创建任务，再进入任务详情查看证据、步骤，并继续生成工单或沉淀案例。
+          </div>
+        </div>
+        <DropdownMenuSeparator className="bg-border" />
+        <DropdownMenuItem asChild>
+          <Link href={ROUTES.marketingHome} className="cursor-pointer">
+            返回产品官网
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator className="bg-border" />
+        <DropdownMenuItem onClick={() => window.open(`${getApiBase()}/docs`, "_blank", "noopener,noreferrer")}>接口文档</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void fetchHealth()}>系统健康检查</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void fetchMaintenanceHealth()}>检修域连通检查</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function UserMenu({ roleLabel, userName, onLogout }: { roleLabel: string; userName: string; onLogout: () => void }) {
+  const router = useRouter()
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="h-8 gap-2 px-2 hover:bg-accent">
+          <Avatar className="h-6 w-6">
+            <AvatarImage src="/placeholder-user.jpg" />
+            <AvatarFallback className="bg-[#5e6ad2] text-xs text-white">{userName.slice(0, 1)}</AvatarFallback>
+          </Avatar>
+          <span className="hidden max-w-28 truncate text-sm text-foreground lg:inline-block">{userName}</span>
+          <ChevronDown className="hidden h-3 w-3 text-foreground/70 sm:block" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44 border-border bg-popover text-popover-foreground">
+        <div className="px-2 py-1.5 text-xs text-muted-foreground">{roleLabel}</div>
+        <DropdownMenuSeparator className="bg-border" />
+        <DropdownMenuItem onClick={() => router.push(ROUTES.settings)}>系统设置</DropdownMenuItem>
+        <DropdownMenuItem onClick={onLogout}>
+          <LogOut className="mr-2 h-4 w-4" />
+          退出登录
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}

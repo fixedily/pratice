@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+﻿@import 'tailwindcss';
 @import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
@@ -447,6 +447,54 @@
     max-width: 1440px;
   }
 
+.fd-sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    scrollbar-gutter: stable;
+  }
+
+  .fd-sidebar-scroll:hover {
+    scrollbar-color: color-mix(in srgb, var(--brand) 34%, transparent) transparent;
+  }
+
+  .fd-sidebar-scroll::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .fd-sidebar-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .fd-sidebar-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    background-clip: content-box;
+  }
+
+  .fd-sidebar-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--brand) 32%, transparent);
+  }
+
+  @media (min-width: 768px) {
+    body.fd-app-shell .app-main {
+      width: calc(100% - var(--fd-sidebar-offset, 15rem));
+      max-width: none;
+      margin-left: var(--fd-sidebar-offset, 15rem);
+      margin-right: 0;
+      padding-top: 6rem;
+      transition:
+        margin-left 200ms ease-out,
+        width 200ms ease-out;
+    }
+  }
+
+  @media (max-width: 767px) {
+    body.fd-app-shell .app-main {
+      padding-top: 5.5rem;
+    }
+  }
+
   .app-page-head {
     @apply mb-6 rounded-xl border border-border bg-card px-4 py-4;
     min-height: 72px;
@@ -579,6 +627,44 @@ body::-webkit-scrollbar {
   display: none; /* Chrome/Safari/Edge */
 }
 
+/* Landing page uses the native viewport scrollbar so it sits on the browser edge. */
+html.landing-native-scrollbar,
+body.landing-native-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.72) rgba(148, 163, 184, 0.24);
+  -ms-overflow-style: auto;
+}
+
+html.landing-native-scrollbar::-webkit-scrollbar,
+body.landing-native-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+html.landing-native-scrollbar::-webkit-scrollbar-track,
+body.landing-native-scrollbar::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.22);
+}
+
+html.landing-native-scrollbar::-webkit-scrollbar-thumb,
+body.landing-native-scrollbar::-webkit-scrollbar-thumb {
+  min-height: 56px;
+  border: 2px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.78);
+}
+
+html.landing-native-scrollbar::-webkit-scrollbar-thumb:hover,
+body.landing-native-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 197, 94, 0.86);
+}
+
+html.settings-stable-scrollbar,
+body.settings-stable-scrollbar {
+  scrollbar-gutter: stable;
+}
+
 /* Skeleton animation */
 @keyframes skeleton-pulse {
   0%, 100% {
@@ -603,10 +689,8 @@ body::-webkit-scrollbar {
 @keyframes appPageFadeIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
