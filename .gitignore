@@ -38,6 +38,7 @@ backend/data/
 dataset/
 logs/
 *.log
+.dev-logs/
 
 # ========================
 # 4. IDE & 操作系统缓存
