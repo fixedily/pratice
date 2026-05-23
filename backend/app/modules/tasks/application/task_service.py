@@ -1,4 +1,4 @@
-"""Maintenance task workflow service for TODO-SB-4."""
+"""Maintenance task workflow service for TODO-MAINT-4."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeRelation, MaintenanceCase
-from app.db.models.maintenance import WorkOrder
+from app.db.models.maintenance import ApprovalTask, WorkOrder
 from app.db.models.tasks import (
     MaintenanceTask,
     MaintenanceTaskStep,
@@ -21,6 +21,7 @@ from app.db.models.tasks import (
 from app.schemas.diagnosis import DiagnosisStep, DiagnosisStructuredPayload
 from app.modules.tasks.schemas import MaintenanceTaskCreate, MaintenanceTaskStepUpdate
 from app.modules.diagnosis.application.report_formatter import build_structured_diagnosis
+from app.modules.maintenance.application.approval_task_service import ApprovalTaskService, serialize_approval_task
 from app.services.maintenance_safety_service import MaintenanceSafetyService
 
 
@@ -69,7 +70,7 @@ DEFAULT_TEMPLATE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
         },
         "standard": {
             "name": "摩托车发动机标准检修流程",
-            "description": "适用于答辩演示和较完整的标准化检修闭环。",
+            "description": "适用于公开演示和较完整的标准化检修闭环。",
             "steps": [
                 {
                     "title": "检修前安全隔离",
@@ -285,7 +286,7 @@ class MaintenanceTaskService:
         return value
 
     async def create_task(self, data: MaintenanceTaskCreate) -> dict[str, Any]:
-        """Create a task shell and knowledge relations without template fallback steps."""
+        """Create a task with executable standard steps and knowledge relations."""
         knowledge_refs = self._json_safe_snapshot(await self._load_knowledge_refs(data.source_chunk_ids))
 
         task = MaintenanceTask(
@@ -308,6 +309,30 @@ class MaintenanceTaskService:
         self.session.add(task)
         await self._flush_session()
 
+        step_specs = self._resolve_initial_step_specs(data.equipment_type, data.maintenance_level)
+        for index, item in enumerate(step_specs, start=1):
+            resource_hint = self._get_step_resource_hint(item["title"])
+            step = MaintenanceTaskStep(
+                task_id=task.id,
+                template_step_id=None,
+                step_order=index,
+                title=item["title"],
+                instruction=self._render_instruction(item["instruction_template"], data, knowledge_refs),
+                risk_warning=item.get("risk_warning"),
+                caution=item.get("caution"),
+                confirmation_text=item.get("confirmation_text"),
+                required_tools=self._normalize_step_items(
+                    item.get("required_tools") or resource_hint["required_tools"]
+                ),
+                required_materials=self._normalize_step_items(
+                    item.get("required_materials") or resource_hint["required_materials"]
+                ),
+                estimated_minutes=item.get("estimated_minutes") or resource_hint["estimated_minutes"],
+                status="pending",
+                knowledge_refs=knowledge_refs,
+            )
+            self.session.add(step)
+
         for chunk_id in data.source_chunk_ids:
             self.session.add(
                 KnowledgeRelation(
@@ -316,44 +341,13 @@ class MaintenanceTaskService:
                     target_kind="knowledge_chunk",
                     target_id=chunk_id,
                     relation_type="cites",
-                    notes="TODO-SB-4 标准化作业任务引用知识条目",
+                    notes="TODO-MAINT-4 标准化作业任务引用知识条目",
                 )
             )
 
+        await self._flush_session()
         await self._commit_session()
-        workflow_stages = self._build_workflow_stages(task)
-        workflow_total, workflow_completed = self._count_workflow_stages(workflow_stages)
-        return {
-            "id": task.id,
-            "title": task.title,
-            "work_order_id": task.work_order_id,
-            "asset_code": task.asset_code,
-            "report_source": task.report_source,
-            "priority": task.priority,
-            "equipment_type": task.equipment_type,
-            "equipment_model": task.equipment_model,
-            "maintenance_level": task.maintenance_level,
-            "fault_type": task.fault_type,
-            "symptom_description": task.symptom_description,
-            "status": task.status,
-            "advice_card": task.advice_card,
-            "diagnosis_report": task.diagnosis_report,
-            "diagnosis_structured": None,
-            "execution_timeline": [],
-            "workflow_stages": workflow_stages,
-            "workflow_total": workflow_total,
-            "workflow_completed": workflow_completed,
-            "total_steps": 0,
-            "completed_steps": 0,
-            "source_refs": knowledge_refs,
-            "steps": [],
-            "created_at": task.created_at,
-            "updated_at": task.updated_at,
-            "run_started_at": None,
-            "run_finished_at": None,
-            "linked_work_order_id": None,
-            "linked_case_id": None,
-        }
+        return await self.get_task_detail(task.id)
 
     async def update_task_step(
         self,
@@ -426,6 +420,9 @@ class MaintenanceTaskService:
         task = (await self.session.execute(stmt)).scalar_one_or_none()
         if task is None:
             return
+        await ApprovalTaskService(self.session).assert_no_blocking_agent_approval(
+            maintenance_task_id=task_id
+        )
 
         final_resolution = run_payload.get("final_resolution") or {}
         if final_resolution:
@@ -537,6 +534,13 @@ class MaintenanceTaskService:
             linked_case_id=linked_case_id,
         )
         workflow_total, workflow_completed = self._count_workflow_stages(workflow_stages)
+        approval_result = await self.session.execute(
+            select(ApprovalTask)
+            .where(ApprovalTask.maintenance_task_id == task.id)
+            .order_by(ApprovalTask.id.desc())
+        )
+        scalars = getattr(approval_result, "scalars", None)
+        approval_rows = scalars().all() if callable(scalars) else []
 
         return {
             "id": task.id,
@@ -569,6 +573,7 @@ class MaintenanceTaskService:
             "run_finished_at": run_finished_at,
             "linked_work_order_id": linked_work_order_id,
             "linked_case_id": linked_case_id,
+            "approval_tasks": [serialize_approval_task(row) for row in approval_rows],
         }
 
     def _build_reasoning_chain_snapshot(
@@ -1384,6 +1389,15 @@ class MaintenanceTaskService:
             .where(MaintenanceTaskTemplate.id == template.id)
         )
         return (await self.session.execute(refreshed_stmt)).scalar_one()
+
+    @staticmethod
+    def _resolve_initial_step_specs(
+        equipment_type: str,
+        maintenance_level: str,
+    ) -> list[dict[str, Any]]:
+        catalog = DEFAULT_TEMPLATE_CATALOG.get(equipment_type, GENERIC_TEMPLATE_CATALOG)
+        template_spec = catalog.get(maintenance_level, GENERIC_TEMPLATE_CATALOG["standard"])
+        return list(template_spec["steps"])
 
     async def _load_knowledge_refs(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         if not chunk_ids:

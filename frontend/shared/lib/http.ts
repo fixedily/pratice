@@ -4,6 +4,7 @@
 
 import {
   clearMaintenanceToken,
+  getMaintenanceRememberPreference,
   getMaintenanceToken,
   notifyMaintenanceAuthExpired,
   setMaintenanceToken,
@@ -11,7 +12,22 @@ import {
 
 export function getApiBase(): string {
   const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
-  return raw.replace(/\/$/, "");
+  const normalized = raw.replace(/\/$/, "");
+  if (typeof window === "undefined") return normalized;
+
+  try {
+    const apiUrl = new URL(normalized);
+    const pageHost = window.location.hostname;
+    const localHosts = new Set(["localhost", "127.0.0.1"]);
+    if (localHosts.has(pageHost) && localHosts.has(apiUrl.hostname) && pageHost !== apiUrl.hostname) {
+      apiUrl.hostname = pageHost;
+      return apiUrl.toString().replace(/\/$/, "");
+    }
+  } catch {
+    return normalized;
+  }
+
+  return normalized;
 }
 
 const MAINTENANCE_AUTH_EXPIRED_MESSAGE = "登录已失效，请重新登录";
@@ -105,7 +121,12 @@ export async function refreshMaintenanceAccessToken(): Promise<string | null> {
     const data = (json?.data ?? json) as Record<string, unknown>;
     const accessToken = typeof data.access_token === "string" ? data.access_token : null;
     if (!accessToken) return null;
-    setMaintenanceToken(accessToken);
+    setMaintenanceToken(
+      accessToken,
+      typeof data.remember_me === "boolean"
+        ? data.remember_me
+        : getMaintenanceRememberPreference(),
+    );
     return accessToken;
   })().finally(() => {
     refreshTokenPromise = null;
@@ -386,6 +407,11 @@ export interface AgentFinalResolution {
   status: string;
   reason: string;
   manual_review_required?: boolean;
+  approval_task_id?: number | null;
+  approval_state?: string | null;
+  approval_status?: string | null;
+  approval_blocking?: boolean;
+  blocking_reason?: string | null;
 }
 
 export interface AgentAssistResponse {
@@ -461,6 +487,8 @@ export interface AgentAssistResponse {
   revision_rounds?: number;
   termination_reason?: string | null;
   final_resolution?: AgentFinalResolution | null;
+  approval_task_id?: number | null;
+  approval_task?: ApprovalTaskItem | null;
 }
 
 export interface KnowledgeReasoningEntity {
@@ -1016,8 +1044,32 @@ export async function createWorkOrder(
   );
 }
 
+export interface ApprovalTaskItem {
+  id: number;
+  work_order_id?: number | null;
+  step_no?: number | null;
+  status: "pending" | "resolved" | string;
+  resolution?: "approved" | "rejected" | "returned" | string | null;
+  approval_state?: "pending" | "approved" | "rejected" | "returned" | string | null;
+  comment?: string | null;
+  material_attachment_ids?: number[];
+  approver_user_id?: number | null;
+  source_type?: "work_order_step" | "agent_review" | string;
+  agent_run_id?: string | null;
+  maintenance_task_id?: number | null;
+  risk_level?: string | null;
+  reason?: string | null;
+  payload?: Record<string, unknown> | null;
+  resolved_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  blocking?: boolean;
+  reused?: boolean;
+}
+
 export interface WorkOrderDetailPayload extends WorkOrderItem {
   step_progress_json?: Record<string, unknown> | null;
+  approval_tasks?: ApprovalTaskItem[];
   source_task?: {
     task_id: number;
     title?: string | null;
@@ -1059,6 +1111,56 @@ export interface WorkOrderMessageItem {
 
 export async function fetchWorkOrderDetail(token: string | null, workOrderId: number) {
   return maintenanceJson<WorkOrderDetailPayload>(`/api/v1/maintenance/work-orders/${workOrderId}`, {}, token);
+}
+
+export async function fetchWorkOrderApprovalTasks(token: string | null, workOrderId: number) {
+  return maintenanceJson<{ items: ApprovalTaskItem[]; total: number; page: number; page_size: number }>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/approval-tasks`,
+    {},
+    token,
+  );
+}
+
+export interface WorkOrderApprovalTaskCreatePayload {
+  step_no?: number;
+  source_type?: "work_order_step" | "agent_review";
+  risk_level?: string | null;
+  reason?: string | null;
+  comment?: string | null;
+  material_attachment_ids?: number[];
+  agent_run_id?: string | null;
+  maintenance_task_id?: number | null;
+  payload?: Record<string, unknown>;
+}
+
+export async function createWorkOrderApprovalTask(
+  token: string | null,
+  workOrderId: number,
+  body: WorkOrderApprovalTaskCreatePayload,
+) {
+  return maintenanceJson<ApprovalTaskItem>(
+    `/api/v1/maintenance/work-orders/${workOrderId}/approval-tasks`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+}
+
+export async function resolveApprovalTask(
+  token: string | null,
+  approvalTaskId: number,
+  body: { action: "approve" | "reject" | "return"; comment: string },
+) {
+  return maintenanceJson<ApprovalTaskItem>(
+    `/api/v1/maintenance/approval-tasks/${approvalTaskId}/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    token,
+  );
 }
 
 export async function fetchWorkOrderAssignmentCandidates(
@@ -1692,6 +1794,7 @@ export interface MaintenanceTaskDetail {
   run_finished_at?: string | null;
   linked_work_order_id?: number | null;
   linked_case_id?: number | null;
+  approval_tasks?: ApprovalTaskItem[];
   graph_trace?: AgentGraphTraceEvent[];
   critiques?: AgentCritiqueItem[];
   replans?: AgentReplanItem[];

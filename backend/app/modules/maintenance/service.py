@@ -21,6 +21,7 @@ from app.db.models.tasks import MaintenanceTask
 from app.modules.maintenance.application.attachment_service import MaintenanceAttachmentService
 from app.modules.maintenance.application.audit_service import MaintenanceAuditService
 from app.modules.maintenance.application.annotation_service import MaintenanceAnnotationService
+from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
 from app.modules.maintenance.application.auth_service import MaintenanceAuthService
 from app.modules.maintenance.application.device_service import MaintenanceDeviceService
 from app.modules.maintenance.application.escalation_service import MaintenanceEscalationService
@@ -59,6 +60,7 @@ class MaintenanceService:
             self._audit,
             self.work_order_service,
         )
+        self.approval_task_service = ApprovalTaskService(session, self._audit)
         self.device_service = MaintenanceDeviceService(session, self._audit)
         self.flow_template_service = MaintenanceFlowTemplateService(session)
         self.system_config_service = MaintenanceSystemConfigService(session, settings)
@@ -284,6 +286,29 @@ class MaintenanceService:
 
     async def list_events(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
         return await self.work_order_service.list_events(work_order_id, ctx)
+
+    async def list_approval_tasks(self, work_order_id: int, ctx: CurrentUserCtx) -> dict[str, Any]:
+        work_order = await self.work_order_service.get_work_order(work_order_id)
+        await self.work_order_service.assert_work_order_readable(ctx, work_order)
+        return await self.approval_task_service.list_for_work_order(work_order_id)
+
+    async def create_approval_task(
+        self,
+        work_order_id: int,
+        body: dict[str, Any],
+        ctx: CurrentUserCtx,
+    ) -> dict[str, Any]:
+        work_order = await self.work_order_service.get_work_order(work_order_id)
+        await self.work_order_service.assert_work_order_readable(ctx, work_order)
+        return await self.approval_task_service.create_for_work_order(work_order_id, body, ctx)
+
+    async def resolve_approval_task(
+        self,
+        approval_task_id: int,
+        body: dict[str, Any],
+        ctx: CurrentUserCtx,
+    ) -> dict[str, Any]:
+        return await self.approval_task_service.resolve(approval_task_id, body, ctx)
 
     async def post_retrieval(
         self,

@@ -1,4 +1,4 @@
-"""Metrics helpers for TODO-SB-7 software cup evaluation."""
+"""Metrics helpers for workflow quality evaluation."""
 from __future__ import annotations
 
 from typing import Any

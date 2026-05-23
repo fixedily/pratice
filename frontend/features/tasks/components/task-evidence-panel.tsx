@@ -109,7 +109,7 @@ export function TaskEvidencePanel({
     const directItems = items.filter((item) => item.group === "direct");
     const relatedItems = items.filter((item) => item.group === "related");
 
-    return [
+    const evidenceGroups: EvidenceGroup[] = [
       {
         key: "direct",
         title: "直接命中",
@@ -124,7 +124,9 @@ export function TaskEvidencePanel({
         icon: Sparkles,
         items: relatedItems,
       },
-    ].filter((group) => group.items.length > 0);
+    ];
+
+    return evidenceGroups.filter((group) => group.items.length > 0);
   }, [items]);
 
   const reasoningContext = useMemo(

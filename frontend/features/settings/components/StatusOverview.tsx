@@ -12,7 +12,7 @@ export function StatusOverview({ items, updatedAt }: { items: StatusCardData[]; 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className={cn("text-sm font-semibold", pageText.title)}>平台运行状态</div>
-          <div className={cn("mt-1 text-xs", pageText.tertiary)}>面向比赛展示的核心能力健康态势，兼顾企业运维检查。</div>
+          <div className={cn("mt-1 text-xs", pageText.tertiary)}>面向公开演示的核心能力健康态势，兼顾企业运维检查。</div>
         </div>
         <div className={cn("flex items-center gap-2 text-xs", pageText.tertiary)}>
           <Activity className="h-4 w-4" />

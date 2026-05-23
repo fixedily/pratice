@@ -62,14 +62,40 @@ type AlertItem = {
   exiting?: boolean;
 };
 
+type HeroProps = {
+  initialNowMs: number;
+};
+
+const CHINA_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function getChinaTimeParts(timestampMs: number) {
+  const date = new Date(timestampMs + CHINA_TIME_OFFSET_MS);
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    hours: date.getUTCHours(),
+    minutes: date.getUTCMinutes(),
+  };
+}
+
+function createInitialAlerts(baseMs: number): AlertItem[] {
+  return [
+    { id: "a0", device: "发动机总成", type: "S7 执行处理", severity: "high", createdAtMs: baseMs - 2 * 60_000 },
+    { id: "a1", device: "火花塞", type: "S3 等待接单", severity: "medium", createdAtMs: baseMs - 5 * 60_000 },
+    { id: "a2", device: "起动电机", type: "S10 案例沉淀", severity: "low", createdAtMs: baseMs - 12 * 60_000 },
+  ];
+}
+
 function useTweenNumber(target: number, durationMs = 700) {
   const [value, setValue] = useState(0);
+  const valueRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const fromRef = useRef(0);
   const startRef = useRef<number | null>(null);
 
   useEffect(() => {
-    fromRef.current = value;
+    fromRef.current = valueRef.current;
     startRef.current = null;
 
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -80,6 +106,7 @@ function useTweenNumber(target: number, durationMs = 700) {
       // easeOutCubic
       const eased = 1 - Math.pow(1 - p, 3);
       const next = Math.round(fromRef.current + (target - fromRef.current) * eased);
+      valueRef.current = next;
       setValue(next);
       if (p < 1) rafRef.current = requestAnimationFrame(tick);
     };
@@ -93,7 +120,7 @@ function useTweenNumber(target: number, durationMs = 700) {
   return value;
 }
 
-export function Hero() {
+export function Hero({ initialNowMs }: HeroProps) {
   const { isLoggedIn } = useMaintenanceAuth();
   const trendPointCount = 12;
   // 注意：首屏必须是确定性的（避免 SSR/CSR hydration mismatch）
@@ -113,26 +140,22 @@ export function Hero() {
   const alertsIntervalRef = useRef<number | null>(null);
   const alertExitTimersRef = useRef<number[]>([]);
   const alertEnterTimersRef = useRef<number[]>([]);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(() => initialNowMs);
 
-  const [alerts, setAlerts] = useState<AlertItem[]>(() => [
-    { id: "a0", device: "发动机总成", type: "S7 执行处理", severity: "high", createdAtMs: Date.now() - 2 * 60_000 },
-    { id: "a1", device: "火花塞", type: "S3 等待接单", severity: "medium", createdAtMs: Date.now() - 5 * 60_000 },
-    { id: "a2", device: "起动电机", type: "S10 案例沉淀", severity: "low", createdAtMs: Date.now() - 12 * 60_000 },
-  ]);
+  const [alerts, setAlerts] = useState<AlertItem[]>(() => createInitialAlerts(initialNowMs));
   const alertSeqRef = useRef(3);
 
   const formatEventTime = (createdAtMs: number) => {
-    const eventDate = new Date(createdAtMs);
-    const nowDate = new Date(nowMs);
-    const hours = String(eventDate.getHours()).padStart(2, "0");
-    const minutes = String(eventDate.getMinutes()).padStart(2, "0");
-    const isToday = eventDate.toDateString() === nowDate.toDateString();
+    const eventDate = getChinaTimeParts(createdAtMs);
+    const nowDate = getChinaTimeParts(nowMs);
+    const hours = String(eventDate.hours).padStart(2, "0");
+    const minutes = String(eventDate.minutes).padStart(2, "0");
+    const isToday = eventDate.year === nowDate.year && eventDate.month === nowDate.month && eventDate.day === nowDate.day;
 
     if (isToday) return `今日 ${hours}:${minutes}`;
 
-    const month = String(eventDate.getMonth() + 1).padStart(2, "0");
-    const day = String(eventDate.getDate()).padStart(2, "0");
+    const month = String(eventDate.month).padStart(2, "0");
+    const day = String(eventDate.day).padStart(2, "0");
     return `${month}-${day} ${hours}:${minutes}`;
   };
 
@@ -212,6 +235,9 @@ export function Hero() {
     const exitMs = 520;
 
     // 时间持续更新（列表时间不会“卡住”）
+    const mountedNowMs = Date.now();
+    setNowMs(mountedNowMs);
+    setAlerts(createInitialAlerts(mountedNowMs));
     const nowTimer = window.setInterval(() => setNowMs(Date.now()), 1000);
 
     const tick = () => {
@@ -255,7 +281,6 @@ export function Hero() {
       alertEnterTimersRef.current.forEach((t) => window.clearTimeout(t));
       alertEnterTimersRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const devicesDisplay = useTweenNumber(kpi.devices.value, 820);

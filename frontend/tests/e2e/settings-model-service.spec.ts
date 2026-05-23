@@ -64,7 +64,7 @@ function buildAgentConfigItems(): MaintenanceSystemConfigItem[] {
 
 async function mockSettingsShell(page: Page) {
   await page.addInitScript(() => {
-    window.sessionStorage.setItem("dachuang_maintenance_token", "test-admin-token");
+    window.sessionStorage.setItem("maintenance_system_token", "test-admin-token");
   });
 
   await page.route("**/api/v1/maintenance/auth/me", async (route: Route) => {

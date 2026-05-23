@@ -661,6 +661,38 @@ async def test_confirm_high_risk_step_creates_approval_and_blocks_until_resolved
         json={"step_no": 2, "mark_done": True},
         headers={"Authorization": f"Bearer {tok_w}"},
     )
+    assert second_step.status_code == 409
+    assert second_step.json()["business_code"] == "APPROVAL_REQUIRED"
+
+    approval_created = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/approval-tasks",
+        json={"step_no": 2, "reason": "高危作业审批"},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert approval_created.status_code == 200, approval_created.text
+    approval_id = approval_created.json()["data"]["id"]
+    assert approval_created.json()["data"]["approval_state"] == "pending"
+
+    worker_resolve = await client.post(
+        f"{PREFIX}/approval-tasks/{approval_id}/resolve",
+        json={"action": "approve", "comment": "同意执行"},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert worker_resolve.status_code == 403
+
+    safety_resolve = await client.post(
+        f"{PREFIX}/approval-tasks/{approval_id}/resolve",
+        json={"action": "approve", "comment": "同意执行"},
+        headers={"Authorization": f"Bearer {tok_s}"},
+    )
+    assert safety_resolve.status_code == 200, safety_resolve.text
+    assert safety_resolve.json()["data"]["approval_state"] == "approved"
+
+    second_step = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/steps/confirm",
+        json={"step_no": 2, "mark_done": True},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
     assert second_step.status_code == 200
     assert second_step.json()["data"]["confirmed_step_no"] == 2
     assert second_step.json()["data"]["current_step_no"] == 3
@@ -1453,9 +1485,8 @@ async def test_tc_guide_001_high_risk_step_blocked(client: AsyncClient):
         json={"step_no": 2, "mark_done": True},
         headers={"Authorization": f"Bearer {tok}"},
     )
-    assert r2.status_code == 200
-    assert r2.json()["data"]["confirmed_step_no"] == 2
-    assert r2.json()["data"]["current_step_no"] == 3
+    assert r2.status_code == 409
+    assert r2.json()["business_code"] == "APPROVAL_REQUIRED"
 
     detail_waiting = await client.get(
         f"{PREFIX}/work-orders/{wo_id}",
@@ -1463,6 +1494,189 @@ async def test_tc_guide_001_high_risk_step_blocked(client: AsyncClient):
     )
     assert detail_waiting.status_code == 200
     assert detail_waiting.json()["data"]["status"] == "S7"
+    assert detail_waiting.json()["data"]["current_step_no"] == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_approval_blocks_work_order_actions_until_approved(
+    client: AsyncClient,
+    maintenance_session_factory,
+):
+    from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
+
+    tok_w = await _login(client, "tc_worker")
+    tok_s = await _login(client, "tc_safety")
+    created = await client.post(
+        f"{PREFIX}/work-orders",
+        json={"device_id": 1, "maintenance_level": "standard"},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert created.status_code == 200
+    wo_id = created.json()["data"]["id"]
+    entered = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/actions/enter-maintenance",
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert entered.status_code == 200
+
+    async with maintenance_session_factory() as session:
+        approval = await ApprovalTaskService(session).create_or_reuse_agent_review(
+            agent_run_id="agent-run-contract-1",
+            work_order_id=wo_id,
+            maintenance_task_id=None,
+            risk_level="high",
+            reason="Agent 判定需要人工授权",
+            payload={"authorization_required": True},
+        )
+    assert approval is not None
+    approval_id = approval["id"]
+
+    blocked_step = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/steps/confirm",
+        json={"step_no": 1, "mark_done": True},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert blocked_step.status_code == 409
+    assert blocked_step.json()["business_code"] == "AGENT_APPROVAL_PENDING"
+
+    blocked_complete = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/actions/complete-maintenance",
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert blocked_complete.status_code == 409
+    assert blocked_complete.json()["business_code"] == "AGENT_APPROVAL_PENDING"
+
+    resolved = await client.post(
+        f"{PREFIX}/approval-tasks/{approval_id}/resolve",
+        json={"action": "approve", "comment": "安全条件满足，同意继续"},
+        headers={"Authorization": f"Bearer {tok_s}"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["data"]["approval_state"] == "approved"
+
+    confirmed = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/steps/confirm",
+        json={"step_no": 1, "mark_done": True},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+
+@pytest.mark.asyncio
+async def test_agent_approval_reject_keeps_work_order_blocked(
+    client: AsyncClient,
+    maintenance_session_factory,
+):
+    from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
+
+    tok_w = await _login(client, "tc_worker")
+    tok_s = await _login(client, "tc_safety")
+    created = await client.post(
+        f"{PREFIX}/work-orders",
+        json={"device_id": 1, "maintenance_level": "standard"},
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    wo_id = created.json()["data"]["id"]
+    await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/actions/enter-maintenance",
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    async with maintenance_session_factory() as session:
+        approval = await ApprovalTaskService(session).create_or_reuse_agent_review(
+            agent_run_id="agent-run-contract-2",
+            work_order_id=wo_id,
+            maintenance_task_id=None,
+            risk_level="high",
+            reason="Agent 判定风险未解除",
+            payload={"authorization_required": True},
+        )
+    assert approval is not None
+
+    rejected = await client.post(
+        f"{PREFIX}/approval-tasks/{approval['id']}/resolve",
+        json={"action": "reject", "comment": "现场安全条件不足"},
+        headers={"Authorization": f"Bearer {tok_s}"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["data"]["approval_state"] == "rejected"
+
+    blocked = await client.post(
+        f"{PREFIX}/work-orders/{wo_id}/actions/complete-maintenance",
+        headers={"Authorization": f"Bearer {tok_w}"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["business_code"] == "AGENT_APPROVAL_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_agent_approval_reuses_pending_and_blocks_task_finalize(
+    maintenance_session_factory,
+    seed_users,
+):
+    from app.db.models.tasks import MaintenanceTask
+    from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
+    from app.modules.maintenance.deps import CurrentUserCtx
+    from app.modules.maintenance.errors import MaintenanceAPIError
+    from app.modules.tasks.application.task_service import MaintenanceTaskService
+
+    async with maintenance_session_factory() as session:
+        task = MaintenanceTask(
+            title="Agent 审批阻断任务",
+            equipment_type="pump_test",
+            equipment_model="M1",
+            maintenance_level="standard",
+            priority="medium",
+            status="pending",
+        )
+        session.add(task)
+        await session.flush()
+        task_id = task.id
+
+        approval_service = ApprovalTaskService(session)
+        first = await approval_service.create_or_reuse_agent_review(
+            agent_run_id="agent-run-contract-3",
+            work_order_id=None,
+            maintenance_task_id=task_id,
+            risk_level="high",
+            reason="Agent 判定需要人工复核",
+            payload={"manual_review_required": True},
+        )
+        second = await approval_service.create_or_reuse_agent_review(
+            agent_run_id="agent-run-contract-3",
+            work_order_id=None,
+            maintenance_task_id=task_id,
+            risk_level="high",
+            reason="重复提交",
+            payload={"manual_review_required": True},
+        )
+        assert first is not None and second is not None
+        assert second["id"] == first["id"]
+        assert second["reused"] is True
+
+        with pytest.raises(MaintenanceAPIError) as exc_info:
+            await MaintenanceTaskService(session).finalize_task_after_agent_pipeline(
+                task_id,
+                {"final_resolution": {"status": "completed", "manual_review_required": False}},
+            )
+        assert exc_info.value.business_code == "AGENT_APPROVAL_PENDING"
+
+        await approval_service.resolve(
+            first["id"],
+            {"action": "approve", "comment": "复核通过"},
+            CurrentUserCtx(
+                user_id=seed_users["safety"],
+                username="tc_safety",
+                roles=["safety"],
+                display_name="tc_safety",
+            ),
+        )
+        await MaintenanceTaskService(session).finalize_task_after_agent_pipeline(
+            task_id,
+            {"final_resolution": {"status": "completed", "manual_review_required": False}},
+        )
+        refreshed = await session.get(MaintenanceTask, task_id)
+        assert refreshed is not None
+        assert refreshed.status == "completed"
 
 
 @pytest.mark.asyncio

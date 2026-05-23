@@ -13,7 +13,7 @@ function jsonResponse(data: unknown) {
 
 async function mockShellApis(page: Page) {
   await page.addInitScript(() => {
-    window.sessionStorage.setItem("dachuang_maintenance_token", "sidebar-navigation-token");
+    window.sessionStorage.setItem("maintenance_system_token", "sidebar-navigation-token");
   });
 
   await page.route("**/api/v1/workbench/overview**", async (route: Route) => {

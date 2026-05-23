@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     redis_port: int = Field(default=6379, alias="REDIS_PORT")
     redis_password: str | None = Field(default=None, alias="REDIS_PASSWORD")
     redis_db: int = Field(default=0, alias="REDIS_DB")
-    redis_prefix: str = Field(default="dachuang", alias="REDIS_PREFIX")
+    redis_prefix: str = Field(default="maintenance", alias="REDIS_PREFIX")
     redis_socket_timeout: int = Field(default=3, alias="REDIS_SOCKET_TIMEOUT")
     captcha_ttl_seconds: int = Field(default=180, alias="CAPTCHA_TTL_SECONDS")
     login_fail_max: int = Field(default=5, alias="LOGIN_FAIL_MAX")

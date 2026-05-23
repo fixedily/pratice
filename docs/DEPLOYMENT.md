@@ -1,6 +1,6 @@
 # MVP 部署说明
 
-本文档面向比赛/MVP 场景，目标是让一台新的 Linux 服务器可以按步骤部署并运行本项目。
+本文档面向公开演示/MVP 场景，目标是让一台新的 Linux 服务器可以按步骤部署并运行本项目。
 
 ## 部署目标
 
@@ -26,7 +26,7 @@
 - 优点：更接近真实部署
 - 缺点：准备步骤更多
 
-比赛/MVP 默认建议先完成方案 A，再升级到方案 B。若要演示登录验证码、失败锁定或多人联调，建议即使使用 SQLite 也启动 Redis。
+公开演示/MVP 默认建议先完成方案 A，再升级到方案 B。若要演示登录验证码、失败锁定或多人联调，建议即使使用 SQLite 也启动 Redis。
 
 ## 环境准备
 
@@ -47,7 +47,7 @@ sudo apt install -y docker.io docker-compose-plugin
 
 ```bash
 git clone <your-repo-url>
-cd dachuang_project
+cd maintenance_system
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip

@@ -15,7 +15,7 @@ function jsonResponse(data: unknown) {
 
 async function mockShellApis(page: Page) {
   await page.addInitScript(() => {
-    window.sessionStorage.setItem("dachuang_maintenance_token", "task-detail-agent-token");
+    window.sessionStorage.setItem("maintenance_system_token", "task-detail-agent-token");
   });
 
   await page.route("**/api/v1/workbench/overview**", async (route: Route) => {

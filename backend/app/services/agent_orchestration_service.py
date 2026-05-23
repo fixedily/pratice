@@ -37,6 +37,8 @@ from app.modules.assistant.application.pipeline_planner import PipelinePlanner
 from app.modules.assistant.application.replan_policy import ReplanPolicy
 from app.modules.assistant.application.stage_run_controller import StageRunController
 from app.modules.knowledge.application.search_service import KnowledgeService
+from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
+from app.modules.maintenance.errors import MaintenanceAPIError
 from app.modules.tasks.application.task_service import MaintenanceTaskService
 from app.modules.assistant.schemas import AgentAssistRequest
 from app.modules.assistant.application.tooling_service import AgentToolingService
@@ -521,6 +523,15 @@ class AgentOrchestrationService:
                 )
                 await self._emit_event(emit, "degradation_applied", degradation)
 
+        final_resolution = (
+            graph_state.termination.as_dict()
+            if graph_state.termination is not None
+            else {
+                "status": "completed",
+                "reason": "pipeline_completed",
+                "manual_review_required": False,
+            }
+        )
         run_payload = {
             "run_id": run_id,
             "status": "completed",
@@ -557,23 +568,19 @@ class AgentOrchestrationService:
             "replans": list(graph_state.replans),
             "current_plan": list(graph_state.current_plan),
             "revision_rounds": graph_state.revision_rounds,
-            "termination_reason": (
-                graph_state.termination.reason
-                if graph_state.termination is not None
-                else "pipeline_completed"
-            ),
-            "final_resolution": (
-                graph_state.termination.as_dict()
-                if graph_state.termination is not None
-                else {
-                    "status": "completed",
-                    "reason": "pipeline_completed",
-                    "manual_review_required": False,
-                }
-            ),
+            "termination_reason": final_resolution.get("reason") or "pipeline_completed",
+            "final_resolution": final_resolution,
             "payload_version": 2,
             "created_at": datetime.now(timezone.utc),
         }
+        approval_task = await self._attach_agent_approval_gate(
+            request=request,
+            run_payload=run_payload,
+            diagnosis_structured=diagnosis_structured,
+            execution_brief=execution_brief,
+            risk_findings=risk_findings,
+            emit=emit,
+        )
         await self._emit_event(
             emit,
             "result",
@@ -599,10 +606,27 @@ class AgentOrchestrationService:
                     reasoning_chain=retrieval_payload.get("reasoning_chain"),
                     mark_task_completed=False,
                 )
-                await self.task_service.finalize_task_after_agent_pipeline(
-                    request.maintenance_task_id,
-                    run_payload,
-                )
+                if bool((run_payload.get("final_resolution") or {}).get("manual_review_required")):
+                    await self._append_agent_manual_review_hold_event(
+                        request.maintenance_task_id,
+                        run_payload,
+                        approval_task=approval_task,
+                    )
+                else:
+                    try:
+                        await self.task_service.finalize_task_after_agent_pipeline(
+                            request.maintenance_task_id,
+                            run_payload,
+                        )
+                    except MaintenanceAPIError as exc:
+                        if exc.business_code in {"AGENT_APPROVAL_PENDING", "AGENT_APPROVAL_REQUIRED"}:
+                            logger.info(
+                                "agent_task_finalize_blocked_by_approval task_id=%s code=%s",
+                                request.maintenance_task_id,
+                                exc.business_code,
+                            )
+                        else:
+                            raise
             except Exception:
                 logger.exception(
                     "检修任务在协作流水线结束后自动完结失败 task_id=%s",
@@ -626,13 +650,147 @@ class AgentOrchestrationService:
                         "id": f"done-{uuid4().hex[:8]}",
                         "type": "done",
                         "title": "诊断任务完成",
-                        "description": "已结束并回写任务状态",
+                        "description": (
+                            "诊断结果已生成，等待人工审批后继续推进"
+                            if bool((run_payload.get("final_resolution") or {}).get("manual_review_required"))
+                            else "已结束并回写任务状态"
+                        ),
                         "time": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             except Exception:
                 logger.exception("persist_done_event_failed task_id=%s", request.maintenance_task_id)
         return run_payload
+
+    async def _attach_agent_approval_gate(
+        self,
+        *,
+        request: AgentAssistRequest,
+        run_payload: dict[str, Any],
+        diagnosis_structured: dict[str, Any],
+        execution_brief: dict[str, Any],
+        risk_findings: list[str],
+        emit: EventCallback | None,
+    ) -> dict[str, Any] | None:
+        """Create or reuse the approval task when the graph output must stop for humans."""
+        final_resolution = run_payload.setdefault("final_resolution", {})
+        authorization_required = bool(execution_brief.get("authorization_required"))
+        manual_review_required = bool(final_resolution.get("manual_review_required")) or authorization_required
+        if not manual_review_required:
+            return None
+
+        final_resolution["manual_review_required"] = True
+        if authorization_required and final_resolution.get("reason") in {None, "", "pipeline_completed"}:
+            final_resolution["reason"] = "authorization_required"
+            run_payload["termination_reason"] = "authorization_required"
+
+        has_approval_target = bool(request.work_order_id) or request.maintenance_task_id is not None
+        if not has_approval_target:
+            final_resolution["approval_state"] = "unbound"
+            final_resolution["blocking_reason"] = "未绑定工单或检修任务，需线下人工复核。"
+            return None
+
+        reason = self._build_agent_approval_reason(
+            final_resolution=final_resolution,
+            execution_brief=execution_brief,
+            risk_findings=risk_findings,
+        )
+        risk_level = str((diagnosis_structured or {}).get("risk_level") or "").strip() or None
+        approval = await ApprovalTaskService(self.session).create_or_reuse_agent_review(
+            agent_run_id=str(run_payload["run_id"]),
+            work_order_id=request.work_order_id,
+            maintenance_task_id=request.maintenance_task_id,
+            risk_level=risk_level,
+            reason=reason,
+            payload={
+                "run_id": run_payload["run_id"],
+                "execution_brief": execution_brief,
+                "final_resolution": final_resolution,
+                "risk_findings": list(risk_findings),
+                "blocking_issues": list(execution_brief.get("blocking_issues") or []),
+            },
+        )
+        if approval is None:
+            final_resolution["approval_state"] = "unbound"
+            final_resolution["blocking_reason"] = "未能解析工单或任务绑定，需线下人工复核。"
+            return None
+
+        final_resolution.update(
+            {
+                "approval_task_id": approval["id"],
+                "approval_state": approval.get("approval_state") or approval.get("status"),
+                "approval_status": approval.get("status"),
+                "approval_blocking": bool(approval.get("blocking")),
+                "blocking_reason": reason,
+            }
+        )
+        run_payload["approval_task"] = approval
+        run_payload["approval_task_id"] = approval["id"]
+        await self._emit_event(
+            emit,
+            "agent_approval_requested",
+            {
+                "approval_task_id": approval["id"],
+                "approval_state": approval.get("approval_state"),
+                "status": approval.get("status"),
+                "reason": reason,
+            },
+        )
+        return approval
+
+    def _build_agent_approval_reason(
+        self,
+        *,
+        final_resolution: dict[str, Any],
+        execution_brief: dict[str, Any],
+        risk_findings: list[str],
+    ) -> str:
+        reasons = []
+        if execution_brief.get("authorization_required"):
+            reasons.append("执行计划包含需要人工授权的高风险操作")
+        if final_resolution.get("reason"):
+            reasons.append(f"图执行收束原因：{final_resolution['reason']}")
+        blocking_issues = [str(item).strip() for item in execution_brief.get("blocking_issues") or [] if str(item).strip()]
+        if blocking_issues:
+            reasons.append(f"阻断项：{'；'.join(blocking_issues[:3])}")
+        if risk_findings:
+            reasons.append(f"风险提示：{'；'.join(risk_findings[:3])}")
+        if not reasons:
+            reasons.append("审核 Agent 判定需要人工复核")
+        return "；".join(reasons)
+
+    async def _append_agent_manual_review_hold_event(
+        self,
+        task_id: int,
+        run_payload: dict[str, Any],
+        *,
+        approval_task: dict[str, Any] | None,
+    ) -> None:
+        final_resolution = run_payload.get("final_resolution") or {}
+        approval_id = (
+            approval_task.get("id")
+            if isinstance(approval_task, dict)
+            else final_resolution.get("approval_task_id")
+        )
+        await self.task_service.append_execution_timeline_event(
+            task_id,
+            {
+                "id": f"agent-review-hold-{uuid4().hex[:8]}",
+                "type": "agent_approval_requested" if approval_id else "agent_manual_review_required",
+                "title": "等待人工审批",
+                "description": final_resolution.get("blocking_reason")
+                or final_resolution.get("reason")
+                or "Agent 审核要求人工复核后再继续推进。",
+                "time": datetime.now(timezone.utc).isoformat(),
+                "detail": (
+                    f"approval_task_id={approval_id}; "
+                    f"approval_state={final_resolution.get('approval_state') or 'pending'}; "
+                    "manual_review_required=True"
+                ),
+                "approval_task_id": approval_id,
+                "approval_state": final_resolution.get("approval_state") or "pending",
+            },
+        )
 
     def _compact_stage_payload(self, stage_payload: dict[str, Any]) -> dict[str, Any]:
         """Trim stage payloads before copying them into graph trace artifacts."""
@@ -1334,7 +1492,7 @@ work_order_ready: boolean
         ]
         if knowledge_refs:
             suggestions.append(
-                f"建议优先保留 {knowledge_refs[0]['title']} 的引用截图与页码，便于后续答辩展示。"
+                f"建议优先保留 {knowledge_refs[0]['title']} 的引用截图与页码，便于后续演示展示。"
             )
         if related_cases:
             suggestions.append(f"可先对照案例《{related_cases[0]['title']}》检查是否存在相同处理路径。")

@@ -14,8 +14,8 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 def test_build_eval_dataset_covers_three_sample_types():
     """正式离线数据集应稳定覆盖 text/image/procedural 三类样本。"""
-    cases = load_json(_BACKEND_ROOT / "evaluation" / "softbei_eval_cases.json")
-    seed_docs = load_json(_BACKEND_ROOT / "evaluation" / "softbei_knowledge_seed.json")
+    cases = load_json(_BACKEND_ROOT / "evaluation" / "workflow_eval_cases.json")
+    seed_docs = load_json(_BACKEND_ROOT / "evaluation" / "workflow_knowledge_seed.json")
 
     rows = build_eval_dataset(cases, seed_docs)
 
@@ -51,13 +51,13 @@ def test_flatten_dataset_rows_is_csv_friendly():
 
 def test_generate_offline_eval_dataset_script(tmp_path: Path):
     """生成脚本应产出 JSONL/CSV/summary 三套文件。"""
-    cases = load_json(_BACKEND_ROOT / "evaluation" / "softbei_eval_cases.json")[:3]
+    cases = load_json(_BACKEND_ROOT / "evaluation" / "workflow_eval_cases.json")[:3]
     cases_path = tmp_path / "cases.json"
     cases_path.write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
 
     config = {
         "version": "test",
-        "seed_documents_path": "backend/evaluation/softbei_knowledge_seed.json",
+        "seed_documents_path": "backend/evaluation/workflow_knowledge_seed.json",
         "source_cases_path": str(cases_path).replace("\\", "/"),
         "output_dir": str(tmp_path).replace("\\", "/"),
         "dataset_prefix": "offline_eval_test",
@@ -84,13 +84,13 @@ def test_generate_offline_eval_dataset_script(tmp_path: Path):
 
 def test_run_offline_rag_eval_script(tmp_path: Path):
     """离线 runner 应能读取生成数据集并输出正式报告。"""
-    cases = load_json(_BACKEND_ROOT / "evaluation" / "softbei_eval_cases.json")[:3]
+    cases = load_json(_BACKEND_ROOT / "evaluation" / "workflow_eval_cases.json")[:3]
     cases_path = tmp_path / "cases.json"
     cases_path.write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
 
     config = {
         "version": "test",
-        "seed_documents_path": "backend/evaluation/softbei_knowledge_seed.json",
+        "seed_documents_path": "backend/evaluation/workflow_knowledge_seed.json",
         "source_cases_path": str(cases_path).replace("\\", "/"),
         "output_dir": str(tmp_path).replace("\\", "/"),
         "dataset_prefix": "offline_eval_test",

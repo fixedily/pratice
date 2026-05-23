@@ -64,6 +64,8 @@ type EventType =
   | "connected"
   | "node_start"
   | "node_finish"
+  | "node_skip"
+  | "degradation"
   | "report"
   | "error"
   | "done"
@@ -71,7 +73,8 @@ type EventType =
   | "critique"
   | "revision_requested"
   | "replan"
-  | "termination";
+  | "termination"
+  | "agent_approval_requested";
 
 type TimelineEvent = {
   id: string;
@@ -474,6 +477,66 @@ function getTimelineEventVisual(type: EventType) {
     badgeClass: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300",
     bubbleClass: "border-sky-500/20 bg-sky-500/8",
   };
+}
+
+const TIMELINE_EVENT_LABELS: Record<string, string> = {
+  connected: "连接",
+  node_start: "开始",
+  node_finish: "完成",
+  node_skip: "跳过",
+  degradation: "降级",
+  report: "报告",
+  error: "异常",
+  done: "结束",
+  agent_pipeline_completed: "收束",
+  critique: "审核",
+  revision_requested: "修订",
+  replan: "重规划",
+  termination: "终止",
+  agent_approval_requested: "审批",
+};
+
+function parseTimelineDetail(detail: string | null | undefined) {
+  return String(detail || "")
+    .split(";")
+    .map((item) => item.trim())
+    .reduce<Record<string, string>>((acc, item) => {
+      const [key, ...rest] = item.split("=");
+      if (!key || rest.length === 0) return acc;
+      const value = rest.join("=").trim();
+      if (value) acc[key.trim()] = value;
+      return acc;
+    }, {});
+}
+
+function getTimelineActorLabel(event: TimelineEvent) {
+  const detail = parseTimelineDetail(event.detail);
+  const explicit = detail.agent_name || detail.stage_name || detail.target_stage;
+  if (explicit) {
+    const normalized = explicit.trim().toLowerCase();
+    if (normalized === "perception") return "感知 Agent";
+    if (normalized === "knowledge") return "知识库 Agent";
+    if (normalized === "diagnosis") return "诊断 Agent";
+    if (normalized === "planning") return "规划 Agent";
+    if (normalized === "review") return "审核 Agent";
+    return explicit;
+  }
+
+  const text = `${event.title || ""} ${event.description || ""} ${event.type || ""}`.toLowerCase();
+  if (text.includes("感知") || text.includes("ocr") || text.includes("图片")) return "感知 Agent";
+  if (text.includes("知识") || text.includes("召回") || text.includes("检索") || text.includes("证据")) return "知识库 Agent";
+  if (text.includes("诊断") || text.includes("报告") || text.includes("结论") || text.includes("rag")) return "诊断 Agent";
+  if (text.includes("规划") || text.includes("步骤") || text.includes("工单")) return "规划 Agent";
+  if (text.includes("审核") || text.includes("复核") || text.includes("风险") || text.includes("审批")) return "审核 Agent";
+  return "系统编排";
+}
+
+function getTimelineDetailChips(event: TimelineEvent) {
+  const detail = parseTimelineDetail(event.detail);
+  return Object.entries(detail)
+    .filter(([, value]) => value && value !== "unknown")
+    .slice(0, 4)
+    .map(([key, value]) => `${key}: ${value}`);
 }
 
 // 解析时间线事件时间并转换为毫秒时间戳。
@@ -1274,6 +1337,23 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
           );
         } catch {
           appendEvent("termination", "图执行已收束", "执行已结束");
+        }
+      });
+      source.addEventListener("agent_approval_requested", (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as {
+            approval_task_id?: number;
+            approval_state?: string;
+            reason?: string;
+          };
+          appendEvent(
+            "agent_approval_requested",
+            "等待人工审批",
+            payload.reason || "Agent 审核要求人工审批后继续推进。",
+            `approval_task_id=${payload.approval_task_id || ""}; approval_state=${payload.approval_state || "pending"}; manual_review_required=True`,
+          );
+        } catch {
+          appendEvent("agent_approval_requested", "等待人工审批", "Agent 审核要求人工审批后继续推进。");
         }
       });
       source.addEventListener("stream_error", (e) => {
@@ -2252,35 +2332,47 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                     </div>
                     {visibleTimelineEvents.length > 0 ? (
                       <div className="space-y-3 rounded-2xl border border-border bg-muted/15 p-4 sm:p-5">
-                        {visibleTimelineEvents.map((event, index) => (
-                          <div
-                            key={event.id || `${event.type}-${index}`}
-                            className="flex items-start gap-3"
-                          >
-                            <div className={`mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-sm font-semibold shadow-sm ${getTimelineEventVisual(event.type).badgeClass}`}>
-                              {index + 1}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="mb-1 flex items-center gap-2 pl-1">
-                                <span className="text-xs font-medium text-foreground">诊断引擎</span>
-                                <span className="text-[11px] text-muted-foreground">{formatDateTimeLocal(event.time)}</span>
+                        {visibleTimelineEvents.map((event, index) => {
+                          const visual = getTimelineEventVisual(event.type);
+                          const actorLabel = getTimelineActorLabel(event);
+                          const detailChips = getTimelineDetailChips(event);
+                          return (
+                            <div
+                              key={event.id || `${event.type}-${index}`}
+                              className="flex items-start gap-3"
+                            >
+                              <div className={`mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-sm font-semibold shadow-sm ${visual.badgeClass}`}>
+                                {index + 1}
                               </div>
-                              <div className={`relative rounded-2xl border px-4 py-3 shadow-sm ${getTimelineEventVisual(event.type).bubbleClass}`}>
-                                <div className="absolute left-[-7px] top-4 h-3.5 w-3.5 rotate-45 border-b border-l border-inherit bg-inherit" />
-                                <div className="text-sm font-semibold leading-6 text-foreground">{event.title || "阶段更新"}</div>
-                                <div className="mt-1 text-sm leading-7 text-muted-foreground">
-                                  {event.description || "系统已记录该阶段执行情况。"}
+                              <div className="min-w-0 flex-1">
+                                <div className="mb-1 flex flex-wrap items-center gap-2 pl-1">
+                                  <span className="text-xs font-medium text-foreground">{actorLabel}</span>
+                                  <span className="text-[11px] text-muted-foreground">{formatDateTimeLocal(event.time)}</span>
                                 </div>
-                                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                  <span className="app-chip-muted">阶段 {index + 1}</span>
-                                  <span className="rounded-full border border-border bg-background/80 px-2 py-0.5">
-                                    {event.type}
-                                  </span>
+                                <div className={`relative rounded-2xl border px-4 py-3 shadow-sm ${visual.bubbleClass}`}>
+                                  <div className="absolute left-[-7px] top-4 h-3.5 w-3.5 rotate-45 border-b border-l border-inherit bg-inherit" />
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <div className="text-sm font-semibold leading-6 text-foreground">{event.title || "阶段更新"}</div>
+                                    <span className="rounded-full border border-border bg-background/80 px-2 py-0.5 text-[11px] text-muted-foreground">
+                                      {TIMELINE_EVENT_LABELS[event.type] || event.type}
+                                    </span>
+                                  </div>
+                                  <div className="mt-1 text-sm leading-7 text-muted-foreground">
+                                    {event.description || "系统已记录该阶段执行情况。"}
+                                  </div>
+                                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                    <span className="app-chip-muted">阶段 {index + 1}</span>
+                                    {detailChips.map((chip) => (
+                                      <span key={`${event.id || index}-${chip}`} className="rounded-full border border-border bg-background/80 px-2 py-0.5">
+                                        {chip}
+                                      </span>
+                                    ))}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-8 text-sm text-muted-foreground">

@@ -625,6 +625,30 @@ async def admin_settings_overview(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
+@router.get("/admin/audit-logs")
+async def admin_audit_logs(
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+):
+    try:
+        return _ok(
+            await _svc(session, settings).list_audit_logs(
+                ctx,
+                page=page,
+                page_size=page_size,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
 @router.patch("/work-orders/{work_order_id}/assignment")
 async def wo_update_assignment(
     work_order_id: int,
@@ -662,6 +686,47 @@ async def wo_events(
 ):
     try:
         return _ok(await _svc(session, settings).list_events(work_order_id, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.get("/work-orders/{work_order_id}/approval-tasks")
+async def wo_approval_tasks(
+    work_order_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(get_current_user_ctx)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).list_approval_tasks(work_order_id, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/work-orders/{work_order_id}/approval-tasks")
+async def wo_approval_task_create(
+    work_order_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("worker", "expert", "safety", "admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: dict[str, Any],
+):
+    try:
+        return _ok(await _svc(session, settings).create_approval_task(work_order_id, body, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/approval-tasks/{approval_task_id}/resolve")
+async def approval_task_resolve(
+    approval_task_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("expert", "safety", "admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: dict[str, Any],
+):
+    try:
+        return _ok(await _svc(session, settings).resolve_approval_task(approval_task_id, body, ctx))
     except MaintenanceAPIError as e:
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
@@ -1040,6 +1105,18 @@ async def kb_list(
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 
 
+@router.get("/knowledge-articles/publish-console")
+async def kb_publish_console(
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).get_kb_publish_console(ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
 @router.get("/knowledge-articles/{article_id}/versions")
 async def kb_versions(
     article_id: int,
@@ -1063,6 +1140,33 @@ async def kb_review(
 ):
     try:
         return _ok(await _svc(session, settings).review_kb(article_id, body, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/knowledge-articles/{article_id}/publish")
+async def kb_publish(
+    article_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: dict[str, Any] | None = None,
+):
+    try:
+        return _ok(await _svc(session, settings).publish_kb(article_id, body or {}, ctx))
+    except MaintenanceAPIError as e:
+        return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
+
+
+@router.post("/knowledge-articles/{article_id}/withdraw")
+async def kb_withdraw(
+    article_id: int,
+    ctx: Annotated[CurrentUserCtx, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    try:
+        return _ok(await _svc(session, settings).withdraw_kb(article_id, ctx))
     except MaintenanceAPIError as e:
         return _err(status_code=e.status_code, business_code=e.business_code, message=e.message)
 

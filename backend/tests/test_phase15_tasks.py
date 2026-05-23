@@ -169,9 +169,11 @@ async def test_create_task_serializes_datetime_inside_source_snapshot():
     )
 
     task = next(item for item in captured if item.__class__.__name__ == "MaintenanceTask")
+    steps = [item for item in captured if item.__class__.__name__ == "MaintenanceTaskStep"]
     assert task.source_snapshot[0]["_document_updated_at"] == now.isoformat()
     assert task.template_id is None
-    assert not any(item.__class__.__name__ == "MaintenanceTaskStep" for item in captured)
+    assert steps
+    assert steps[0].knowledge_refs[0]["_document_updated_at"] == now.isoformat()
 
 
 @pytest.mark.asyncio

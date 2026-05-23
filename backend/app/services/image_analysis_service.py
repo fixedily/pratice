@@ -1,4 +1,4 @@
-"""Image-assisted retrieval helpers for TODO-SB-3."""
+"""Image-assisted retrieval helpers for TODO-MAINT-3."""
 from __future__ import annotations
 
 import base64
@@ -13,16 +13,34 @@ from app.core.config import get_settings
 
 _LangChainOpenAI = None
 _LangChainAnthropic = None
+_LangChainOpenAILoaded = False
+_LangChainAnthropicLoaded = False
 
-try:
-    from langchain_openai import ChatOpenAI as LangChainOpenAI
-except ImportError:
-    pass
 
-try:
-    from langchain_anthropic import ChatAnthropic as LangChainAnthropic
-except ImportError:
-    pass
+def _load_langchain_openai():
+    global _LangChainOpenAI, _LangChainOpenAILoaded
+    if not _LangChainOpenAILoaded:
+        _LangChainOpenAILoaded = True
+        try:
+            from langchain_openai import ChatOpenAI
+
+            _LangChainOpenAI = ChatOpenAI
+        except Exception:
+            _LangChainOpenAI = None
+    return _LangChainOpenAI
+
+
+def _load_langchain_anthropic():
+    global _LangChainAnthropic, _LangChainAnthropicLoaded
+    if not _LangChainAnthropicLoaded:
+        _LangChainAnthropicLoaded = True
+        try:
+            from langchain_anthropic import ChatAnthropic
+
+            _LangChainAnthropic = ChatAnthropic
+        except Exception:
+            _LangChainAnthropic = None
+    return _LangChainAnthropic
 
 try:
     from langchain_core.messages import HumanMessage
@@ -85,6 +103,49 @@ class ImageAnalysisResult:
     keywords: list[str]
     source: str
     warning: str | None = None
+
+
+class _ChatResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class OpenAICompatibleVisionChatModel:
+    """Minimal async vision chat model without LangChain imports."""
+
+    def __init__(self, *, model: str, api_key: str, base_url: str | None, temperature: float = 0.1) -> None:
+        from openai import AsyncOpenAI
+
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = AsyncOpenAI(**kwargs)
+        self._model = model
+        self._temperature = temperature
+
+    async def ainvoke(self, messages: list[Any]) -> _ChatResponse:
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=self._normalize_messages(messages),
+            temperature=self._temperature,
+        )
+        content = response.choices[0].message.content or ""
+        return _ChatResponse(content)
+
+    def _normalize_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            role = getattr(message, "role", "user")
+            content = getattr(message, "content", message)
+            role_text = str(role).lower()
+            if role_text == "human":
+                role_text = "user"
+            elif role_text == "ai":
+                role_text = "assistant"
+            if role_text not in {"system", "user", "assistant"}:
+                role_text = "user"
+            normalized.append({"role": role_text, "content": content})
+        return normalized
 
 
 class FaultImageAnalysisService:
@@ -262,18 +323,16 @@ class FaultImageAnalysisService:
         settings = get_settings()
         normalized_provider = self._resolve_provider(model_provider)
 
-        if normalized_provider == "anthropic" and LangChainAnthropic and settings.anthropic_api_key:
-            return LangChainAnthropic(
+        chat_anthropic = _load_langchain_anthropic()
+        if normalized_provider == "anthropic" and chat_anthropic and settings.anthropic_api_key:
+            return chat_anthropic(
                 model=model_name or "claude-sonnet-4-20250514",
                 api_key=settings.anthropic_api_key,
                 temperature=0.1,
             )
 
-        if LangChainOpenAI is None:
-            return None
-
         if normalized_provider == "zhipu" and settings.zhipu_api_key:
-            return LangChainOpenAI(
+            return OpenAICompatibleVisionChatModel(
                 model=model_name or settings.zhipu_vision_model or settings.default_vision_model,
                 api_key=settings.zhipu_api_key,
                 base_url=settings.zhipu_api_base,
@@ -281,7 +340,7 @@ class FaultImageAnalysisService:
             )
 
         if settings.openai_api_key:
-            return LangChainOpenAI(
+            return OpenAICompatibleVisionChatModel(
                 model=model_name or "gpt-4o-mini",
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_api_base,

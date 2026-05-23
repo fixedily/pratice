@@ -1,4 +1,4 @@
-"""Knowledge base APIs for 软件杯检修知识系统."""
+"""Knowledge base APIs for 设备检修知识系统."""
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
@@ -150,6 +150,7 @@ async def preview_knowledge_import(
         description="目标知识库 ID；为空时使用默认知识库",
     ),
     session: AsyncSession = Depends(get_session),
+    user_ctx: CurrentUserCtx | None = Depends(optional_user_ctx),
 ) -> KnowledgeImportPreviewResponse:
     filename = (file.filename or "").strip()
     if not filename:
@@ -181,7 +182,10 @@ async def preview_knowledge_import(
             source_type=(source_type or "manual").strip() or "manual",
             replace_existing=replace_existing,
             knowledge_base_id=_parse_optional_knowledge_base_id(knowledge_base_id),
+            user_id=_user_id(user_ctx),
         )
+    except PermissionError as exc:
+        _raise_knowledge_base_error(exc)
     except ValueError as exc:
         raise AppError(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -413,6 +417,7 @@ async def import_knowledge_document(
             replace_existing=replace_existing,
             batch_id=batch_id,
             knowledge_base_id=resolved_base_id,
+            user_id=user_ctx.user_id,
         )
     except PermissionError as exc:
         _raise_knowledge_base_error(exc)

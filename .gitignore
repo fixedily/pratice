@@ -23,6 +23,8 @@ pip-delete-this-directory.txt
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 # 如果后续用 alembic 做迁移，可以忽略本地生成的某些临时文件
 alembic.ini.bak
 
@@ -76,9 +78,9 @@ frontend/artifacts/
 .tmp_pytest/
 .worktrees/
 
-# 软件杯评测脚本本地产出（可重新生成）
-evaluation/softbei_eval_results.json
-backend/evaluation/softbei_eval_results.json
+# 工作流质量评测脚本本地产出（可重新生成）
+evaluation/workflow_eval_results.json
+backend/evaluation/workflow_eval_results.json
 *.db-journal
 backend/evaluation/results/*.json
 backend/=0.3.0
@@ -90,7 +92,7 @@ datasets/pdf/download_manifest.jsonl
 # Superpowers 生成的长计划/规格文档属于本地执行过程材料
 docs/superpowers/
 
-# 软件杯源码打包脚本产出（见 scripts/package_softbei_submission.*）
+# 公开源码打包脚本产出（见 scripts/package_public_source.*）
 dist/
 
 # ========================

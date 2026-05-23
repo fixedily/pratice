@@ -17,9 +17,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$BackendHost = "127.0.0.1"
+$BackendHost = "localhost"
 $BackendPort = 18000
-$FrontendHost = "127.0.0.1"
+$FrontendHost = "localhost"
 $FrontendPort = 3000
 $BackendBaseUrl = "http://$BackendHost`:$BackendPort"
 $FrontendBaseUrl = "http://$FrontendHost`:$FrontendPort"
@@ -376,7 +376,7 @@ if ('$FrontendMode' -eq 'share') {
   Write-Host '前端以 share 模式启动（next build + next start），适合内网穿透。' -ForegroundColor Magenta
   npm run share
 } else {
-  npm run dev
+  npm run dev -- --hostname $FrontendHost --port $FrontendPort
 }
 "@
 

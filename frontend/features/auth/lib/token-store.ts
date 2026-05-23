@@ -1,5 +1,6 @@
 /** 检修域 access token；refresh token 仅由后端 HttpOnly Cookie 保存。 */
-const KEY = "dachuang_maintenance_token";
+const KEY = "maintenance_system_token";
+const REMEMBER_KEY = "maintenance_system_remember";
 export const MAINTENANCE_AUTH_EXPIRED_EVENT = "maintenance-auth-expired";
 export const MAINTENANCE_AUTH_CHANGED_EVENT = "maintenance-auth-changed";
 
@@ -13,10 +14,30 @@ export function getMaintenanceToken(): string | null {
   return localStorage.getItem(KEY) || sessionStorage.getItem(KEY);
 }
 
-export function setMaintenanceToken(token: string): void {
+export function getMaintenanceRememberPreference(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(REMEMBER_KEY) === "1";
+}
+
+export function setMaintenanceRememberPreference(remember: boolean): void {
   if (typeof window === "undefined") return;
-  sessionStorage.setItem(KEY, token);
-  localStorage.removeItem(KEY);
+  if (remember) {
+    localStorage.setItem(REMEMBER_KEY, "1");
+  } else {
+    localStorage.removeItem(REMEMBER_KEY);
+  }
+}
+
+export function setMaintenanceToken(token: string, remember = getMaintenanceRememberPreference()): void {
+  if (typeof window === "undefined") return;
+  setMaintenanceRememberPreference(remember);
+  if (remember) {
+    localStorage.setItem(KEY, token);
+    sessionStorage.removeItem(KEY);
+  } else {
+    sessionStorage.setItem(KEY, token);
+    localStorage.removeItem(KEY);
+  }
   notifyMaintenanceAuthChanged();
 }
 
@@ -24,6 +45,7 @@ export function clearMaintenanceToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(KEY);
   sessionStorage.removeItem(KEY);
+  localStorage.removeItem(REMEMBER_KEY);
   notifyMaintenanceAuthChanged();
 }
 

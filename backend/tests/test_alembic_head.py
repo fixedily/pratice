@@ -14,4 +14,4 @@ def test_alembic_has_single_head() -> None:
     cfg.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == ["o8p9q0r1s2t3"]
+    assert script.get_heads() == ["p9q0r1s2t3u4"]

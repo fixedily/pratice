@@ -9,7 +9,10 @@ import { MaintenanceAuthError, maintenanceLogin } from "@/features/auth/api";
 import { AuthCard, AuthLayout } from "@/features/auth/components/auth-page-shell";
 import { CaptchaField, useCaptchaField } from "@/features/auth/components/captcha-field";
 import { AuthInput, AuthNotice, PasswordInput } from "@/features/auth/components/auth-form-controls";
-import { setMaintenanceToken } from "@/features/auth/lib/token-store";
+import {
+  getMaintenanceRememberPreference,
+  setMaintenanceToken,
+} from "@/features/auth/lib/token-store";
 import { ROUTES } from "@/shared/lib/routes";
 
 type LoginErrors = {
@@ -37,6 +40,7 @@ export default function LoginPage() {
   const isLocked = lockUntil !== null && nowMs < lockUntil;
 
   useEffect(() => {
+    setRememberMe(getMaintenanceRememberPreference());
     const params = new URLSearchParams(window.location.search);
     const rawNext = params.get("next")?.trim();
     if (rawNext?.startsWith("/")) setNextPath(rawNext);
@@ -79,7 +83,7 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       const data = await maintenanceLogin(account.trim(), password, captcha.payload(), rememberMe);
-      setMaintenanceToken(data.access_token);
+      setMaintenanceToken(data.access_token, rememberMe);
       setMessage({ tone: "success", text: "登录成功，正在进入系统。" });
       router.push(nextPath);
     } catch (error) {

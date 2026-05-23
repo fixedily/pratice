@@ -1,7 +1,7 @@
-"""Run TODO-SB-7 evaluation against the current 软件杯 API stack.
+"""Run workflow-quality evaluation against the current workflow quality API stack.
 
 Usage:
-    venv\\Scripts\\python.exe scripts/run_softbei_eval.py
+    venv\\Scripts\\python.exe scripts/run_workflow_quality_eval.py
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.config import get_settings
 from app.db.session import get_session
-from app.evaluation.softbei_metrics import build_scorecard
+from app.evaluation.workflow_quality_metrics import build_scorecard
 from app.main import app as fastapi_app
 from app.db.models import Base
 from app.db.models.maintenance import AuthUser, Role, UserRole
@@ -34,9 +34,9 @@ from app.modules.maintenance.security import create_access_token
 import app.db.models as app_models  # noqa: F401  # ensure all models are registered on Base
 
 
-DEFAULT_CASES_PATH = ROOT / "evaluation" / "softbei_eval_cases.json"
-DEFAULT_SEED_PATH = ROOT / "evaluation" / "softbei_knowledge_seed.json"
-DEFAULT_OUTPUT_PATH = ROOT / "evaluation" / "softbei_eval_results.json"
+DEFAULT_CASES_PATH = ROOT / "evaluation" / "workflow_eval_cases.json"
+DEFAULT_SEED_PATH = ROOT / "evaluation" / "workflow_knowledge_seed.json"
+DEFAULT_OUTPUT_PATH = ROOT / "evaluation" / "workflow_eval_results.json"
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,}")
 
 
@@ -152,7 +152,7 @@ async def create_eval_client(db_name: str) -> tuple[AsyncClient, async_sessionma
             yield session
 
     fastapi_app.dependency_overrides[get_session] = override_get_session
-    client = AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://softbei-eval")
+    client = AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://workflow-quality-eval")
     return client, session_factory, engine
 
 
@@ -174,13 +174,13 @@ async def build_eval_auth_headers(
             await session.flush()
 
         user = (
-            await session.execute(select(AuthUser).where(AuthUser.username == "softbei_eval_admin"))
+            await session.execute(select(AuthUser).where(AuthUser.username == "workflow_eval_admin"))
         ).scalar_one_or_none()
         if user is None:
             user = AuthUser(
-                username="softbei_eval_admin",
+                username="workflow_eval_admin",
                 password_hash="not-used-in-eval",
-                display_name="软件杯自动评测",
+                display_name="工作流质量自动评测",
                 is_active=True,
                 status="active",
             )
@@ -362,7 +362,7 @@ async def execute_case_flow(
             "correction_target": "summary",
             "original_content": case["resolution_summary"],
             "corrected_content": case["resolution_summary"],
-            "note": "TODO-SB-7 自动评测补充修正记录。",
+            "note": "workflow-quality 自动评测补充修正记录。",
         },
         headers=auth_headers,
     )
@@ -372,7 +372,7 @@ async def execute_case_flow(
         f"/api/v1/cases/{case_data['id']}/review",
         json={
             "action": "approve",
-            "reviewer_name": "TODO-SB-7 自动评测",
+            "reviewer_name": "workflow-quality 自动评测",
             "review_note": "自动评测通过，用于验证案例回流能力。",
         },
         headers=auth_headers,
@@ -405,7 +405,7 @@ async def run_evaluation(
     *,
     cases_path: Path = DEFAULT_CASES_PATH,
     seed_path: Path = DEFAULT_SEED_PATH,
-    db_name: str = "softbei_eval_stage7",
+    db_name: str = "workflow_eval_stage",
 ) -> dict[str, Any]:
     seed_payload = load_json(seed_path)
     cases = load_json(cases_path)
@@ -538,25 +538,25 @@ async def run_evaluation(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="运行软件杯评测（支持自定义样本）")
+    parser = argparse.ArgumentParser(description="运行工作流质量评测（支持自定义样本）")
     parser.add_argument(
         "--cases-path",
         default=str(DEFAULT_CASES_PATH),
-        help="评测样本 JSON 路径，默认 softbei_eval_cases.json",
+        help="评测样本 JSON 路径，默认 workflow_eval_cases.json",
     )
     parser.add_argument(
         "--seed-path",
         default=str(DEFAULT_SEED_PATH),
-        help="知识种子 JSON 路径，默认 softbei_knowledge_seed.json",
+        help="知识种子 JSON 路径，默认 workflow_knowledge_seed.json",
     )
     parser.add_argument(
         "--output-path",
         default=str(DEFAULT_OUTPUT_PATH),
-        help="评测结果输出路径，默认 softbei_eval_results.json",
+        help="评测结果输出路径，默认 workflow_eval_results.json",
     )
     parser.add_argument(
         "--db-name",
-        default="softbei_eval_stage7",
+        default="workflow_eval_stage",
         help="内存 SQLite 数据库名称，用于隔离多次评测会话",
     )
     return parser

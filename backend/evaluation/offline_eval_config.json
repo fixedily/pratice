@@ -1,8 +1,8 @@
 {
   "version": "v1.0",
   "description": "设备检修知识检索离线评测配置，支持正式 JSONL/CSV 测试集生成与可选 RAGAS 扩展。",
-  "seed_documents_path": "backend/evaluation/softbei_knowledge_seed.json",
-  "source_cases_path": "backend/evaluation/softbei_eval_cases.json",
+  "seed_documents_path": "backend/evaluation/workflow_knowledge_seed.json",
+  "source_cases_path": "backend/evaluation/workflow_eval_cases.json",
   "output_dir": "backend/evaluation/generated",
   "dataset_prefix": "maintenance_rag",
   "sample_types": [

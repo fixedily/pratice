@@ -26,7 +26,7 @@ class RedisService:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        prefix = (settings.redis_prefix or "dachuang").strip().rstrip(":")
+        prefix = (settings.redis_prefix or "maintenance").strip().rstrip(":")
         self._prefix = f"{prefix}:"
         self._client: Any | None = None
         self._available = False

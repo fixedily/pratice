@@ -16,6 +16,7 @@ from app.db.models.maintenance import (
     Annotation,
     Attachment,
     AuthUser,
+    ApprovalTask,
     Device,
     Escalation,
     FlowTemplate,
@@ -28,6 +29,10 @@ from app.db.models.maintenance import (
     WorkOrderMessage,
 )
 from app.db.models.tasks import MaintenanceTask
+from app.modules.maintenance.application.approval_task_service import (
+    ApprovalTaskService,
+    serialize_approval_task,
+)
 from app.modules.maintenance.datetime_util import to_iso_cn, utc_now_naive
 from app.modules.maintenance.deps import CurrentUserCtx
 from app.modules.maintenance.errors import MaintenanceAPIError
@@ -622,6 +627,14 @@ class MaintenanceWorkOrderService:
             }
             detail["flow_template_id"] = template.id
             detail["current_step_no"] = work_order.current_step_no
+        approval_rows = (
+            await self.session.execute(
+                select(ApprovalTask)
+                .where(ApprovalTask.work_order_id == work_order.id)
+                .order_by(ApprovalTask.id.desc())
+            )
+        ).scalars().all()
+        detail["approval_tasks"] = [serialize_approval_task(row) for row in approval_rows]
         await observe_duration(
             "maintenance_work_order_query_duration_ms",
             (perf_counter() - started) * 1000,
@@ -681,6 +694,13 @@ class MaintenanceWorkOrderService:
         step_def = next((step for step in steps if int(step.get("step_no", -1)) == step_no), None)
         if step_def is None:
             raise MaintenanceAPIError(409, "STEP_NOT_ALLOWED", "工步不在模板中")
+        approval_service = ApprovalTaskService(self.session, self._audit)
+        await approval_service.assert_no_blocking_agent_approval(work_order_id=work_order.id)
+        await approval_service.assert_step_approved_if_required(
+            work_order_id=work_order.id,
+            step_no=step_no,
+            requires_approval=bool(step_def.get("requires_approval")),
+        )
         progress = dict(work_order.step_progress_json or {})
         done_list = list(progress.get("completed_steps", []))
         if step_no in done_list:

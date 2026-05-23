@@ -20,6 +20,27 @@ _BATCH_SIZE = 64
 _DASHSCOPE_OPENAI_TEXT_EMBEDDING_FALLBACK = "text-embedding-v4"
 
 
+class OpenAICompatibleEmbeddings:
+    """Small OpenAI-compatible embedding adapter without LangChain imports."""
+
+    def __init__(self, *, model: str, api_key: str, base_url: str | None) -> None:
+        from openai import OpenAI
+
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = OpenAI(**kwargs)
+        self._model = model
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        response = self._client.embeddings.create(model=self._model, input=texts)
+        ordered = sorted(response.data, key=lambda item: item.index)
+        return [list(item.embedding) for item in ordered]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+
 class EmbeddingService:
     """Manages embedding generation via Ollama and vector index for semantic search."""
 
@@ -39,34 +60,29 @@ class EmbeddingService:
 
     def _get_embeddings(self):
         if self._embeddings is None:
-            from langchain_openai import OpenAIEmbeddings
-
             provider = (getattr(self._settings, "embedding_provider", "") or "").strip().lower()
             if provider == "dashscope" and self._settings.dashscope_api_key:
                 model_name = self._resolve_dashscope_embedding_model()
-                self._embeddings = OpenAIEmbeddings(
+                self._embeddings = OpenAICompatibleEmbeddings(
                     model=model_name,
-                    openai_api_base=self._settings.dashscope_api_base,
-                    openai_api_key=self._settings.dashscope_api_key,
-                    check_embedding_ctx_length=False,
+                    base_url=self._settings.dashscope_api_base,
+                    api_key=self._settings.dashscope_api_key,
                 )
                 logger.info("Embedding provider initialized: dashscope model=%s", model_name)
             elif provider == "openai" and self._settings.openai_api_key:
                 model_name = self._settings.embedding_model
-                self._embeddings = OpenAIEmbeddings(
+                self._embeddings = OpenAICompatibleEmbeddings(
                     model=model_name,
-                    openai_api_base=self._settings.openai_api_base,
-                    openai_api_key=self._settings.openai_api_key,
-                    check_embedding_ctx_length=False,
+                    base_url=self._settings.openai_api_base,
+                    api_key=self._settings.openai_api_key,
                 )
                 logger.info("Embedding provider initialized: openai model=%s", model_name)
             else:
                 model_name = self._settings.embedding_model
-                self._embeddings = OpenAIEmbeddings(
+                self._embeddings = OpenAICompatibleEmbeddings(
                     model=model_name,
-                    openai_api_base=f"{self._settings.ollama_base_url}/v1",
-                    openai_api_key="ollama",
-                    check_embedding_ctx_length=False,
+                    base_url=f"{self._settings.ollama_base_url}/v1",
+                    api_key="ollama",
                 )
                 logger.info("Embedding provider initialized: ollama model=%s", model_name)
         return self._embeddings

@@ -5,7 +5,8 @@ function jsonResponse(data: unknown) {
     status: 200,
     contentType: "application/json",
     headers: {
-      "access-control-allow-origin": "*",
+      "access-control-allow-origin": "http://127.0.0.1:3000",
+      "access-control-allow-credentials": "true",
     },
     body: JSON.stringify(data),
   };
@@ -131,6 +132,23 @@ const allCompletedHistory = [
     completed_steps: 7,
     created_at: "2026-05-13T08:40:00",
     updated_at: "2026-05-13T11:00:00",
+  },
+];
+
+const todayOnlyHistory = [
+  {
+    id: 21,
+    title: "今日触发闭环",
+    equipment_type: "燃油泵",
+    equipment_model: "FP-200",
+    status: "completed",
+    maintenance_level: "standard",
+    workflow_total: 5,
+    workflow_completed: 5,
+    total_steps: 4,
+    completed_steps: 4,
+    created_at: "2026-05-23T09:00:00",
+    updated_at: "2026-05-23T10:00:00",
   },
 ];
 
@@ -262,6 +280,34 @@ const populatedOverview = {
   ],
 };
 
+const todayOnlyOverview = {
+  generated_at: "2026-05-23T11:30:00",
+  stats: [
+    { key: "active_tasks", label: "进行中任务", value: 1, accent: "green" },
+  ],
+  featured_queries: [],
+  agent_capabilities: [],
+  recommended_knowledge_count: 0,
+  recommended_knowledge: [],
+  recent_tasks: [
+    {
+      id: 21,
+      title: "今日触发闭环",
+      equipment_type: "燃油泵",
+      equipment_model: "FP-200",
+      status: "resolved",
+      maintenance_level: "standard",
+      total_steps: 4,
+      completed_steps: 4,
+      created_at: "2026-05-23T09:00:00",
+      updated_at: "2026-05-23T10:00:00",
+      asset_code: "EQ-021",
+      work_order_id: "WO-021",
+    },
+  ],
+  recent_cases: [],
+};
+
 test("dashboard shows closure overview charts in populated state", async ({
   page,
 }) => {
@@ -388,7 +434,8 @@ test("dashboard shows closure overview charts in populated state", async ({
   ).toBe(true);
 
   await page.getByRole("button", { name: "今日" }).click();
-  await expect(page.getByTestId("closure-trend-axis")).toContainText("00:00");
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("08:00");
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("23:00");
   await expect(page.getByTestId("closure-stage-value-告警触发")).toContainText(
     "0",
   );
@@ -397,8 +444,14 @@ test("dashboard shows closure overview charts in populated state", async ({
   );
   await expect(page.getByText("燃油泵巡检")).toBeHidden();
   await page.getByRole("button", { name: "近 30 日" }).click();
+  await expect(
+    page.getByTestId("closure-trend-chart").locator(".recharts-bar-rectangle"),
+  ).toHaveCount(30);
   await expect(page.getByTestId("closure-trend-axis")).toContainText("04/14");
   await page.getByRole("button", { name: "近 7 日" }).click();
+  await expect(
+    page.getByTestId("closure-trend-chart").locator(".recharts-bar-rectangle"),
+  ).toHaveCount(7);
   await expect(page.getByTestId("closure-trend-axis")).toContainText("05/07");
   await expect(page.getByTestId("closure-stage-value-告警触发")).toContainText(
     "4",
@@ -517,4 +570,53 @@ test("dashboard donut renders a full ring for 100 percent completion", async ({
   await expect(
     page.locator("[data-testid='status-donut-center']"),
   ).toContainText("100%");
+  const centerFit = await page.evaluate(() => {
+    const rate = document.querySelector('[data-testid="status-donut-rate-value"]');
+    const track = document.querySelector('[data-testid="status-donut-track"]');
+    if (!(rate instanceof HTMLElement) || !(track instanceof SVGElement)) {
+      return { fits: false, textWidth: 0, innerDiameter: 0 };
+    }
+    const rateBox = rate.getBoundingClientRect();
+    const trackBox = track.getBoundingClientRect();
+    const innerDiameter = (trackBox.width / 128) * 74;
+    return {
+      fits: rateBox.width <= innerDiameter,
+      textWidth: rateBox.width,
+      innerDiameter,
+    };
+  });
+  expect(centerFit.fits, JSON.stringify(centerFit)).toBe(true);
+});
+
+test("dashboard keeps today-only closure trend on today's bucket", async ({
+  page,
+}) => {
+  await mockDashboardApis(page, todayOnlyOverview, 0, todayOnlyHistory);
+
+  await page.goto("/dashboard");
+
+  await expect(page.getByText(/近 7 日闭环率为 100%/)).toBeVisible();
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("05/23");
+
+  const barGroups = page
+    .getByTestId("closure-trend-chart")
+    .locator(".recharts-bar-rectangle");
+  await expect(barGroups).toHaveCount(7);
+  await expect(
+    page
+      .getByTestId("closure-trend-chart")
+      .locator(".recharts-bar-rectangle .recharts-rectangle"),
+  ).toHaveCount(1);
+
+  await page.getByRole("button", { name: "今日" }).click();
+  const todayBarGroups = page
+    .getByTestId("closure-trend-chart")
+    .locator(".recharts-bar-rectangle");
+  await expect(todayBarGroups).toHaveCount(24);
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("00:00");
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("08:00");
+  await expect(page.getByTestId("closure-trend-axis")).toContainText("23:00");
+  await expect(page.getByTestId("closure-trend-axis")).not.toContainText(
+    "03:59",
+  );
 });

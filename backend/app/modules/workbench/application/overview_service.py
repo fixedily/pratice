@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.metrics import build_metrics_snapshot
 from app.db.models.knowledge import KnowledgeChunk, KnowledgeDocument, MaintenanceCase
 from app.db.models.tasks import MaintenanceTask
-from app.evaluation.softbei_metrics import build_quality_highlights, build_runtime_highlights
+from app.evaluation.workflow_quality_metrics import build_quality_highlights, build_runtime_highlights
 from app.modules.tasks.application.task_service import MaintenanceTaskService
 from app.modules.cases.application.case_service import MaintenanceCaseService
 
@@ -24,7 +24,7 @@ AGENT_CAPABILITIES = [
     "RiskControlAgent：负责风险提示、缺项检查与合规校验",
     "CaseCuratorAgent：负责案例沉淀、修正建议与知识回流",
 ]
-EVALUATION_RESULTS_PATH = Path(__file__).resolve().parents[4] / "evaluation" / "softbei_eval_results.json"
+EVALUATION_RESULTS_PATH = Path(__file__).resolve().parents[4] / "evaluation" / "workflow_eval_results.json"
 
 
 class WorkbenchOverviewService:

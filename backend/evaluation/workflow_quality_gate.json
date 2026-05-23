@@ -1,6 +1,6 @@
 {
-  "description": "软件杯功能3/4自动化评测门禁阈值（单位：百分比）。",
-  "result_file": "evaluation/softbei_eval_results.json",
+  "description": "工作流质量自动化评测门禁阈值（单位：百分比）。",
+  "result_file": "evaluation/workflow_eval_results.json",
   "thresholds": {
     "workflow_completion_rate_min": 95.0,
     "feedback_recall_rate_min": 95.0,

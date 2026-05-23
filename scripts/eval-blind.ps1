@@ -11,9 +11,9 @@ if (-not (Test-Path $VenvPy)) {
 
 Set-Location -LiteralPath $Backend
 
-& $VenvPy scripts/run_softbei_eval.py `
-    --cases-path "evaluation/softbei_blind_eval_cases.json" `
-    --output-path "evaluation/softbei_blind_eval_results.json" `
-    --db-name "softbei_blind_eval_day3"
+& $VenvPy scripts/run_workflow_quality_eval.py `
+    --cases-path "evaluation/workflow_blind_eval_cases.json" `
+    --output-path "evaluation/workflow_blind_eval_results.json" `
+    --db-name "workflow_blind_eval"
 
-Write-Host "盲测完成：backend/evaluation/softbei_blind_eval_results.json" -ForegroundColor Green
+Write-Host "盲测完成：backend/evaluation/workflow_blind_eval_results.json" -ForegroundColor Green

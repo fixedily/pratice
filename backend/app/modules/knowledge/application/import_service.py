@@ -292,9 +292,13 @@ class KnowledgeImportService:
         replace_existing: bool = False,
         batch_id: str | None = None,
         knowledge_base_id: int | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         """Accept an uploaded file and enqueue a persisted import job."""
-        resolved_base_id = await self.base_service.resolve_knowledge_base_id(knowledge_base_id)
+        resolved_base_id = await self.base_service.resolve_knowledge_base_id(
+            knowledge_base_id,
+            user_id=user_id,
+        )
         normalized_title = (title or "").strip() or self._derive_title(filename)
         source_name = filename.strip()
         import_type, processing_note = self._classify_import_file(
@@ -577,9 +581,13 @@ class KnowledgeImportService:
         source_type: str = "manual",
         replace_existing: bool = False,
         knowledge_base_id: int | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         """Preview a PDF or image import without persisting it into the knowledge base."""
-        resolved_base_id = await self.base_service.resolve_knowledge_base_id(knowledge_base_id)
+        resolved_base_id = await self.base_service.resolve_knowledge_base_id(
+            knowledge_base_id,
+            user_id=user_id,
+        )
         normalized_title = (title or "").strip() or self._derive_title(filename)
         source_name = filename.strip()
         import_type, processing_note = self._classify_import_file(

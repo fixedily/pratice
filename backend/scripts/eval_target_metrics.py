@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from run_softbei_eval import create_eval_client, load_json, seed_documents
-from run_softbei_eval import result_matches_case, normalize_text
+from run_workflow_quality_eval import create_eval_client, load_json, seed_documents
+from run_workflow_quality_eval import result_matches_case, normalize_text
 
-CASES_PATH = ROOT / "evaluation" / "softbei_eval_cases.json"
-SEED_PATH = ROOT / "evaluation" / "softbei_knowledge_seed.json"
+CASES_PATH = ROOT / "evaluation" / "workflow_eval_cases.json"
+SEED_PATH = ROOT / "evaluation" / "workflow_knowledge_seed.json"
 
 
 def _match_item(item: dict[str, Any], case: dict[str, Any]) -> bool:

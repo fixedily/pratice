@@ -1,4 +1,4 @@
-"""Phase 17: 软件杯效果证据与测试报告资产验证."""
+"""Phase 17: 工作流质量证据与测试报告资产验证."""
 import json
 import subprocess
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.evaluation.softbei_metrics import (
+from app.evaluation.workflow_quality_metrics import (
     build_quality_highlights,
     build_runtime_highlights,
     build_scorecard,
@@ -17,10 +17,10 @@ from app.evaluation.softbei_metrics import (
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_softbei_eval_case_asset_count():
+def test_workflow_quality_eval_case_asset_count():
     """标准案例资产应保持在合理规模，并覆盖成功/模糊/失败场景。"""
     cases = json.loads(
-        (_BACKEND_ROOT / "evaluation" / "softbei_eval_cases.json").read_text(encoding="utf-8")
+        (_BACKEND_ROOT / "evaluation" / "workflow_eval_cases.json").read_text(encoding="utf-8")
     )
 
     assert 10 <= len(cases) <= 50
@@ -151,9 +151,9 @@ def test_workbench_highlight_builders():
     assert runtime[0]["value"] == "12"
 
 
-def test_softbei_evaluation_script_generates_report():
+def test_workflow_quality_evaluation_script_generates_report():
     """评测脚本应在当前解释器环境下成功运行并生成固定结果文件。"""
-    script = _BACKEND_ROOT / "scripts" / "run_softbei_eval.py"
+    script = _BACKEND_ROOT / "scripts" / "run_workflow_quality_eval.py"
     result = subprocess.run(
         [sys.executable, str(script)],
         cwd=str(_BACKEND_ROOT),
@@ -165,7 +165,7 @@ def test_softbei_evaluation_script_generates_report():
     assert "评测结果已写入" in result.stdout
 
     payload = json.loads(
-        (_BACKEND_ROOT / "evaluation" / "softbei_eval_results.json").read_text(encoding="utf-8")
+        (_BACKEND_ROOT / "evaluation" / "workflow_eval_results.json").read_text(encoding="utf-8")
     )
     retrieval = payload["metrics"]["current_system"]["retrieval"]
     assert retrieval["hits"] >= 8

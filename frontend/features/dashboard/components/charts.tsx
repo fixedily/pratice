@@ -320,6 +320,7 @@ export function ClosureTrendChart({
   const [isCompactViewport, setIsCompactViewport] = useState(false);
   const series =
     data.length > 0 ? data : [{ label: "--", tasks: 0, alerts: 0, closed: 0 }];
+  const showPointDots = series.length <= 12;
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 639px)");
@@ -341,8 +342,10 @@ export function ClosureTrendChart({
     payload,
   }: TrendAxisTickProps) => {
     const label = payload?.value ?? "";
+    const labelStep = Math.max(1, Math.ceil(series.length / 7));
     const shouldShow =
-      !isCompactViewport || index % 2 === 0 || index === series.length - 1;
+      (!isCompactViewport && (index % labelStep === 0 || index === series.length - 1)) ||
+      (isCompactViewport && (index % 2 === 0 || index === series.length - 1));
 
     return (
       <text
@@ -470,7 +473,11 @@ export function ClosureTrendChart({
                   dataKey="tasks"
                   stroke="var(--color-tasks)"
                   strokeWidth={3}
-                  dot={{ r: 3, strokeWidth: 2, fill: "var(--color-tasks)" }}
+                  dot={
+                    showPointDots
+                      ? { r: 3, strokeWidth: 2, fill: "var(--color-tasks)" }
+                      : false
+                  }
                   activeDot={{ r: 5 }}
                 />
                 <Line
@@ -478,7 +485,11 @@ export function ClosureTrendChart({
                   dataKey="closed"
                   stroke="var(--color-closed)"
                   strokeWidth={3}
-                  dot={{ r: 3, strokeWidth: 2, fill: "var(--color-closed)" }}
+                  dot={
+                    showPointDots
+                      ? { r: 3, strokeWidth: 2, fill: "var(--color-closed)" }
+                      : false
+                  }
                   activeDot={{ r: 5 }}
                 />
                 <ChartLegend
@@ -587,7 +598,10 @@ export function StatusDonutCard({
               data-testid="status-donut-center"
               className="absolute inset-0 flex flex-col items-center justify-center"
             >
-              <span className="text-3xl font-bold text-foreground">
+              <span
+                data-testid="status-donut-rate-value"
+                className="text-2xl font-bold leading-none tabular-nums text-foreground sm:text-[1.625rem]"
+              >
                 {Math.round(safeRate)}%
               </span>
               <span className="text-xs font-medium text-muted-foreground/70">

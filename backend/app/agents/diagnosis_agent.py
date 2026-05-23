@@ -10,21 +10,84 @@ from langchain_core.tools import BaseTool
 
 from app.core.config import get_settings
 
-# ---------------------------------------------------------
-# 可选的 LLM 依赖导入（带 try-except 防止缺包导致启动失败）
-# ---------------------------------------------------------
 _LangChainOpenAI = None
 _LangChainAnthropic = None
+_LangChainOpenAILoaded = False
+_LangChainAnthropicLoaded = False
 
-try:
-    from langchain_openai import ChatOpenAI as LangChainOpenAI
-except ImportError:
-    pass  # langchain-openai 可选
 
-try:
-    from langchain_anthropic import ChatAnthropic as LangChainAnthropic
-except ImportError:
-    pass  # langchain-anthropic 可选
+def _load_langchain_openai():
+    """Load ChatOpenAI lazily so optional ML dependencies cannot break startup."""
+    global _LangChainOpenAI, _LangChainOpenAILoaded
+    if not _LangChainOpenAILoaded:
+        _LangChainOpenAILoaded = True
+        try:
+            from langchain_openai import ChatOpenAI
+
+            _LangChainOpenAI = ChatOpenAI
+        except Exception:
+            _LangChainOpenAI = None
+    return _LangChainOpenAI
+
+
+def _load_langchain_anthropic():
+    """Load ChatAnthropic lazily so optional provider packages stay optional."""
+    global _LangChainAnthropic, _LangChainAnthropicLoaded
+    if not _LangChainAnthropicLoaded:
+        _LangChainAnthropicLoaded = True
+        try:
+            from langchain_anthropic import ChatAnthropic
+
+            _LangChainAnthropic = ChatAnthropic
+        except Exception:
+            _LangChainAnthropic = None
+    return _LangChainAnthropic
+
+
+class _ChatResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class OpenAICompatibleChatModel:
+    """Minimal chat model for OpenAI-compatible providers without LangChain imports."""
+
+    def __init__(self, *, model: str, api_key: str, base_url: str | None, temperature: float = 0.1) -> None:
+        from openai import OpenAI
+
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = OpenAI(**kwargs)
+        self._model = model
+        self._temperature = temperature
+
+    def invoke(self, messages: list[Any]) -> _ChatResponse:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=self._normalize_messages(messages),
+            temperature=self._temperature,
+        )
+        content = response.choices[0].message.content or ""
+        return _ChatResponse(content)
+
+    def _normalize_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, tuple) and len(message) == 2:
+                role, content = message
+            else:
+                role = getattr(message, "role", "user")
+                content = getattr(message, "content", str(message))
+            role_text = str(role).lower()
+            if role_text == "human":
+                role_text = "user"
+            elif role_text == "ai":
+                role_text = "assistant"
+            if role_text not in {"system", "user", "assistant"}:
+                role_text = "user"
+            normalized.append({"role": role_text, "content": content})
+        return normalized
 
 
 # ============================================================
@@ -112,9 +175,6 @@ def _create_openai_llm(model_name: str | None) -> Any | None:
     Returns:
         LLM 实例，credentials 不可用时返回 None
     """
-    if LangChainOpenAI is None:
-        return None
-
     settings = get_settings()
 
     # DeepSeek API Key（优先）
@@ -139,7 +199,7 @@ def _create_openai_llm(model_name: str | None) -> Any | None:
     # DeepSeek 默认模型
     actual_model = model_name or ("deepseek-chat" if is_deepseek else "gpt-4o")
 
-    return LangChainOpenAI(
+    return OpenAICompatibleChatModel(
         model=actual_model,
         api_key=actual_key,
         base_url=api_base,
@@ -149,15 +209,12 @@ def _create_openai_llm(model_name: str | None) -> Any | None:
 
 def _create_zhipu_llm(model_name: str | None) -> Any | None:
     """创建智谱 GLM OpenAI-compatible LLM 实例。"""
-    if LangChainOpenAI is None:
-        return None
-
     settings = get_settings()
     if not settings.zhipu_api_key:
         return None
 
     actual_model = model_name or settings.zhipu_text_model or settings.default_text_model
-    return LangChainOpenAI(
+    return OpenAICompatibleChatModel(
         model=actual_model,
         api_key=settings.zhipu_api_key,
         base_url=settings.zhipu_api_base,
@@ -176,7 +233,8 @@ def _create_anthropic_llm(model_name: str | None) -> Any | None:
     Returns:
         LLM 实例，credentials 不可用时返回 None
     """
-    if LangChainAnthropic is None:
+    chat_anthropic = _load_langchain_anthropic()
+    if chat_anthropic is None:
         return None
 
     settings = get_settings()
@@ -188,7 +246,7 @@ def _create_anthropic_llm(model_name: str | None) -> Any | None:
     # Claude 默认模型
     actual_model = model_name or "claude-sonnet-4-20250514"
 
-    return LangChainAnthropic(
+    return chat_anthropic(
         model=actual_model,
         api_key=anthropic_key,
         temperature=0.1,

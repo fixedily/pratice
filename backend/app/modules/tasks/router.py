@@ -1,4 +1,4 @@
-"""Maintenance task workflow APIs for TODO-SB-4."""
+"""Maintenance task workflow APIs for TODO-MAINT-4."""
 import logging
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -263,7 +263,7 @@ async def list_maintenance_history(
     response_model=MaintenanceTaskExportResponse,
     status_code=status.HTTP_200_OK,
     summary="导出检修任务",
-    description="导出任务、步骤、知识引用和总结，供报告或答辩展示使用。",
+    description="导出任务、步骤、知识引用和总结，供报告或演示展示使用。",
 )
 async def export_maintenance_task(
     task_id: int,

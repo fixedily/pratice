@@ -21,6 +21,7 @@ import {
   Send,
   Sparkles,
   Wrench,
+  XCircle,
 } from "lucide-react";
 import { Header } from "@/shared/components/brand/app-header";
 import { useMaintenanceAuth } from "@/features/auth/maintenance-auth";
@@ -59,6 +60,7 @@ import {
   acceptWorkOrderFillReview,
   completeWorkOrderMaintenance,
   confirmWorkOrderStep,
+  createWorkOrderApprovalTask,
   createWorkOrderEscalation,
   enterWorkOrderMaintenance,
   fetchWorkOrderAssignmentCandidates,
@@ -68,9 +70,11 @@ import {
   isMaintenanceAuthExpiredError,
   postWorkOrderMessage,
   resumeWorkOrder,
+  resolveApprovalTask,
   submitWorkOrderFilling,
   suspendWorkOrder,
   updateWorkOrderAssignment,
+  type ApprovalTaskItem,
   type WorkOrderAssignee,
   type WorkOrderAssignmentUpdatePayload,
   type WorkOrderDetailPayload,
@@ -135,6 +139,7 @@ const eventLabelMap: Record<string, string> = {
   approval_rejected: "审批驳回",
   approval_returned: "审批退回",
   approval_requested: "提交审批",
+  agent_approval_requested: "Agent 审批请求",
   expert_accept_fill: "专家验收通过",
   fill_submitted: "已提交回填",
   assignment_updated: "分配已更新",
@@ -165,8 +170,33 @@ type TimelineEntry =
 type TimelineFilter = "all" | "system" | "manual" | "approval";
 
 const APPROVAL_EVENT_TYPES = new Set([
-  "approval_approved", "approval_rejected", "approval_returned", "approval_requested",
+  "approval_approved", "approval_rejected", "approval_returned", "approval_requested", "agent_approval_requested",
 ]);
+
+type ApprovalResolveAction = "approve" | "reject" | "return";
+
+const approvalStateMeta: Record<string, { label: string; className: string }> = {
+  missing: {
+    label: "待申请",
+    className: "border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300",
+  },
+  pending: {
+    label: "待审批",
+    className: "border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-400",
+  },
+  approved: {
+    label: "已通过",
+    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  },
+  rejected: {
+    label: "已驳回",
+    className: "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400",
+  },
+  returned: {
+    label: "已退回",
+    className: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  },
+};
 
 function getMaintenanceLevelMeta(level?: string | null) {
   return maintenanceLevelMeta[String(level || "").toLowerCase()] ?? {
@@ -191,6 +221,29 @@ function getDisplayedWorkOrderStatusMeta(detail: WorkOrderDetailPayload | null) 
 
 function formatWorkOrderCode(id: number) {
   return `WO-${String(id).padStart(6, "0")}`;
+}
+
+function getApprovalState(task: ApprovalTaskItem | null | undefined) {
+  if (!task) return "missing";
+  if (task.approval_state) return String(task.approval_state);
+  if (task.status === "pending") return "pending";
+  return task.resolution || task.status || "missing";
+}
+
+function getApprovalStateMeta(task: ApprovalTaskItem | null | undefined) {
+  const state = getApprovalState(task);
+  return approvalStateMeta[state] ?? approvalStateMeta.missing;
+}
+
+function isApprovalTaskBlocking(task: ApprovalTaskItem | null | undefined) {
+  if (!task) return false;
+  if (typeof task.blocking === "boolean") return task.blocking;
+  const state = getApprovalState(task);
+  return state === "pending" || state === "rejected" || state === "returned";
+}
+
+function canResolveApprovalTask(user: { roles?: string[] } | null | undefined) {
+  return Array.isArray(user?.roles) && user.roles.some((role) => ["expert", "safety", "admin"].includes(role));
 }
 
 function formatSlaRemaining(deadline: string | null | undefined) {
@@ -628,6 +681,9 @@ type WorkOrderExecutionStep = {
   current: boolean;
   detail?: string;
   confirmable: boolean;
+  approvalTask?: ApprovalTaskItem | null;
+  approvalState?: string;
+  approvalBlocking?: boolean;
 };
 
 function normalizeExecutionSteps(
@@ -678,6 +734,27 @@ function normalizeExecutionSteps(
     detail: step.detail,
     confirmable: false,
   }));
+}
+
+function attachStepApprovalState(
+  steps: WorkOrderExecutionStep[],
+  approvalTasks: ApprovalTaskItem[],
+): WorkOrderExecutionStep[] {
+  return steps.map((step) => {
+    const approvalTask =
+      approvalTasks.find(
+        (task) =>
+          String(task.source_type || "work_order_step") === "work_order_step" &&
+          Number(task.step_no) === step.stepNo,
+      ) ?? null;
+    const approvalState = step.requiresApproval ? getApprovalState(approvalTask) : undefined;
+    return {
+      ...step,
+      approvalTask,
+      approvalState,
+      approvalBlocking: step.requiresApproval && approvalState !== "approved",
+    };
+  });
 }
 
 function buildCaseDraft(
@@ -816,6 +893,9 @@ export default function TicketDetailPage() {
   const [stepNoteDialogOpen, setStepNoteDialogOpen] = useState(false);
   const [stepNoteTarget, setStepNoteTarget] = useState<number | null>(null);
   const [stepNote, setStepNote] = useState("");
+  const [creatingApprovalStepNo, setCreatingApprovalStepNo] = useState<number | null>(null);
+  const [approvalSubmittingKey, setApprovalSubmittingKey] = useState<string | null>(null);
+  const [approvalComment, setApprovalComment] = useState("");
 
   const loadTimeline = async (token: string, workOrderId: number) => {
     setTimelineLoading(true);
@@ -918,14 +998,23 @@ export default function TicketDetailPage() {
     () => buildActionCardsFromTask(sourceTaskDetail, sourceTask?.advice_card, latestAssistantSuggestion),
     [latestAssistantSuggestion, sourceTask?.advice_card, sourceTaskDetail],
   );
+  const approvalTasks = useMemo(() => detail?.approval_tasks ?? [], [detail?.approval_tasks]);
+  const blockingAgentApproval = useMemo(
+    () =>
+      approvalTasks.find(
+        (task) => String(task.source_type || "") === "agent_review" && isApprovalTaskBlocking(task),
+      ) ?? null,
+    [approvalTasks],
+  );
   const diagnosisConclusion = useMemo(
     () => buildDiagnosisConclusionFromTask(sourceTaskDetail, sourceTask?.diagnosis_report),
     [sourceTask?.diagnosis_report, sourceTaskDetail],
   );
   const executionSteps = useMemo(
-    () => normalizeExecutionSteps(detail, actionSteps),
-    [actionSteps, detail],
+    () => attachStepApprovalState(normalizeExecutionSteps(detail, actionSteps), approvalTasks),
+    [actionSteps, approvalTasks, detail],
   );
+  const canResolveApprovals = canResolveApprovalTask(user);
   const canEditAssignment = canAssignWorkOrder(user);
   const matchesSearch = useCallback(
     (candidate: WorkOrderAssignee) => {
@@ -1136,6 +1225,56 @@ export default function TicketDetailPage() {
       } finally {
         setConfirmingStepNo(null);
         setStepNoteTarget(null);
+      }
+    })();
+  };
+
+  const handleCreateStepApproval = (step: WorkOrderExecutionStep) => {
+    const token = getMaintenanceToken();
+    if (!token || !Number.isFinite(numericId)) return;
+    setCreatingApprovalStepNo(step.stepNo);
+    void (async () => {
+      try {
+        await createWorkOrderApprovalTask(token, numericId, {
+          step_no: step.stepNo,
+          source_type: "work_order_step",
+          risk_level: detail?.maintenance_level ?? null,
+          reason: `${step.title} 需要人工审批通过后确认完成`,
+          payload: {
+            step_title: step.title,
+            step_detail: step.detail ?? null,
+          },
+        });
+        toast.success(`已提交工步 ${step.stepNo} 审批`);
+        await loadDetail({ silent: true });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "提交审批失败");
+      } finally {
+        setCreatingApprovalStepNo(null);
+      }
+    })();
+  };
+
+  const handleResolveApproval = (task: ApprovalTaskItem, action: ApprovalResolveAction) => {
+    const token = getMaintenanceToken();
+    const commentText = approvalComment.trim();
+    if (!token || !Number.isFinite(numericId)) return;
+    if (!commentText) {
+      toast.error("请先填写审批意见");
+      return;
+    }
+    const key = `${task.id}:${action}`;
+    setApprovalSubmittingKey(key);
+    void (async () => {
+      try {
+        await resolveApprovalTask(token, task.id, { action, comment: commentText });
+        setApprovalComment("");
+        toast.success(action === "approve" ? "审批已通过" : action === "reject" ? "审批已驳回" : "审批已退回");
+        await loadDetail({ silent: true });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "审批处理失败");
+      } finally {
+        setApprovalSubmittingKey(null);
       }
     })();
   };
@@ -1483,7 +1622,7 @@ export default function TicketDetailPage() {
                   type="button"
                   className="app-btn-primary"
                   onClick={() => handleAction("complete")}
-                  disabled={actionPending != null}
+                  disabled={actionPending != null || Boolean(blockingAgentApproval)}
                 >
                   {actionPending === "complete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                   完成检修
@@ -1511,6 +1650,11 @@ export default function TicketDetailPage() {
                 ) : null}
               </div>
               <p className="mt-2 text-sm leading-6 text-foreground/85">{summary}</p>
+              {blockingAgentApproval ? (
+                <p className="mt-2 text-sm text-orange-600 dark:text-orange-300">
+                  当前存在 Agent 审批阻断，完成审批前不能继续完成检修或自动收口。
+                </p>
+              ) : null}
               {!hasAvailableAction && !canAcceptReview && !canFillResult ? (
                 <p className="mt-2 text-sm text-muted-foreground">
                   {!canAdvanceWorkOrder && detail.status !== "S9"
@@ -1556,9 +1700,23 @@ export default function TicketDetailPage() {
                 </span>
               </div>
               <div className="p-5">
+                {blockingAgentApproval ? (
+                  <div className="mb-4 rounded-lg border border-orange-500/30 bg-orange-500/10 px-4 py-3 text-sm text-orange-700 dark:text-orange-300">
+                    Agent 审核触发人工审批 #{blockingAgentApproval.id}，审批通过前不能确认高危工步或完成检修。
+                    {blockingAgentApproval.reason ? (
+                      <div className="mt-1 text-xs leading-5 text-orange-700/80 dark:text-orange-300/80">
+                        {blockingAgentApproval.reason}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {executionSteps.length > 0 ? (
                   <div className="space-y-3">
-                    {executionSteps.map((step) => (
+                    {executionSteps.map((step) => {
+                      const stepApprovalMeta = getApprovalStateMeta(step.approvalTask);
+                      const stepApprovalBlocked = Boolean(step.approvalBlocking);
+                      const confirmBlockedByApproval = stepApprovalBlocked || Boolean(blockingAgentApproval);
+                      return (
                       <div
                         key={step.key}
                         className={`rounded-xl border p-3 sm:p-5 transition-all ${
@@ -1603,17 +1761,46 @@ export default function TicketDetailPage() {
                                   建议步骤
                                 </span>
                               )}
+                              {step.requiresApproval ? (
+                                <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${stepApprovalMeta.className}`}>
+                                  审批：{stepApprovalMeta.label}
+                                </span>
+                              ) : null}
                             </div>
                             {step.detail ? (
                               <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.detail}</p>
                             ) : null}
                             <div className="mt-3">
+                              {step.requiresApproval && stepApprovalBlocked && !step.completed ? (
+                                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-orange-700 dark:text-orange-300">
+                                  <span>
+                                    {step.approvalTask
+                                      ? "审批未通过前不能确认该工步。"
+                                      : "该工步需要先提交审批。"}
+                                  </span>
+                                  {canAdvanceWorkOrder && (!step.approvalTask || ["rejected", "returned", "missing"].includes(step.approvalState || "missing")) ? (
+                                    <button
+                                      type="button"
+                                      className="app-btn-secondary h-8 px-3 text-xs"
+                                      onClick={() => handleCreateStepApproval(step)}
+                                      disabled={creatingApprovalStepNo != null}
+                                    >
+                                      {creatingApprovalStepNo === step.stepNo ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      ) : (
+                                        <FileText className="h-3.5 w-3.5" />
+                                      )}
+                                      申请审批
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : null}
                               {canConfirmWorkOrderStep(user, detail.status) && step.confirmable && !step.completed ? (
                                 <button
                                   type="button"
                                   className="app-btn-secondary"
                                   onClick={() => handleConfirmStep(step.stepNo)}
-                                  disabled={confirmingStepNo != null || !step.current}
+                                  disabled={confirmingStepNo != null || !step.current || confirmBlockedByApproval}
                                 >
                                   {confirmingStepNo === step.stepNo ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -1626,6 +1813,8 @@ export default function TicketDetailPage() {
                                 <p className="text-xs text-muted-foreground">
                                   {step.completed
                                     ? "✓ 该工步已确认完成"
+                                    : confirmBlockedByApproval
+                                      ? "审批通过前暂不能确认"
                                     : canConfirmWorkOrderStep(user, detail.status)
                                       ? step.confirmable
                                         ? "需按顺序执行后确认"
@@ -1637,7 +1826,8 @@ export default function TicketDetailPage() {
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="rounded-lg border border-dashed border-border bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
@@ -1885,6 +2075,100 @@ export default function TicketDetailPage() {
                   >
                     查看完整诊断
                   </Link>
+                </div>
+              </div>
+            ) : null}
+
+            {approvalTasks.length > 0 ? (
+              <div className="app-card p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-base font-semibold text-foreground">审批面板</div>
+                  <span className="text-sm text-muted-foreground">
+                    {approvalTasks.filter((task) => getApprovalState(task) === "pending").length} 待处理
+                  </span>
+                </div>
+                {canResolveApprovals && approvalTasks.some((task) => getApprovalState(task) === "pending") ? (
+                  <textarea
+                    className="mt-4 min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="填写审批意见后处理待审批项"
+                    value={approvalComment}
+                    onChange={(event) => setApprovalComment(event.target.value)}
+                  />
+                ) : null}
+                <div className="mt-4 space-y-3">
+                  {approvalTasks.map((task) => {
+                    const meta = getApprovalStateMeta(task);
+                    const pending = getApprovalState(task) === "pending";
+                    const sourceLabel =
+                      task.source_type === "agent_review"
+                        ? "Agent 审核"
+                        : `工步 ${Number(task.step_no) || "--"}`;
+                    return (
+                      <div key={task.id} className="rounded-lg border border-border bg-background/70 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-medium text-foreground">#{task.id} · {sourceLabel}</div>
+                          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${meta.className}`}>
+                            {meta.label}
+                          </span>
+                        </div>
+                        {task.reason ? (
+                          <div className="mt-2 text-xs leading-5 text-muted-foreground">{task.reason}</div>
+                        ) : null}
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          {task.created_at ? `创建：${formatDateTimeLocal(task.created_at)}` : null}
+                          {task.resolved_at ? ` · 处理：${formatDateTimeLocal(task.resolved_at)}` : null}
+                        </div>
+                        {task.comment ? (
+                          <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs leading-5 text-foreground/80">
+                            {task.comment}
+                          </div>
+                        ) : null}
+                        {canResolveApprovals && pending ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="app-btn-primary h-8 px-3 text-xs"
+                              onClick={() => handleResolveApproval(task, "approve")}
+                              disabled={approvalSubmittingKey != null}
+                            >
+                              {approvalSubmittingKey === `${task.id}:approve` ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                              )}
+                              通过
+                            </button>
+                            <button
+                              type="button"
+                              className="app-btn-secondary h-8 px-3 text-xs"
+                              onClick={() => handleResolveApproval(task, "return")}
+                              disabled={approvalSubmittingKey != null}
+                            >
+                              {approvalSubmittingKey === `${task.id}:return` ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-3.5 w-3.5" />
+                              )}
+                              退回
+                            </button>
+                            <button
+                              type="button"
+                              className="app-btn-secondary h-8 px-3 text-xs text-red-600 dark:text-red-400"
+                              onClick={() => handleResolveApproval(task, "reject")}
+                              disabled={approvalSubmittingKey != null}
+                            >
+                              {approvalSubmittingKey === `${task.id}:reject` ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <XCircle className="h-3.5 w-3.5" />
+                              )}
+                              驳回
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -2460,7 +2744,7 @@ export default function TicketDetailPage() {
                   type="button"
                   className="app-btn-primary"
                   onClick={() => handleAction("complete")}
-                  disabled={actionPending != null}
+                  disabled={actionPending != null || Boolean(blockingAgentApproval)}
                 >
                   {actionPending === "complete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                   完成检修

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.maintenance import FlowTemplate, WorkOrderFilling, WorkOrderFillingAttachment
+from app.modules.maintenance.application.approval_task_service import ApprovalTaskService
 from app.modules.maintenance.application.device_service import MaintenanceDeviceService
 from app.modules.maintenance.application.work_order_service import (
     MaintenanceWorkOrderService,
@@ -145,6 +146,9 @@ class MaintenanceWorkOrderExecutionService:
         await self.work_order_service.assert_work_order_readable(ctx, work_order)
         if work_order.status != "S7":
             raise MaintenanceAPIError(409, "INVALID_STATE_TRANSITION", "仅检修中可完成检修")
+        await ApprovalTaskService(self.session, self._audit).assert_no_blocking_agent_approval(
+            work_order_id=work_order.id
+        )
         await self.work_order_service.transition(
             work_order,
             "S8",

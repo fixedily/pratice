@@ -11,7 +11,7 @@ export function WorkOrderFlowPanel({ overview, onSave }: SettingsPanelProps) {
   return (
     <SettingsSectionShell
       title="工单流程设置"
-      description="把异常告警到案例沉淀固化为标准闭环，支撑企业检修流程标准化和比赛演示完整性。"
+      description="把异常告警到案例沉淀固化为标准闭环，支撑企业检修流程标准化和公开演示完整性。"
       icon={ClipboardCheck}
       actions={<Button type="button" onClick={() => onSave("工单流程设置")}>保存设置</Button>}
     >

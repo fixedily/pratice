@@ -326,8 +326,8 @@ class ApprovalTask(Base):
     __tablename__ = "approval_tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    work_order_id: Mapped[int] = mapped_column(
-        ForeignKey("work_orders.id", ondelete="CASCADE"), nullable=False, index=True
+    work_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_orders.id", ondelete="CASCADE"), nullable=True, index=True
     )
     step_no: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
@@ -335,6 +335,14 @@ class ApprovalTask(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     material_attachment_ids: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     approver_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="work_order_step", nullable=False, index=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    maintenance_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("maintenance_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_naive, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

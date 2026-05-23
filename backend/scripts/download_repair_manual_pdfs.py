@@ -14,7 +14,7 @@
 
     python scripts/download_repair_manual_pdfs.py --provider google --count 2 --query "工业机器人 维修手册"
 
-版权提示：仅用于竞赛/研究演示，请遵守各站点许可；本脚本不绕过登录墙或付费墙。
+版权提示：仅用于公开演示/研究演示，请遵守各站点许可；本脚本不绕过登录墙或付费墙。
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from pypdf import PdfReader
 
 DEFAULT_KEYWORDS = ("维修", "手册", "拆卸", "安装", "检查", "故障", "保养", "检修", "规程")
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (compatible; DachuangRepairManualBot/1.0; +https://github.com/local)"
+    "Mozilla/5.0 (compatible; MaintenanceKnowledgeBot/1.0; +https://github.com/local)"
 )
 CHINESE_URL_HINTS = (
     "zh-cn",

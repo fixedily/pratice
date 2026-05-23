@@ -2,9 +2,9 @@
 
 基于 FastAPI、LangGraph 和工业传感器数据的故障诊断后端项目，支持同步诊断、SSE 流式诊断和简单的浏览器调试页联调。
 
-当前定位是比赛/MVP 级交付：重点保证主链路可演示、可部署、可复现、可验证，而不是追求商用生产级复杂能力。
+当前定位是公开演示/MVP 级交付：重点保证主链路可演示、可部署、可复现、可验证，而不是追求商用生产级复杂能力。
 
-当前仓库已进入**赛题适配阶段**。面向第十五届中国软件杯赛题《基于多模态大模型技术的设备检修知识检索与作业系统》，当前作品定义已冻结为“设备检修知识与作业助手”，现有工业故障诊断链路保留为**智能分析子模块**，不再作为主产品入口。
+当前仓库已进入**业务场景适配阶段**。面向公开演示业务场景《基于多模态大模型技术的设备检修知识检索与作业系统》，当前作品定义已冻结为“设备检修知识与作业助手”，现有工业故障诊断链路保留为**智能分析子模块**，不再作为主产品入口。
 
 当前后端已完成一轮**中等架构重组**：在不改变 FastAPI、PostgreSQL、Alembic 的前提下，引入了 `bootstrap / shared / modules / integrations / persistence` 五层结构，并为 `React + Next.js` 正式前端预留稳定 API 边界。
 
@@ -44,15 +44,15 @@
 - Alembic 管理数据库 schema，不再依赖隐式建表
 - 当前验证以 `backend/tests/` 与 `frontend/tests/e2e/` 为准；GitHub 上见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)（`push` / `pull_request` / `workflow_dispatch` 触发）。依赖真实 LLM、Redis、PostgreSQL 或浏览器的抽检请在配置 `.env` 后自行运行。
 
-## 赛题适配（当前冻结版）
+## 业务场景适配（当前冻结版）
 
-- 赛题：
+- 业务场景：
 - 当前作品定义：`设备检修知识与作业助手`
 - 当前演示对象：`摩托车发动机检修`
 - 当前主线：`输入检修问题 -> 检索知识 -> 生成作业指引 -> 沉淀案例 -> 审核入库`
 - 当前保留子模块：`工业故障诊断 / SSE 流式分析`
 
-设计与交付口径以仓库内 **`docs/MVP 产品需求文档.md`**、**`docs/系统架构文档.md`** 为准。公开源码仓库默认不包含答辩材料、本地数据库与样例数据集；如需演示素材，请在你自己的环境中另行准备。
+设计与交付口径以仓库内 **`docs/MVP 产品需求文档.md`**、**`docs/系统架构文档.md`** 为准。公开源码仓库默认不包含演示材料、本地数据库与样例数据集；如需演示素材，请在你自己的环境中另行准备。
 
 ## 快速开始
 
@@ -150,7 +150,7 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 部署
 
-比赛/MVP 阶段建议先保证“新机器按文档就能跑起来”。
+公开演示/MVP 阶段建议先保证“新机器按文档就能跑起来”。
 
 - 后端容器镜像：见 [Dockerfile](Dockerfile)
 - PostgreSQL / Redis 容器：见 [docker-compose.yml](docker-compose.yml)
@@ -174,10 +174,10 @@ pytest -q
 
 ```bash
 cd backend
-..\venv\Scripts\python.exe scripts\run_softbei_eval.py
+..\venv\Scripts\python.exe scripts\run_workflow_quality_eval.py
 ```
 
-当前评测结果会写入 `backend/evaluation/softbei_eval_results.json`（本地生成，已列入 `.gitignore`，克隆后需先运行上述命令才会出现）。
+当前评测结果会写入 `backend/evaluation/workflow_eval_results.json`（本地生成，已列入 `.gitignore`，克隆后需先运行上述命令才会出现）。
 
 ## 项目结构
 
@@ -192,7 +192,7 @@ backend/
   alembic/              Alembic 迁移环境与版本脚本
   scripts/              初始化数据库和导入数据脚本
   tests/                异步接口、流式链路和回归测试
-  evaluation/           软件杯评测用例与种子数据
+  evaluation/           工作流质量评测用例与种子数据
 docs/                   核心文档（部署说明、MVP 需求、系统架构）；详见 docs/README.md
 deploy/systemd/         Linux 部署示例
 frontend/               Next.js 正式前端工程骨架（工作台 / 知识 / OCR 导入 / 任务 / 案例 / 历史 / Agent）
@@ -201,7 +201,7 @@ Dockerfile              构建镜像时仅复制 backend/ 作为运行上下文
 
 ## 当前还没做的事
 
-以下内容在比赛/MVP 阶段通常应继续推进：
+以下内容在公开演示/MVP 阶段通常应继续推进：
 
 - 真实浏览器联调验收
 - 云服务器部署验证
@@ -209,4 +209,4 @@ Dockerfile              构建镜像时仅复制 backend/ 作为运行上下文
 - 更系统的日志、监控和告警
 - 如有需要，再补 Nginx、HTTPS、鉴权、权限控制
 
-若继续参加软件杯或对外答辩，建议将 PPT、视频、截图和数据集保存在本地或单独的私有归档位置，不要放进公开源码仓库。
+若需要对外展示，建议将 PPT、视频、截图和数据集保存在本地或单独的私有归档位置，不要放进公开源码仓库。

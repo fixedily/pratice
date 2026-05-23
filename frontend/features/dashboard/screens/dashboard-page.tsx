@@ -55,126 +55,118 @@ function formatTrendLabel(date: Date) {
 }
 
 function formatTrendTimeLabel(date: Date) {
-  return `${String(date.getHours()).padStart(2, "0")}:00`;
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function buildTodayHourlyTrendBuckets(
+  records: WorkbenchOverview["recent_tasks"],
+  start: Date,
+  end: Date,
+) {
+  const hourCount = 24;
+  const buckets = Array.from({ length: hourCount }, (_, index) => {
+    const date = new Date(start);
+    date.setHours(index, 0, 0, 0);
+    return {
+      label: formatTrendTimeLabel(date),
+      tasks: 0,
+      alerts: 0,
+      closed: 0,
+    };
+  });
+
+  const addToBucket = (
+    key: "alerts" | "tasks" | "closed",
+    dateText: string | null | undefined,
+  ) => {
+    const date = getSafeDate(dateText);
+    if (!date || date < start || date > end) return;
+    const bucketIndex = Math.min(
+      hourCount - 1,
+      Math.max(0, Math.floor((date.getTime() - start.getTime()) / 3_600_000)),
+    );
+    buckets[bucketIndex][key] += 1;
+  };
+
+  for (const item of records) {
+    const status = normalizeFaultStatus(String(item.status || ""));
+    const createdAt = item.created_at ?? item.updated_at;
+    const updatedAt = item.updated_at ?? item.created_at;
+
+    addToBucket("alerts", createdAt);
+
+    if (status !== "pending" || Number(item.completed_steps ?? 0) > 0) {
+      addToBucket("tasks", updatedAt);
+    }
+
+    if (status === "resolved") {
+      addToBucket("closed", updatedAt);
+    }
+  }
+
+  return buckets;
+}
+
+function buildDailyTrendBuckets(
+  records: WorkbenchOverview["recent_tasks"],
+  start: Date,
+  end: Date,
+) {
+  const dayCount =
+    Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const buckets = Array.from({ length: dayCount }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return {
+      label: formatTrendLabel(date),
+      tasks: 0,
+      alerts: 0,
+      closed: 0,
+    };
+  });
+
+  const addToBucket = (
+    key: "alerts" | "tasks" | "closed",
+    dateText: string | null | undefined,
+  ) => {
+    const date = getSafeDate(dateText);
+    if (!date || date < start || date > end) return;
+    const bucketIndex = Math.min(
+      dayCount - 1,
+      Math.max(0, Math.floor((date.getTime() - start.getTime()) / 86_400_000)),
+    );
+    buckets[bucketIndex][key] += 1;
+  };
+
+  for (const item of records) {
+    const status = normalizeFaultStatus(String(item.status || ""));
+    const createdAt = item.created_at ?? item.updated_at;
+    const updatedAt = item.updated_at ?? item.created_at;
+
+    addToBucket("alerts", createdAt);
+
+    if (status !== "pending" || Number(item.completed_steps ?? 0) > 0) {
+      addToBucket("tasks", updatedAt);
+    }
+
+    if (status === "resolved") {
+      addToBucket("closed", updatedAt);
+    }
+  }
+
+  return buckets;
 }
 
 function buildTrendBuckets(
   records: WorkbenchOverview["recent_tasks"],
-  activeTaskTotal: number,
   range: ClosureRange,
   anchorText: string | null | undefined,
 ) {
-  const segmentCount = 7;
   const { start, end } = getClosureRangeWindow(range, anchorText);
-  const source = [...records]
-    .filter((item) => Boolean(item.updated_at ?? item.created_at))
-    .sort((left, right) =>
-      String(left.updated_at ?? left.created_at).localeCompare(
-        String(right.updated_at ?? right.created_at),
-      ),
-    );
-  const spanMs = Math.max(1, end.getTime() - start.getTime());
-  const bucketMs = spanMs / segmentCount;
-  const labels = Array.from({ length: segmentCount }, (_, index) => {
-    const ratio = index / (segmentCount - 1);
-    const date = new Date(start.getTime() + spanMs * ratio);
-    return range === "today"
-      ? formatTrendTimeLabel(date)
-      : formatTrendLabel(date);
-  });
-
-  if (source.length === 0) {
-    return labels.map((label) => ({ label, tasks: 0, alerts: 0, closed: 0 }));
+  if (range === "today") {
+    return buildTodayHourlyTrendBuckets(records, start, end);
   }
-
-  const pendingCount = source.filter(
-    (item) => normalizeFaultStatus(String(item.status || "")) === "pending",
-  ).length;
-  const processingCount = source.filter(
-    (item) => normalizeFaultStatus(String(item.status || "")) === "processing",
-  ).length;
-  const resolvedCount = source.filter(
-    (item) => normalizeFaultStatus(String(item.status || "")) === "resolved",
-  ).length;
-
-  const unresolvedCount = pendingCount + processingCount;
-  const anchorAlerts = unresolvedCount;
-  const anchorTasks = Math.max(activeTaskTotal, processingCount);
-
-  const alertStart = Math.max(
-    anchorAlerts + Math.ceil(source.length * 0.6),
-    anchorAlerts > 0 ? anchorAlerts + 1 : Math.min(3, source.length),
-  );
-  const taskStart =
-    anchorTasks > 0 ? Math.max(1, Math.floor(anchorTasks * 0.55)) : 0;
-  const taskPeak = Math.max(
-    anchorTasks,
-    taskStart +
-      Math.ceil(
-        Math.max(source.length, activeTaskTotal, resolvedCount, 1) * 0.35,
-      ),
-  );
-
-  const densityCounts = Array.from({ length: segmentCount }, () => 0);
-  for (const item of source) {
-    const updatedAt = getSafeDate(item.updated_at ?? item.created_at);
-    if (!updatedAt || Number.isNaN(updatedAt.getTime())) continue;
-    const bucketIndex = Math.min(
-      segmentCount - 1,
-      Math.max(
-        0,
-        Math.floor((updatedAt.getTime() - start.getTime()) / bucketMs),
-      ),
-    );
-    densityCounts[bucketIndex] += 1;
-  }
-  const densityMax = Math.max(...densityCounts, 1);
-
-  const alertDelta = alertStart - anchorAlerts;
-  const taskDelta = taskPeak - taskStart;
-  const closedPeak = Math.max(resolvedCount, Math.ceil(source.length * 0.45));
-
-  return labels.map((label, index) => {
-    const progress = segmentCount <= 1 ? 1 : index / (segmentCount - 1);
-    const densityWeight = densityCounts[index] / densityMax;
-    const alertBoost =
-      index < 3 ? Math.round(densityWeight * 2) : Math.round(densityWeight);
-    const taskBoost =
-      index >= 2 && index <= 4
-        ? Math.round(densityWeight * 2)
-        : Math.round(densityWeight);
-    const alertCurve = Math.max(0, 1 - progress * 1.12);
-    const taskCurve = Math.sin(progress * Math.PI) * 0.9 + progress * 0.2;
-    const closedCurve = progress;
-
-    const baseAlerts =
-      index === segmentCount - 1
-        ? anchorAlerts
-        : Math.max(
-            0,
-            Math.round(anchorAlerts + alertDelta * alertCurve + alertBoost),
-          );
-    const baseTasks =
-      index === segmentCount - 1
-        ? anchorTasks
-        : Math.max(
-            0,
-            Math.round(taskStart + taskDelta * taskCurve + taskBoost),
-          );
-
-    return {
-      label,
-      tasks: baseTasks,
-      alerts: baseAlerts,
-      closed:
-        index === segmentCount - 1
-          ? resolvedCount
-          : Math.max(
-              0,
-              Math.round(closedPeak * closedCurve + Math.round(densityWeight)),
-            ),
-    };
-  });
+  return buildDailyTrendBuckets(records, start, end);
 }
 
 type ClosureTaskStatus =
@@ -592,8 +584,7 @@ export default function DashboardPage() {
     const total = pendingCount + diagnosisCompletedCount + resolvedCount;
 
     const trendSeries = buildTrendBuckets(
-      recentTasks,
-      activeTaskCount,
+      overview?.recent_tasks ?? [],
       closureRange,
       generatedAt,
     );
