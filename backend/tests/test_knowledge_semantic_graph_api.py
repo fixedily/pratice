@@ -424,7 +424,7 @@ async def test_rule_extraction_job_from_document_generates_chunk_candidates(
                 document_id=document.id,
                 chunk_index=0,
                 heading="启动困难排查",
-                content="发动机启动困难并伴随排气冒黑烟时，应检查火花塞积碳和混合气过浓，必要时清洗节气门。",
+                content="发动机启动困难并伴随排气冒黑烟时，应检查火花塞积碳和混合气过浓，检修前先断电、通风并隔离燃油，必要时清洗节气门。",
                 equipment_type="摩托车发动机",
                 equipment_model="LX200",
                 fault_type="启动困难",
@@ -449,8 +449,16 @@ async def test_rule_extraction_job_from_document_generates_chunk_candidates(
         and item["payload"]["canonical_name"] == "火花塞"
         for item in candidates
     )
+    assert any(
+        item["candidate_type"] == "entity"
+        and item["payload"]["entity_type"] == "safety_risk"
+        and item["payload"]["canonical_name"] in {"燃油风险", "点火高压"}
+        for item in candidates
+    )
     relation_candidates = [item for item in candidates if item["candidate_type"] == "relation"]
     assert any(item["payload"]["relation_type"] == "symptom_possible_cause" for item in relation_candidates)
+    assert any(item["payload"]["relation_type"] == "action_has_safety_risk" for item in relation_candidates)
+    assert any(item["payload"]["relation_type"] == "risk_mitigated_by_action" for item in relation_candidates)
     assert all(item["chunk_id"] is not None and item["document_id"] == document_id for item in candidates)
 
     relation_candidate = next(
@@ -650,6 +658,58 @@ async def test_quality_stats_counts_pending_and_relation_risks(
     assert stats["relations_without_evidence"] == 1
     assert stats["relations_without_evidence_or_review"] == 1
     assert stats["low_confidence_relations"] == 1
+    assert stats["safety_risk_entities"] == 0
+    assert stats["standard_parameter_entities"] == 0
+    assert stats["forbidden_action_entities"] == 0
+    assert stats["relations_with_safety_risk"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quality_stats_counts_safety_graph_entities_and_relations(
+    semantic_graph_client: AsyncClient,
+):
+    action_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "maintenance_action", "canonical_name": "拆卸"},
+    )
+    risk_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "safety_risk", "canonical_name": "点火高压"},
+    )
+    parameter_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "standard_parameter", "canonical_name": "火花塞间隙"},
+    )
+    forbidden_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/semantic-graph/entities",
+        json={"entity_type": "forbidden_action", "canonical_name": "带电检查点火线圈"},
+    )
+    assert action_resp.status_code == 201
+    assert risk_resp.status_code == 201
+    assert parameter_resp.status_code == 201
+    assert forbidden_resp.status_code == 201
+
+    relation_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/semantic-graph/relations",
+        json={
+            "source_entity_id": action_resp.json()["id"],
+            "target_entity_id": risk_resp.json()["id"],
+            "relation_type": "action_has_safety_risk",
+            "confidence": 0.86,
+            "status": "approved",
+        },
+    )
+    assert relation_resp.status_code == 201
+
+    stats_resp = await semantic_graph_client.get(
+        "/api/v1/knowledge/semantic-graph/quality-stats"
+    )
+    assert stats_resp.status_code == 200
+    stats = stats_resp.json()
+    assert stats["safety_risk_entities"] == 1
+    assert stats["standard_parameter_entities"] == 1
+    assert stats["forbidden_action_entities"] == 1
+    assert stats["relations_with_safety_risk"] == 1
 
 
 @pytest.mark.asyncio
@@ -898,6 +958,11 @@ async def test_knowledge_search_returns_semantic_graph_context_and_evidence(
     assert reasoning_chain["selected_answer_claims"]
     assert reasoning_chain["confidence"] == payload["answer_confidence"]
     assert isinstance(reasoning_chain["warnings"], list)
+    assert payload["safety_warnings"]
+    assert reasoning_chain["safety_warnings"] == payload["safety_warnings"]
+    safety_codes = {item["code"] for item in payload["safety_warnings"]}
+    assert "FUEL_SYSTEM_RISK" in safety_codes
+    assert "GRAPH_RELATION_WITHOUT_EVIDENCE" in safety_codes
     assert "系统判断优先排查混合气过浓，是因为" in reasoning_chain["explanation_text"]
 
     filtered_resp = await semantic_graph_client.post(
@@ -965,3 +1030,23 @@ def test_semantic_entity_similarity_score_supports_near_entity_names():
         [],
         ["排气冒黑烟"],
     ) >= 0.72
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_blocks_forbidden_live_ignition_check(
+    semantic_graph_client: AsyncClient,
+):
+    search_resp = await semantic_graph_client.post(
+        "/api/v1/knowledge/search",
+        json={"query": "带电检查点火线圈是否可以", "equipment_type": "摩托车发动机", "limit": 5},
+    )
+
+    assert search_resp.status_code == 200
+    payload = search_resp.json()
+    blocking = [
+        item for item in payload["safety_warnings"]
+        if item["code"] == "FORBIDDEN_LIVE_IGNITION_CHECK"
+    ]
+    assert blocking
+    assert blocking[0]["level"] == "blocking"
+    assert payload["reasoning_chain"]["safety_warnings"] == payload["safety_warnings"]

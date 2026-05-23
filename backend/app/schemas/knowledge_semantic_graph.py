@@ -249,6 +249,10 @@ class SemanticGraphQualityStatsResponse(BaseModel):
     relations_without_evidence: int
     relations_without_evidence_or_review: int
     low_confidence_relations: int
+    safety_risk_entities: int = 0
+    standard_parameter_entities: int = 0
+    forbidden_action_entities: int = 0
+    relations_with_safety_risk: int = 0
 
 
 class SemanticGraphEntityMergeCreate(BaseModel):

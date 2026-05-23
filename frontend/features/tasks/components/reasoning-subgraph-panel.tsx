@@ -180,7 +180,11 @@ export function ReasoningSubgraphPanel({ reasoningChain, procedureSteps = [] }: 
             onSelectChunk={setSelectedChunkId}
             emptyMessage="选择左侧关系节点后，可在这里查看证据详情。"
           />
-          <ReasoningWarningsPanel warnings={model.warnings} degraded={model.isDegradedNoRelationFlow} />
+          <ReasoningWarningsPanel
+            warnings={model.warnings}
+            safetyWarnings={model.safetyWarnings}
+            degraded={model.isDegradedNoRelationFlow}
+          />
         </div>
       </div>
     </div>

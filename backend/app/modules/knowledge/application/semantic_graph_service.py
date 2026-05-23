@@ -81,6 +81,40 @@ ACTION_TERMS = (
     "更换",
     "调整",
     "拆卸",
+    "测量",
+    "复核",
+    "测试",
+)
+MITIGATION_ACTION_TERMS = (
+    "停机",
+    "断电",
+    "冷却",
+    "通风",
+    "隔离",
+)
+SAFETY_RISK_TERMS = (
+    "燃油风险",
+    "高温烫伤",
+    "点火高压",
+    "电气短路",
+    "异物进入缸体",
+)
+STANDARD_PARAMETER_TERMS = (
+    "火花塞间隙",
+    "气门间隙",
+    "紧固扭矩",
+    "点火线圈阻值",
+)
+FORBIDDEN_ACTION_TERMS = (
+    "带电检查点火线圈",
+    "高温拆检",
+    "未停机拆检",
+)
+APPLICABLE_CONDITION_TERMS = (
+    "发动机高温",
+    "未断电",
+    "未停机",
+    "燃油未隔离",
 )
 
 
@@ -813,6 +847,35 @@ class SemanticKnowledgeGraphService:
                 select(func.count(KgRelation.id)).where(KgRelation.confidence < 0.6)
             )
         ).scalar_one()
+        safety_entity_counts = (
+            await self._session.execute(
+                select(KgEntity.entity_type, func.count(KgEntity.id))
+                .where(
+                    KgEntity.entity_type.in_(
+                        [
+                            "safety_risk",
+                            "standard_parameter",
+                            "forbidden_action",
+                        ]
+                    )
+                )
+                .group_by(KgEntity.entity_type)
+            )
+        ).all()
+        safety_entity_by_type = {key: int(value) for key, value in safety_entity_counts}
+        relations_with_safety_risk = (
+            await self._session.execute(
+                select(func.count(KgRelation.id)).where(
+                    KgRelation.relation_type.in_(
+                        [
+                            "action_has_safety_risk",
+                            "action_forbidden_under_condition",
+                            "risk_mitigated_by_action",
+                        ]
+                    )
+                )
+            )
+        ).scalar_one()
         return SemanticGraphQualityStatsResponse(
             duplicate_entity_groups=len(duplicate_groups),
             pending_entity_candidates=pending_by_type.get("entity", 0),
@@ -820,6 +883,10 @@ class SemanticKnowledgeGraphService:
             relations_without_evidence=int(relations_without_evidence or 0),
             relations_without_evidence_or_review=int(relations_without_evidence_or_review or 0),
             low_confidence_relations=int(low_confidence_relations or 0),
+            safety_risk_entities=safety_entity_by_type.get("safety_risk", 0),
+            standard_parameter_entities=safety_entity_by_type.get("standard_parameter", 0),
+            forbidden_action_entities=safety_entity_by_type.get("forbidden_action", 0),
+            relations_with_safety_risk=int(relations_with_safety_risk or 0),
         )
 
     async def merge_entity(
@@ -1211,13 +1278,25 @@ def _extract_candidates_from_chunk(
 
     components = [term for term in COMPONENT_TERMS if term in text]
     causes = [term for term in CAUSE_TERMS if term in text]
-    actions = [term for term in ACTION_TERMS if term in text]
+    safety_risks = _infer_safety_risks(text)
+    actions = [term for term in (*ACTION_TERMS, *MITIGATION_ACTION_TERMS) if term in text]
+    standard_parameters = _infer_standard_parameters(text)
+    forbidden_actions = _infer_forbidden_actions(text)
+    applicable_conditions = _infer_applicable_conditions(text)
     for term in components:
         add_entity("component", term, 0.86)
     for term in causes:
         add_entity("fault_cause", term, 0.82)
     for term in actions:
         add_entity("maintenance_action", term, 0.74)
+    for term in safety_risks:
+        add_entity("safety_risk", term, 0.8)
+    for term in standard_parameters:
+        add_entity("standard_parameter", term, 0.78)
+    for term in forbidden_actions:
+        add_entity("forbidden_action", term, 0.84)
+    for term in applicable_conditions:
+        add_entity("applicable_condition", term, 0.78)
 
     if not include_relations:
         return candidates
@@ -1258,7 +1337,97 @@ def _extract_candidates_from_chunk(
     for component in components:
         for action in actions:
             add_relation("component", component, "maintenance_action", action, "component_requires_action", 0.72)
+    for action in actions:
+        for risk in safety_risks:
+            if not _is_mitigation_action_for_risk(action, risk):
+                add_relation("maintenance_action", action, "safety_risk", risk, "action_has_safety_risk", 0.76)
+        for parameter in standard_parameters:
+            add_relation("maintenance_action", action, "standard_parameter", parameter, "action_requires_parameter", 0.74)
+        for forbidden in forbidden_actions:
+            add_relation(
+                "maintenance_action",
+                action,
+                "forbidden_action",
+                forbidden,
+                "action_forbidden_under_condition",
+                0.82,
+            )
+        for condition in applicable_conditions:
+            add_relation(
+                "maintenance_action",
+                action,
+                "applicable_condition",
+                condition,
+                "action_forbidden_under_condition",
+                0.72,
+            )
+    for risk in safety_risks:
+        for action in actions:
+            if _is_mitigation_action_for_risk(action, risk):
+                add_relation("safety_risk", risk, "maintenance_action", action, "risk_mitigated_by_action", 0.74)
     return candidates
+
+
+def _is_mitigation_action_for_risk(action: str, risk: str) -> bool:
+    if action in {"断电", "停机", "隔离"} and risk in {"点火高压", "电气短路"}:
+        return True
+    if action == "冷却" and risk == "高温烫伤":
+        return True
+    if action in {"通风", "隔离"} and risk == "燃油风险":
+        return True
+    return False
+
+
+def _infer_safety_risks(text: str) -> list[str]:
+    risks: list[str] = []
+    if any(term in text for term in ("燃油", "喷油", "油管", "混合气", "冒黑烟")):
+        risks.append("燃油风险")
+    if any(term in text for term in ("高温", "烫伤", "冷却")):
+        risks.append("高温烫伤")
+    if any(term in text for term in ("点火线圈", "高压帽", "火花塞", "点火", "高压")):
+        risks.append("点火高压")
+    if any(term in text for term in ("带电", "断电", "短路", "接线", "电气")):
+        risks.append("电气短路")
+    if any(term in text for term in ("异物", "灰尘", "缸体", "气缸")):
+        risks.append("异物进入缸体")
+    return [risk for risk in SAFETY_RISK_TERMS if risk in risks]
+
+
+def _infer_standard_parameters(text: str) -> list[str]:
+    parameters: list[str] = []
+    if "火花塞" in text and "间隙" in text:
+        parameters.append("火花塞间隙")
+    if "气门间隙" in text:
+        parameters.append("气门间隙")
+    if any(term in text for term in ("扭矩", "力矩", "紧固")):
+        parameters.append("紧固扭矩")
+    if "点火线圈" in text and any(term in text for term in ("阻值", "电阻", "测量")):
+        parameters.append("点火线圈阻值")
+    return [parameter for parameter in STANDARD_PARAMETER_TERMS if parameter in parameters]
+
+
+def _infer_forbidden_actions(text: str) -> list[str]:
+    forbidden: list[str] = []
+    if "带电" in text and any(term in text for term in ("检查", "测试", "点火线圈", "高压帽")):
+        forbidden.append("带电检查点火线圈")
+    if "高温" in text and any(term in text for term in ("拆卸", "拆检", "维修")):
+        forbidden.append("高温拆检")
+    if any(term in text for term in ("未停机", "未熄火", "运行中")) and any(term in text for term in ("拆卸", "拆检", "检查")):
+        forbidden.append("未停机拆检")
+    return [item for item in FORBIDDEN_ACTION_TERMS if item in forbidden]
+
+
+def _infer_applicable_conditions(text: str) -> list[str]:
+    conditions: list[str] = []
+    if "高温" in text:
+        conditions.append("发动机高温")
+    if "未断电" in text or "带电" in text:
+        conditions.append("未断电")
+    if any(term in text for term in ("未停机", "未熄火", "运行中")):
+        conditions.append("未停机")
+    if "燃油" in text and any(term in text for term in ("隔离", "未隔离", "泄漏")):
+        conditions.append("燃油未隔离")
+    return [item for item in APPLICABLE_CONDITION_TERMS if item in conditions]
 
 
 def _build_evidence_excerpt(text: str, max_chars: int = 180) -> str:

@@ -494,6 +494,18 @@ export interface KnowledgeReasoningEvidenceChunk {
   score?: number | null;
 }
 
+export interface KnowledgeSafetyWarning {
+  code: string;
+  level: "info" | "warning" | "blocking" | string;
+  title: string;
+  message: string;
+  source: string;
+  matched_terms: string[];
+  relation_ids: number[];
+  evidence_chunk_ids: number[];
+  recommendation?: string | null;
+}
+
 export interface KnowledgeReasoningChain {
   question?: string | null;
   matched_entities: KnowledgeReasoningEntity[];
@@ -502,6 +514,7 @@ export interface KnowledgeReasoningChain {
   selected_answer_claims: string[];
   confidence: number;
   warnings: string[];
+  safety_warnings?: KnowledgeSafetyWarning[];
   explanation_text?: string | null;
 }
 
@@ -1881,6 +1894,10 @@ export interface SemanticGraphQualityStatsResponse {
   relations_without_evidence: number;
   relations_without_evidence_or_review: number;
   low_confidence_relations: number;
+  safety_risk_entities: number;
+  standard_parameter_entities: number;
+  forbidden_action_entities: number;
+  relations_with_safety_risk: number;
 }
 
 export interface SemanticEntitySearchItem {

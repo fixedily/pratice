@@ -70,6 +70,10 @@ const SEMANTIC_KIND_COLORS: Record<string, string> = {
   fault_cause: "#f97316",
   component: "#10b981",
   maintenance_action: "#6366f1",
+  safety_risk: "#dc2626",
+  standard_parameter: "#0891b2",
+  forbidden_action: "#be123c",
+  applicable_condition: "#7c3aed",
 }
 
 const SEMANTIC_KIND_LABELS: Record<string, string> = {
@@ -78,6 +82,10 @@ const SEMANTIC_KIND_LABELS: Record<string, string> = {
   fault_cause: "故障原因",
   component: "部件",
   maintenance_action: "检修动作",
+  safety_risk: "安全风险",
+  standard_parameter: "标准参数",
+  forbidden_action: "禁忌操作",
+  applicable_condition: "适用条件",
 }
 
 const SEMANTIC_RELATION_LABELS: Record<string, string> = {
@@ -86,6 +94,10 @@ const SEMANTIC_RELATION_LABELS: Record<string, string> = {
   component_requires_action: "部件检修动作",
   component_has_cause: "部件故障原因",
   cause_related_component: "原因关联部件",
+  action_has_safety_risk: "动作安全风险",
+  action_requires_parameter: "动作标准参数",
+  action_forbidden_under_condition: "禁忌条件",
+  risk_mitigated_by_action: "风险缓解动作",
 }
 
 const ALL_KIND_COLORS: Record<string, string> = { ...KIND_COLORS, ...SEMANTIC_KIND_COLORS }
@@ -887,6 +899,10 @@ export default function KnowledgeGraphPage() {
                         ["待审核关系", qualityStats?.pending_relation_candidates ?? 0],
                         ["无证据关系", qualityStats?.relations_without_evidence ?? 0],
                         ["低置信关系", qualityStats?.low_confidence_relations ?? 0],
+                        ["安全风险实体", qualityStats?.safety_risk_entities ?? 0],
+                        ["标准参数实体", qualityStats?.standard_parameter_entities ?? 0],
+                        ["禁忌操作实体", qualityStats?.forbidden_action_entities ?? 0],
+                        ["安全风险关系", qualityStats?.relations_with_safety_risk ?? 0],
                       ].map(([label, value]) => (
                         <div key={label} className="rounded-md border border-border bg-muted/15 p-3">
                           <div className="text-xs text-muted-foreground">{label}</div>

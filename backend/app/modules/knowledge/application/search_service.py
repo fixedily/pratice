@@ -87,6 +87,28 @@ def _semantic_entity_similarity_score(
     return best
 
 
+_GRAPH_RELATION_PRIORITY = {
+    "symptom_possible_cause": 10,
+    "cause_related_component": 20,
+    "symptom_related_component": 25,
+    "symptom_check_component": 25,
+    "component_requires_action": 30,
+    "component_action": 30,
+    "action_applies_to": 35,
+    "action_requires_parameter": 40,
+    "action_has_safety_risk": 45,
+    "action_forbidden_under_condition": 50,
+    "risk_mitigated_by_action": 55,
+}
+
+_SAFETY_RELATION_TYPES = {
+    "action_has_safety_risk",
+    "action_requires_parameter",
+    "action_forbidden_under_condition",
+    "risk_mitigated_by_action",
+}
+
+
 class KnowledgeService:
     """Service layer for knowledge documents and search."""
 
@@ -360,6 +382,17 @@ class KnowledgeService:
             results=results,
             image_analysis_used=image_analysis is not None,
         )
+        safety_warnings = self._build_safety_warnings(
+            question=hydrated_request.query or effective_query,
+            effective_keywords=effective_keywords,
+            graph_context=semantic_graph_context,
+            results=results,
+            grounded=bool(assessment["grounded"]),
+        )
+        coverage_warnings = self._merge_warning_texts(
+            assessment["coverage_warnings"],
+            self._format_safety_warning_texts(safety_warnings),
+        )
 
         result_status = "hit" if results else "miss"
         await increment_counter(
@@ -380,7 +413,8 @@ class KnowledgeService:
             graph_context=semantic_graph_context,
             results=results,
             confidence=assessment["answer_confidence"],
-            warnings=assessment["coverage_warnings"],
+            warnings=coverage_warnings,
+            safety_warnings=safety_warnings,
         )
         payload = {
             "query": hydrated_request.query,
@@ -402,7 +436,7 @@ class KnowledgeService:
             "knowledge_corpus_version": self._build_knowledge_corpus_version(results),
             "prompt_template_version": self.MULTIMODAL_PROMPT_TEMPLATE_VERSION,
             "answer_confidence": assessment["answer_confidence"],
-            "coverage_warnings": assessment["coverage_warnings"],
+            "coverage_warnings": coverage_warnings,
             "grounded": assessment["grounded"],
             "image_analysis": (
                 {
@@ -416,6 +450,7 @@ class KnowledgeService:
             ),
             "graph_context": semantic_graph_context if semantic_graph_context.get("matched_entities") else None,
             "reasoning_chain": reasoning_chain,
+            "safety_warnings": safety_warnings,
             "results": results,
         }
         # ── 写入缓存（仅无图片请求）──────────────────────────────────────────
@@ -737,6 +772,13 @@ class KnowledgeService:
                     relation_rows = relation_rows[:20]
                     break
 
+            relation_rows.sort(
+                key=lambda relation: (
+                    _GRAPH_RELATION_PRIORITY.get(relation.relation_type, 90),
+                    -(float(relation.confidence) if relation.confidence is not None else 0.0),
+                    relation.id,
+                )
+            )
             entity_map = {
                 entity.id: entity
                 for entity in (
@@ -887,6 +929,238 @@ class KnowledgeService:
 
         return sorted(results, key=score, reverse=True)[:limit]
 
+    def _build_safety_warnings(
+        self,
+        *,
+        question: str | None,
+        effective_keywords: list[str],
+        graph_context: dict[str, Any],
+        results: list[dict[str, Any]],
+        grounded: bool,
+    ) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
+        text_parts = [
+            question or "",
+            " ".join(effective_keywords),
+            " ".join(
+                str(item.get(key) or "")
+                for item in results[:5]
+                for key in ("title", "excerpt", "evidence_summary", "expanded_content")
+            ),
+        ]
+        searchable = " ".join(text_parts)
+        normalized = _normalize_graph_match_text(searchable)
+
+        def add_warning(
+            *,
+            code: str,
+            level: str,
+            title: str,
+            message: str,
+            source: str,
+            matched_terms: list[str] | None = None,
+            relation_ids: list[int] | None = None,
+            evidence_chunk_ids: list[int] | None = None,
+            recommendation: str | None = None,
+        ) -> None:
+            warnings.append(
+                {
+                    "code": code,
+                    "level": level,
+                    "title": title,
+                    "message": message,
+                    "source": source,
+                    "matched_terms": matched_terms or [],
+                    "relation_ids": relation_ids or [],
+                    "evidence_chunk_ids": evidence_chunk_ids or [],
+                    "recommendation": recommendation,
+                }
+            )
+
+        if "带电" in normalized and any(term in searchable for term in ("点火线圈", "高压帽", "火花塞", "点火")):
+            add_warning(
+                code="FORBIDDEN_LIVE_IGNITION_CHECK",
+                level="blocking",
+                title="禁止带电检查点火系统",
+                message="问题涉及带电检查点火线圈或高压点火部件，存在电击、短路和误启动风险。",
+                source="rule",
+                matched_terms=["带电", "点火线圈"],
+                recommendation="先熄火、断电并确认高压帽已安全隔离，再按手册步骤复核阻值和接线。",
+            )
+        if "高温" in normalized and any(term in searchable for term in ("拆卸", "拆检", "维修")):
+            add_warning(
+                code="FORBIDDEN_HOT_DISASSEMBLY",
+                level="blocking",
+                title="禁止高温状态下拆检",
+                message="问题涉及高温状态下拆卸或维修，存在烫伤和部件二次损伤风险。",
+                source="rule",
+                matched_terms=["高温", "拆卸"],
+                recommendation="等待发动机和排气侧部件冷却到可安全接触状态后再拆检。",
+            )
+        if any(term in searchable for term in ("燃油", "喷油", "油管", "混合气", "冒黑烟", "排气管冒黑烟")):
+            add_warning(
+                code="FUEL_SYSTEM_RISK",
+                level="warning",
+                title="燃油系统风险提示",
+                message="当前问题可能涉及混合气、燃油供给或喷油部件，检修前应控制明火和燃油泄漏风险。",
+                source="rule",
+                matched_terms=[term for term in ("燃油", "混合气", "冒黑烟") if term in searchable],
+                recommendation="先完成停机、通风和燃油风险隔离，再执行化油器、喷油嘴或氧传感器排查。",
+            )
+        if any(term in searchable for term in ("点火线圈", "高压帽", "火花塞", "点火高压")):
+            add_warning(
+                code="IGNITION_HIGH_VOLTAGE_RISK",
+                level="warning",
+                title="点火高压风险提示",
+                message="当前建议涉及点火线圈、高压帽或火花塞，拆检时需要防止高压残留和误启动。",
+                source="rule",
+                matched_terms=[term for term in ("点火线圈", "高压帽", "火花塞") if term in searchable],
+                recommendation="确认已熄火断电，拔插高压帽时使用绝缘工具并避免拉扯高压线。",
+            )
+        if any(term in searchable for term in ("火花塞间隙", "气门间隙", "扭矩", "阻值")) and not any(
+            term in searchable for term in ("mm", "毫米", "n·m", "nm", "Ω", "欧")
+        ):
+            add_warning(
+                code="STANDARD_PARAMETER_REQUIRED",
+                level="warning",
+                title="关键标准参数待复核",
+                message="当前问题涉及间隙、扭矩或阻值，但命中证据中未发现明确标准数值。",
+                source="rule",
+                matched_terms=[term for term in ("火花塞间隙", "气门间隙", "扭矩", "阻值") if term in searchable],
+                recommendation="执行调整或复装前，查阅对应车型维修手册并人工复核标准参数。",
+            )
+
+        for relation in graph_context.get("expanded_relations") or []:
+            relation_id = int(relation.get("id") or 0)
+            relation_type = str(relation.get("relation_type") or "")
+            confidence = float(relation.get("confidence") or 0.0)
+            evidence_chunk_ids = [int(item) for item in relation.get("evidence_chunk_ids") or []]
+            source_name = str(relation.get("source_name") or "")
+            target_name = str(relation.get("target_name") or "")
+            terms = [item for item in [source_name, target_name] if item]
+
+            if relation_type == "action_has_safety_risk":
+                add_warning(
+                    code="GRAPH_ACTION_HAS_SAFETY_RISK",
+                    level="warning",
+                    title="图谱识别到安全风险",
+                    message=f"{source_name} 与 {target_name} 存在安全关联，执行前需要现场确认。",
+                    source="semantic_graph",
+                    matched_terms=terms,
+                    relation_ids=[relation_id] if relation_id else [],
+                    evidence_chunk_ids=evidence_chunk_ids,
+                    recommendation="先完成安全隔离与个人防护，再继续检修动作。",
+                )
+            elif relation_type == "action_forbidden_under_condition":
+                add_warning(
+                    code="GRAPH_FORBIDDEN_ACTION",
+                    level="blocking",
+                    title="图谱命中禁忌操作",
+                    message=f"{source_name} 在 {target_name} 条件下不应直接执行。",
+                    source="semantic_graph",
+                    matched_terms=terms,
+                    relation_ids=[relation_id] if relation_id else [],
+                    evidence_chunk_ids=evidence_chunk_ids,
+                    recommendation="先消除禁忌条件并由专家复核后，再继续执行。",
+                )
+            elif relation_type == "action_requires_parameter":
+                add_warning(
+                    code="GRAPH_PARAMETER_REQUIRED",
+                    level="info",
+                    title="需要标准参数",
+                    message=f"{source_name} 需要复核 {target_name} 后再执行。",
+                    source="semantic_graph",
+                    matched_terms=terms,
+                    relation_ids=[relation_id] if relation_id else [],
+                    evidence_chunk_ids=evidence_chunk_ids,
+                    recommendation="以车型维修手册或已审核知识分段中的标准值为准。",
+                )
+            elif relation_type == "risk_mitigated_by_action":
+                add_warning(
+                    code="GRAPH_RISK_MITIGATION",
+                    level="info",
+                    title="图谱提示风险缓解动作",
+                    message=f"{target_name} 可用于缓解 {source_name} 风险。",
+                    source="semantic_graph",
+                    matched_terms=terms,
+                    relation_ids=[relation_id] if relation_id else [],
+                    evidence_chunk_ids=evidence_chunk_ids,
+                    recommendation="执行高风险检修前，先完成对应缓解动作并保留现场确认记录。",
+                )
+
+            if relation_type in _SAFETY_RELATION_TYPES or confidence < 0.65:
+                if confidence and confidence < 0.65:
+                    add_warning(
+                        code="LOW_CONFIDENCE_GRAPH_RELATION",
+                        level="warning",
+                        title="图谱关系置信度偏低",
+                        message=f"{source_name} -> {target_name} 的图谱关系置信度为 {confidence:.2f}。",
+                        source="semantic_graph",
+                        matched_terms=terms,
+                        relation_ids=[relation_id] if relation_id else [],
+                        evidence_chunk_ids=evidence_chunk_ids,
+                        recommendation="仅作为排查线索，不应作为确定结论直接下发。",
+                    )
+            if not evidence_chunk_ids:
+                add_warning(
+                    code="GRAPH_RELATION_WITHOUT_EVIDENCE",
+                    level="blocking" if confidence < 0.65 else "warning",
+                    title="图谱关系缺少证据分段",
+                    message=f"{source_name} -> {target_name} 当前没有绑定可回溯证据。",
+                    source="semantic_graph",
+                    matched_terms=terms,
+                    relation_ids=[relation_id] if relation_id else [],
+                    evidence_chunk_ids=[],
+                    recommendation="补充证据或人工确认前，请避免以确定语气输出该关系结论。",
+                )
+
+        if not grounded and not results:
+            add_warning(
+                code="NO_GROUNDED_EVIDENCE",
+                level="blocking",
+                title="缺少可引用证据",
+                message="当前问题未命中可引用知识分段，不能形成确定检修结论。",
+                source="grounding",
+                matched_terms=[],
+                recommendation="补充设备型号、故障图片或导入对应维修手册后重新检索。",
+            )
+        return self._dedupe_safety_warnings(warnings)
+
+    @staticmethod
+    def _dedupe_safety_warnings(warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, tuple[int, ...], tuple[str, ...]]] = set()
+        for warning in warnings:
+            relation_ids = tuple(sorted(int(item) for item in warning.get("relation_ids") or []))
+            matched_terms = tuple(sorted(str(item) for item in warning.get("matched_terms") or []))
+            key = (str(warning.get("code") or ""), relation_ids, matched_terms)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(warning)
+        return result[:8]
+
+    @staticmethod
+    def _format_safety_warning_texts(safety_warnings: list[dict[str, Any]]) -> list[str]:
+        texts: list[str] = []
+        for warning in safety_warnings:
+            title = str(warning.get("title") or "").strip()
+            message = str(warning.get("message") or "").strip()
+            if title and message:
+                texts.append(f"{title}：{message}")
+            elif message:
+                texts.append(message)
+        return texts
+
+    @staticmethod
+    def _merge_warning_texts(base: list[str], extra: list[str]) -> list[str]:
+        merged: list[str] = []
+        for item in [*(base or []), *(extra or [])]:
+            text = str(item or "").strip()
+            if text and text not in merged:
+                merged.append(text)
+        return merged
+
     def _build_reasoning_chain(
         self,
         *,
@@ -895,6 +1169,7 @@ class KnowledgeService:
         results: list[dict[str, Any]],
         confidence: float,
         warnings: list[str],
+        safety_warnings: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         evidence_chunks = [
             {
@@ -920,6 +1195,7 @@ class KnowledgeService:
             "selected_answer_claims": selected_claims,
             "confidence": round(float(confidence or 0.0), 4),
             "warnings": warnings,
+            "safety_warnings": safety_warnings or [],
             "explanation_text": self._build_reasoning_explanation(
                 graph_context=graph_context,
                 evidence_chunks=evidence_chunks,

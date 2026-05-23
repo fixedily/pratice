@@ -32,6 +32,7 @@ from app.modules.knowledge.schemas.search import (
     KnowledgeGraphContext,
     KnowledgeImageAnalysis,
     KnowledgeReasoningChain,
+    KnowledgeSafetyWarning,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
@@ -678,6 +679,10 @@ async def search_knowledge(
             if response_payload.get("reasoning_chain") is not None
             else None
         ),
+        safety_warnings=[
+            KnowledgeSafetyWarning(**item)
+            for item in response_payload.get("safety_warnings", [])
+        ],
         total=len(response_payload["results"]),
         results=[KnowledgeSearchHit(**item) for item in response_payload["results"]],
     )

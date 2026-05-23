@@ -260,6 +260,18 @@ class KnowledgeGraphContext(BaseModel):
     enhanced_keywords: list[str] = Field(default_factory=list)
 
 
+class KnowledgeSafetyWarning(BaseModel):
+    code: str
+    level: str
+    title: str
+    message: str
+    source: str
+    matched_terms: list[str] = Field(default_factory=list)
+    relation_ids: list[int] = Field(default_factory=list)
+    evidence_chunk_ids: list[int] = Field(default_factory=list)
+    recommendation: str | None = None
+
+
 class KnowledgeReasoningEvidenceChunk(BaseModel):
     chunk_id: int
     document_id: int
@@ -280,6 +292,7 @@ class KnowledgeReasoningChain(BaseModel):
     selected_answer_claims: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     warnings: list[str] = Field(default_factory=list)
+    safety_warnings: list[KnowledgeSafetyWarning] = Field(default_factory=list)
     explanation_text: str | None = None
 
 
@@ -298,5 +311,6 @@ class KnowledgeSearchResponse(BaseModel):
     image_analysis: KnowledgeImageAnalysis | None = None
     graph_context: KnowledgeGraphContext | None = None
     reasoning_chain: KnowledgeReasoningChain | None = None
+    safety_warnings: list[KnowledgeSafetyWarning] = Field(default_factory=list)
     total: int
     results: list[KnowledgeSearchHit]

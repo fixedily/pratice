@@ -44,7 +44,8 @@ class FakeRedis:
 
 
 @pytest.fixture(autouse=True)
-def clear_memory_cache():
+def clear_memory_cache(monkeypatch):
+    monkeypatch.setattr(cache_service, "_cache_enabled", lambda: True)
     cache_service.clear()
     yield
     cache_service.clear()

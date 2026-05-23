@@ -9,7 +9,10 @@ function jsonResponse(data: unknown) {
     status: 200,
     contentType: "application/json",
     headers: {
-      "access-control-allow-origin": "*",
+      "access-control-allow-origin": "http://127.0.0.1:3000",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+      "access-control-allow-headers": "authorization,content-type",
     },
     body: JSON.stringify(data),
   };
@@ -253,7 +256,20 @@ async function mockTaskDetailApi(page: Page) {
             },
           ],
           selected_answer_claims: ["火花塞需要先拆卸检查，并关联复核点火线圈。"],
-          warnings: [],
+          warnings: ["点火高压风险提示：当前建议涉及点火线圈、高压帽或火花塞，拆检时需要防止高压残留和误启动。"],
+          safety_warnings: [
+            {
+              code: "IGNITION_HIGH_VOLTAGE_RISK",
+              level: "warning",
+              title: "点火高压风险提示",
+              message: "当前建议涉及点火线圈、高压帽或火花塞，拆检时需要防止高压残留和误启动。",
+              source: "rule",
+              matched_terms: ["火花塞", "点火线圈"],
+              relation_ids: [1, 2],
+              evidence_chunk_ids: [1608, 1610],
+              recommendation: "确认已熄火断电，拔插高压帽时使用绝缘工具并避免拉扯高压线。",
+            },
+          ],
           confidence: 0.82,
         },
         source_refs: [
@@ -644,6 +660,9 @@ test("task detail shows the redesigned reasoning path with attached evidence ins
   await expect(page.getByTestId("reasoning-graph-target-relation-4")).toHaveCount(0);
   await expect(page.getByText("拆卸火花塞前确保周围无灰尘，并检查积炭情况。")).toHaveCount(0);
   await expect(page.getByText("结论依据")).toHaveCount(0);
+  await expect(page.getByTestId("reasoning-safety-warnings")).toBeVisible();
+  await expect(page.getByTestId("reasoning-safety-warnings")).toContainText("点火高压风险提示");
+  await expect(page.getByTestId("reasoning-safety-warnings")).toContainText("确认已熄火断电");
 
   await page.getByTestId("reasoning-graph-entity").click();
 

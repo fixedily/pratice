@@ -760,6 +760,7 @@ export function buildReasoningSubgraphViewModel(
   const evidenceChunks = reasoningChain?.evidence_chunks ?? [];
   const claims = reasoningChain?.selected_answer_claims ?? [];
   const warnings = reasoningChain?.warnings ?? [];
+  const safetyWarnings = reasoningChain?.safety_warnings ?? [];
   const confidenceLabel = formatPercent(reasoningChain?.confidence);
   const evidenceByChunkId = new Map<number, KnowledgeReasoningEvidenceChunk>();
   evidenceChunks.forEach((chunk) => {
@@ -850,6 +851,7 @@ export function buildReasoningSubgraphViewModel(
     summaryText,
     confidenceLabel,
     warnings,
+    safetyWarnings,
     claims,
     hasData: entities.length > 0 || relations.length > 0 || evidenceChunks.length > 0,
     isDegradedNoRelationFlow,
